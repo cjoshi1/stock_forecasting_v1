@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+Main script for stock forecasting using FT-Transformer.
+
+This script demonstrates how to use the FT-Transformer library specifically for stock prediction.
+It includes stock data loading, model training, evaluation, and visualization.
+"""
+
+import argparse
+import os
+from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
+
+import pandas as pd
+import numpy as np
+
+# Handle both direct execution and module import
+if __name__ == "__main__" and __package__ is None:
+    # Direct execution - add parent directory to path
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    
+    from stock_forecasting.predictor import StockPredictor
+    from stock_forecasting.preprocessing.market_data import load_stock_data, create_sample_stock_data
+    from stock_forecasting.visualization.stock_charts import create_comprehensive_plots, print_performance_summary
+    from tf_predictor.core.utils import split_time_series
+else:
+    # Module import - use relative imports
+    from .predictor import StockPredictor
+    from .preprocessing.market_data import load_stock_data, create_sample_stock_data
+    from .visualization.stock_charts import create_comprehensive_plots, print_performance_summary
+    from tf_predictor.core.utils import split_time_series
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Train FT-Transformer for stock prediction')
+    
+    # Data arguments
+    parser.add_argument('--data_path', type=str, default=None,
+                       help='Path to stock data CSV file')
+    parser.add_argument('--target', type=str, default='close',
+                       help='Target column to predict (close, open, high, low)')
+    parser.add_argument('--use_sample_data', action='store_true',
+                       help='Use synthetic sample data instead of real data')
+    
+    # Model arguments
+    parser.add_argument('--sequence_length', type=int, default=5,
+                       help='Number of historical days to use for prediction')
+    parser.add_argument('--d_token', type=int, default=128,
+                       help='Token embedding dimension')
+    parser.add_argument('--n_layers', type=int, default=3,
+                       help='Number of transformer layers')
+    parser.add_argument('--n_heads', type=int, default=8,
+                       help='Number of attention heads')
+    parser.add_argument('--dropout', type=float, default=0.1,
+                       help='Dropout rate')
+    
+    # Training arguments
+    parser.add_argument('--epochs', type=int, default=100,
+                       help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=32,
+                       help='Training batch size')
+    parser.add_argument('--learning_rate', type=float, default=1e-3,
+                       help='Learning rate')
+    parser.add_argument('--patience', type=int, default=15,
+                       help='Early stopping patience')
+    
+    # Data split arguments
+    parser.add_argument('--test_size', type=int, default=30,
+                       help='Number of samples for test set')
+    parser.add_argument('--val_size', type=int, default=20,
+                       help='Number of samples for validation set')
+    
+    # Output arguments
+    parser.add_argument('--model_path', type=str, default='outputs/models/stock_model.pt',
+                       help='Path to save trained model')
+    parser.add_argument('--no_plots', action='store_true',
+                       help='Skip generating plots')
+    
+    args = parser.parse_args()
+    
+    # Create output directory
+    output_dir = Path(args.model_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print("="*60)
+    print("🚀 Stock Forecasting with FT-Transformer")
+    print("="*60)
+    
+    # 1. Load Data
+    print(f"\n📊 Loading stock data...")
+    
+    if args.use_sample_data:
+        print("   Using synthetic sample data")
+        df = create_sample_stock_data(n_samples=300)
+        print(f"   Generated {len(df)} samples of synthetic stock data")
+    else:
+        if args.data_path is None:
+            # Try to find data file in stock_forecasting/data/
+            data_candidates = [
+                'data/raw/MSFT_historical_price.csv',
+                'data/sample/MSFT_sample.csv',
+                'data/raw/stock_data.csv'
+            ]
+            
+            for candidate in data_candidates:
+                if os.path.exists(candidate):
+                    args.data_path = candidate
+                    break
+            
+            if args.data_path is None:
+                print("   ❌ No data file found. Using sample data instead.")
+                df = create_sample_stock_data(n_samples=300)
+            else:
+                print(f"   Found data file: {args.data_path}")
+                df = load_stock_data(args.data_path)
+        else:
+            df = load_stock_data(args.data_path)
+        
+        print(f"   Loaded {len(df)} samples from {args.data_path}")
+    
+    # Validate target column (include engineered features)
+    base_columns = df.columns.tolist()
+    
+    # Add engineered percentage change features that will be created
+    engineered_pct_features = []
+    periods = [1, 3, 5, 10]
+    for period in periods:
+        engineered_pct_features.append(f'pct_change_{period}d')
+    
+    # Add other engineered features
+    other_engineered = [
+        'returns', 'log_returns', 'volatility_10d', 'momentum_5d',
+        'high_low_ratio', 'close_open_ratio', 'volume_ratio'
+    ]
+    
+    all_possible_targets = base_columns + engineered_pct_features + other_engineered
+    
+    if args.target not in all_possible_targets:
+        print(f"   ❌ Target column '{args.target}' not found.")
+        print(f"   📊 Base columns: {base_columns}")
+        print(f"   🔧 Engineered % change features: pct_change_[1,3,5,10]d")
+        print(f"   📈 Other features: returns, volatility_10d, momentum_5d, ratios")
+        return
+    
+    print(f"   Target column: {args.target}")
+    print(f"   Date range: {df['date'].min()} to {df['date'].max()}" if 'date' in df.columns else "   No date column found")
+    
+    # 2. Split Data
+    print(f"\n🔄 Splitting data...")
+    train_df, val_df, test_df = split_time_series(
+        df, 
+        test_size=args.test_size, 
+        val_size=args.val_size if len(df) > args.test_size + args.val_size + 50 else None
+    )
+    
+    if train_df is None:
+        print("   ❌ Insufficient data for splitting")
+        return
+    
+    print(f"   Train samples: {len(train_df)}")
+    if val_df is not None:
+        print(f"   Validation samples: {len(val_df)}")
+    print(f"   Test samples: {len(test_df) if test_df is not None else 0}")
+    
+    # 3. Initialize Model
+    print(f"\n🧠 Initializing Stock Predictor...")
+    
+    model = StockPredictor(
+        target_column=args.target,
+        sequence_length=args.sequence_length,
+        d_token=args.d_token,
+        n_layers=args.n_layers,
+        n_heads=args.n_heads,
+        dropout=args.dropout
+    )
+    
+    print(f"   Model configuration:")
+    print(f"   - Sequence length: {args.sequence_length}")
+    print(f"   - Token dimension: {args.d_token}")
+    print(f"   - Layers: {args.n_layers}")
+    print(f"   - Attention heads: {args.n_heads}")
+    print(f"   - Dropout: {args.dropout}")
+    
+    # 4. Train Model
+    print(f"\n🏋️ Training model...")
+    
+    model.fit(
+        df=train_df,
+        val_df=val_df,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        patience=args.patience,
+        verbose=True
+    )
+    
+    # 5. Save Model
+    print(f"\n💾 Saving model...")
+    model.save(args.model_path)
+    
+    # 6. Evaluate Model
+    print(f"\n📈 Evaluating model...")
+    
+    # Train metrics
+    train_metrics = model.evaluate(train_df)
+    print(f"\n   Training Metrics:")
+    for metric, value in train_metrics.items():
+        if not np.isnan(value):
+            print(f"   - {metric}: {value:.4f}")
+    
+    # Test metrics
+    if test_df is not None and len(test_df) > 0:
+        test_metrics = model.evaluate(test_df)
+        print(f"\n   Test Metrics:")
+        for metric, value in test_metrics.items():
+            if not np.isnan(value):
+                print(f"   - {metric}: {value:.4f}")
+    
+    # 7. Generate Comprehensive Plots
+    if not args.no_plots:
+        print(f"\n📊 Generating comprehensive visualizations...")
+        
+        try:
+            # Create comprehensive plots with proper alignment and MAPE annotations
+            # Use organized output structure within stock_forecasting
+            base_output = "outputs"
+            saved_plots = create_comprehensive_plots(model, train_df, test_df, base_output)
+            
+            print(f"   ✅ Comprehensive predictions plot: {saved_plots['predictions']}")
+            print(f"   ✅ Training progress plot: {saved_plots['training']}")
+            print(f"   ✅ Predictions CSV file: {saved_plots['csv']}")
+            
+            # Get data for performance summary
+            train_predictions = model.predict(train_df)
+            test_predictions = model.predict(test_df) if test_df is not None else None
+            
+            train_actual_values = train_df[args.target].values[model.sequence_length:] if args.target in train_df.columns else None
+            
+            # For engineered features, get from processed data
+            if train_actual_values is None:
+                train_processed = model.prepare_features(train_df, fit_scaler=False)
+                train_actual_values = train_processed[args.target].values[model.sequence_length:]
+            
+            train_pred_aligned = train_predictions[:len(train_actual_values)]
+            
+            if test_predictions is not None:
+                test_actual_values = test_df[args.target].values[model.sequence_length:] if args.target in test_df.columns else None
+                
+                # For engineered features, get from processed data
+                if test_actual_values is None:
+                    test_processed = model.prepare_features(test_df, fit_scaler=False)
+                    test_actual_values = test_processed[args.target].values[model.sequence_length:]
+                
+                test_pred_aligned = test_predictions[:len(test_actual_values)]
+                
+                # Print comprehensive performance summary
+                print_performance_summary(
+                    model, 
+                    train_actual_values, 
+                    train_pred_aligned,
+                    test_actual_values,
+                    test_pred_aligned
+                )
+                
+        except Exception as e:
+            print(f"   ⚠️  Error generating comprehensive plots: {e}")
+    
+    # 8. Summary
+    print(f"\n🎉 Stock forecasting completed successfully!")
+    print(f"   Model saved to: {args.model_path}")
+    if not args.no_plots:
+        print(f"   Plots saved to: outputs/")
+    
+    # Show best metrics
+    if test_df is not None:
+        mape_value = test_metrics.get('MAPE', 0)
+        print(f"   Test MAPE: {mape_value:.2f}%")
+    
+    print("\n" + "="*60)
+
+
+if __name__ == "__main__":
+    main()

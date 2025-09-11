@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Data files (not committed to git)
+data/
+datasets/
+raw_data/
+processed_data/
+preprocessed_data/
+
+# Model files and outputs
+*.pt
+*.pth
+*.pkl
+*.joblib
+models/
+checkpoints/
+outputs/
+results/
+logs/
+
+# Plots and visualizations  
+*.png
+*.jpg
+*.jpeg
+*.svg
+plots/
+figures/
+visualizations/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Configuration files with sensitive data
+config.json
+secrets.json
+.env

@@ -1,0 +1,381 @@
+# 🧠 TF Predictor: Generic Time Series Forecasting Library
+
+A reusable Python library for time series forecasting using the FT-Transformer (Feature Tokenizer Transformer) architecture. This library provides a clean, extensible foundation for building domain-specific time series prediction applications.
+
+## 🎯 Features
+
+- **Generic Time Series Predictor**: Abstract base class for any time series domain
+- **State-of-the-art Architecture**: FT-Transformer with attention mechanisms  
+- **Flexible Feature Engineering**: Extensible preprocessing pipeline
+- **Sequence Modeling**: Built-in support for multi-step temporal sequences
+- **Production Ready**: Model persistence, evaluation metrics, and utilities
+
+## 🏗️ Architecture
+
+The library follows a clean architectural pattern:
+- **Abstract Predictor**: Base class that you extend for your domain
+- **Core Models**: FT-Transformer implementations for tabular time series
+- **Preprocessing Tools**: Generic time series feature engineering utilities
+- **Evaluation Utilities**: Comprehensive metrics and data splitting functions
+
+## 🚀 Quick Start
+
+### 1. Create Your Custom Predictor
+
+```python
+from tf_predictor.core.predictor import TimeSeriesPredictor
+from tf_predictor.preprocessing.time_features import create_date_features, create_lag_features
+
+class MyPredictor(TimeSeriesPredictor):
+    def create_features(self, df, fit_scaler=False):
+        # Your domain-specific feature engineering
+        df_processed = df.copy()
+        
+        # Add date features
+        if 'date' in df_processed.columns:
+            df_processed = create_date_features(df_processed, 'date')
+            
+        # Add lag features
+        df_processed = create_lag_features(df_processed, 'value', [1, 2, 7])
+        
+        # Add any domain-specific features here
+        # ...
+        
+        df_processed = df_processed.fillna(0)
+        return df_processed
+```
+
+### 2. Use Your Predictor
+
+```python
+from tf_predictor.core.utils import split_time_series
+
+# Initialize your custom predictor
+predictor = MyPredictor(
+    target_column='value',
+    sequence_length=7,
+    d_token=128,
+    n_layers=3,
+    n_heads=8
+)
+
+# Split your time series data
+train_df, val_df, test_df = split_time_series(df, test_size=30, val_size=15)
+
+# Train the model
+predictor.fit(
+    df=train_df,
+    val_df=val_df,
+    epochs=100,
+    batch_size=32,
+    learning_rate=1e-3
+)
+
+# Make predictions
+predictions = predictor.predict(test_df)
+metrics = predictor.evaluate(test_df)
+```
+
+## 📚 Core Components
+
+### TimeSeriesPredictor (Abstract Base Class)
+
+The heart of the library - extend this for your domain:
+
+```python
+class TimeSeriesPredictor(ABC):
+    @abstractmethod
+    def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
+        """Implement your domain-specific feature engineering here."""
+        pass
+```
+
+Key methods:
+- `fit()`: Train the model with your data
+- `predict()`: Generate predictions
+- `evaluate()`: Calculate comprehensive metrics
+- `save()` / `load()`: Model persistence
+
+### Model Architecture
+
+**FT-Transformer**: Feature Tokenizer Transformer designed for tabular data
+- Transforms each feature into learned embeddings (tokens)
+- Applies multi-head self-attention across features and time steps
+- Handles both numerical and categorical features seamlessly
+
+**Sequence Models**: Built-in support for temporal sequences
+- `SequenceFTTransformer`: Multi-step temporal modeling
+- `FTTransformerPredictor`: Single-step predictions
+
+### Preprocessing Utilities
+
+**Time Features** (`preprocessing/time_features.py`):
+```python
+from tf_predictor.preprocessing.time_features import (
+    create_date_features,      # Extract year, month, day, etc.
+    create_lag_features,       # Add lagged values  
+    create_rolling_features,   # Rolling statistics
+    create_sequences,          # Convert to sequences
+    create_percentage_changes  # Percentage change features
+)
+```
+
+**Core Utilities** (`core/utils.py`):
+```python  
+from tf_predictor.core.utils import (
+    split_time_series,         # Chronological data splitting
+    calculate_metrics,         # Comprehensive evaluation metrics
+    load_time_series_data      # Generic data loading
+)
+```
+
+## 🛠️ Configuration
+
+### Model Parameters
+- `target_column`: Column to predict
+- `sequence_length`: Number of time steps to use as input (default: 5)
+- `d_token`: Token embedding dimension (default: 192)  
+- `n_layers`: Number of transformer layers (default: 3)
+- `n_heads`: Number of attention heads (default: 8)
+- `dropout`: Dropout rate (default: 0.1)
+
+### Training Parameters  
+- `epochs`: Training epochs (default: 100)
+- `batch_size`: Batch size (default: 32)
+- `learning_rate`: Learning rate (default: 1e-3)
+- `patience`: Early stopping patience (default: 15)
+
+## 🔧 Feature Engineering Guide
+
+### Date Features
+```python
+# Extract comprehensive date features
+df_processed = create_date_features(df, 'date')
+# Adds: year, month, day, dayofweek, quarter, is_weekend
+# Plus cyclical encodings: month_sin, month_cos, dayofweek_sin, dayofweek_cos
+```
+
+### Lag Features
+```python
+# Add historical values
+df_processed = create_lag_features(df, 'value', lags=[1, 2, 7, 30])
+# Adds: value_lag_1, value_lag_2, value_lag_7, value_lag_30
+```
+
+### Rolling Features
+```python  
+# Add rolling statistics
+df_processed = create_rolling_features(df, 'value', windows=[3, 7, 14])
+# Adds: value_rolling_mean_3, value_rolling_std_3, value_rolling_min_3, etc.
+```
+
+### Percentage Changes
+```python
+# Add percentage change features
+df_processed = create_percentage_changes(df, 'value', periods=[1, 7, 30])
+# Adds: value_pct_change_1d, value_pct_change_7d, value_pct_change_30d
+```
+
+## 📊 Evaluation Metrics
+
+Comprehensive evaluation with `calculate_metrics()`:
+- **MAE**: Mean Absolute Error
+- **MSE**: Mean Squared Error
+- **RMSE**: Root Mean Squared Error  
+- **MAPE**: Mean Absolute Percentage Error
+- **R²**: Coefficient of determination
+- **Directional Accuracy**: Percentage of correct trend predictions
+
+## 💾 Model Persistence
+
+```python
+# Save trained model
+predictor.save('my_model.pt')
+
+# Load model later
+new_predictor = MyPredictor(target_column='value', sequence_length=7)
+new_predictor.load('my_model.pt')
+predictions = new_predictor.predict(new_data)
+```
+
+## 🎯 Example Use Cases
+
+### 1. Energy Consumption Forecasting
+```python
+class EnergyPredictor(TimeSeriesPredictor):
+    def create_features(self, df, fit_scaler=False):
+        df_processed = create_date_features(df, 'date')
+        df_processed = create_lag_features(df_processed, 'consumption', [1, 7, 365])
+        df_processed = create_rolling_features(df_processed, 'temperature', [3, 7])
+        # Add energy-specific features
+        df_processed['is_working_day'] = (df_processed['dayofweek'] < 5).astype(int)
+        return df_processed.fillna(0)
+```
+
+### 2. Sales Forecasting  
+```python
+class SalesPredictor(TimeSeriesPredictor):
+    def create_features(self, df, fit_scaler=False):
+        df_processed = create_date_features(df, 'date')
+        df_processed = create_lag_features(df_processed, 'sales', [1, 7, 14, 28])
+        # Add sales-specific features
+        df_processed['is_holiday'] = df_processed['date'].dt.date.isin(holidays)
+        df_processed['month_end'] = (df_processed['day'] >= 28).astype(int)
+        return df_processed.fillna(method='bfill').fillna(0)
+```
+
+### 3. IoT Sensor Monitoring
+```python
+class SensorPredictor(TimeSeriesPredictor):
+    def create_features(self, df, fit_scaler=False):
+        df_processed = create_date_features(df, 'timestamp') 
+        df_processed = create_rolling_features(df_processed, 'sensor_value', [5, 15, 60])
+        # Add sensor-specific features
+        df_processed['hour'] = df_processed['timestamp'].dt.hour
+        df_processed['is_business_hours'] = df_processed['hour'].between(9, 17).astype(int)
+        return df_processed.fillna(0)
+```
+
+## 📁 Library Structure
+
+```
+tf_predictor/
+├── core/
+│   ├── predictor.py          # Abstract TimeSeriesPredictor base class
+│   ├── model.py             # FT-Transformer model implementations  
+│   └── utils.py             # Utilities (metrics, data splitting)
+├── preprocessing/
+│   └── time_features.py     # Generic time series preprocessing
+├── tests/
+│   └── test_core.py         # Comprehensive test suite
+├── examples/
+│   └── basic_timeseries_example.py  # Energy consumption example
+└── README.md                # This file
+```
+
+## 🧪 Testing
+
+Run the comprehensive test suite:
+```bash
+cd tf_predictor/tests/
+python test_core.py
+```
+
+Or use pytest if available:
+```bash
+pytest tf_predictor/tests/
+```
+
+## ⚡ Performance Tips
+
+### For Better Accuracy:
+- Use longer sequences (10-50 time steps) for complex temporal patterns
+- Increase model capacity (`d_token=256`, `n_layers=6`) for large datasets
+- Add domain-specific features in your `create_features()` method
+- Use rolling statistics and lag features to capture trends
+
+### For Faster Training:
+- Use smaller models (`d_token=64`, `n_layers=2`) for quick experiments
+- Increase batch size if memory allows
+- Use fewer features for initial prototyping
+
+### For Production:  
+- Always use validation sets for hyperparameter tuning
+- Implement proper feature scaling in your `create_features()` method
+- Save models regularly and implement checkpointing
+- Monitor both training and validation metrics
+
+## 🚨 Troubleshooting
+
+### Common Issues:
+
+**"Need at least X samples for sequence_length"**
+- Reduce `sequence_length` for small datasets
+- Ensure you have enough data after feature engineering
+
+**"No numeric feature columns found"**
+- Check that your `create_features()` method returns numeric columns
+- Ensure date columns are excluded from feature scaling
+
+**"Poor performance"**
+- Add more domain-specific features
+- Try different sequence lengths
+- Increase model capacity or training time
+- Check data quality and preprocessing
+
+**"Memory errors"**
+- Reduce `batch_size` and `d_token`
+- Use gradient checkpointing for very deep models
+- Process data in smaller chunks
+
+## 🔗 Extensions
+
+This library serves as the foundation for domain-specific applications:
+
+- **Stock Forecasting**: `stock_forecasting` package (financial markets)
+- **Energy Forecasting**: Extend for power grid and consumption modeling
+- **Sales Forecasting**: E-commerce and retail demand prediction  
+- **IoT Monitoring**: Sensor data and anomaly detection
+- **Weather Forecasting**: Meteorological time series prediction
+
+## 🎓 Research Background
+
+The FT-Transformer architecture is based on:
+- **Feature Tokenization**: Each feature becomes a learnable token
+- **Multi-Head Self-Attention**: Captures complex feature interactions
+- **Positional Encoding**: Preserves temporal ordering information
+- **Layer Normalization**: Stable training for deep networks
+
+Key advantages over traditional approaches:
+- Handles mixed data types naturally
+- Learns complex feature interactions automatically  
+- Scales well with data size and feature count
+- Provides interpretable attention patterns
+
+## 📖 API Reference
+
+### Core Classes
+
+**TimeSeriesPredictor**
+- `__init__(target_column, sequence_length, **ft_kwargs)`
+- `create_features(df, fit_scaler)` - Abstract method to implement
+- `fit(df, val_df, epochs, batch_size, ...)` - Train the model
+- `predict(df)` - Generate predictions
+- `evaluate(df)` - Calculate metrics
+- `save(path)` / `load(path)` - Model persistence
+
+### Preprocessing Functions  
+
+**create_date_features(df, date_column)**
+- Extracts temporal features from date column
+- Returns DataFrame with year, month, day, cyclical encodings
+
+**create_lag_features(df, column, lags)**  
+- Adds lagged versions of specified column
+- Returns DataFrame with lag_N columns
+
+**create_rolling_features(df, column, windows)**
+- Adds rolling statistics (mean, std, min, max)
+- Returns DataFrame with rolling_stat_N columns
+
+**split_time_series(df, test_size, val_size)**
+- Chronological splitting for time series
+- Returns (train_df, val_df, test_df) tuple
+
+## 🚀 Getting Started
+
+1. **Install dependencies**: `torch`, `pandas`, `numpy`, `scikit-learn`
+2. **Define your predictor**: Extend `TimeSeriesPredictor` 
+3. **Implement feature engineering**: Override `create_features()`
+4. **Load and split your data**: Use `split_time_series()`
+5. **Train and evaluate**: Call `fit()`, `predict()`, `evaluate()`
+
+See `examples/basic_timeseries_example.py` for a complete working example!
+
+## 🔄 Updates
+
+This is a core library designed for stability and extensibility. Updates focus on:
+- Performance improvements to the transformer architecture
+- Additional preprocessing utilities
+- Better memory efficiency and scalability  
+- Enhanced evaluation metrics and diagnostics
