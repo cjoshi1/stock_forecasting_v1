@@ -16,13 +16,22 @@ MARKET_HOURS_CONFIG = {
         'open': time(9, 30),   # 9:30 AM ET
         'close': time(16, 0),  # 4:00 PM ET
         'timezone': 'America/New_York',
-        'description': 'US Eastern Time (NYSE/NASDAQ)'
+        'description': 'US Eastern Time (NYSE/NASDAQ)',
+        'filter_hours': True
     },
     'INDIA': {
         'open': time(9, 15),   # 9:15 AM IST
         'close': time(15, 30), # 3:30 PM IST
         'timezone': 'Asia/Kolkata',
-        'description': 'India Standard Time (NSE/BSE)'
+        'description': 'India Standard Time (NSE/BSE)',
+        'filter_hours': True
+    },
+    'CRYPTO': {
+        'open': time(0, 0),    # 24/7 trading
+        'close': time(23, 59), # 24/7 trading
+        'timezone': 'UTC',
+        'description': 'Cryptocurrency 24/7 Trading',
+        'filter_hours': False  # No market hours filtering for crypto
     }
 }
 
@@ -55,39 +64,44 @@ TIMEFRAME_CONFIG = {
 }
 
 
-def filter_market_hours(df: pd.DataFrame, timestamp_col: str = 'timestamp', 
+def filter_market_hours(df: pd.DataFrame, timestamp_col: str = 'timestamp',
                         country: str = 'US') -> pd.DataFrame:
     """
     Filter data to regular market hours for specified country.
-    
+
     Args:
         df: DataFrame with timestamp column
         timestamp_col: Name of timestamp column
-        country: Country code ('US' or 'INDIA')
-        
+        country: Country code ('US', 'INDIA', or 'CRYPTO')
+
     Returns:
         Filtered DataFrame with only market hours data
     """
     if country not in MARKET_HOURS_CONFIG:
         raise ValueError(f"Unsupported country: {country}. Use: {list(MARKET_HOURS_CONFIG.keys())}")
-    
+
     df = df.copy()
-    
+
     # Ensure timestamp is datetime
     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
         df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-    
+
     # Get market hours for country
     market_config = MARKET_HOURS_CONFIG[country]
+
+    # Skip market hours filtering for crypto (24/7 trading)
+    if not market_config.get('filter_hours', True):
+        return df
+
     market_open = market_config['open']
     market_close = market_config['close']
-    
+
     # Filter to market hours
     df_market = df[
-        (df[timestamp_col].dt.time >= market_open) & 
+        (df[timestamp_col].dt.time >= market_open) &
         (df[timestamp_col].dt.time < market_close)
     ].copy()
-    
+
     return df_market
 
 

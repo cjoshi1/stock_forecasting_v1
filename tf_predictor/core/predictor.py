@@ -232,7 +232,7 @@ class TimeSeriesPredictor(ABC):
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
         criterion = nn.MSELoss()
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=patience//2, verbose=verbose
+            optimizer, mode='min', factor=0.5, patience=patience//2
         )
         
         best_val_loss = float('inf')

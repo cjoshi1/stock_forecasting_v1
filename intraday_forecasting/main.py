@@ -36,16 +36,18 @@ else:
     from tf_predictor.core.utils import split_time_series
 
 
-def create_intraday_visualizations(predictor, train_df, test_df, output_dir="outputs"):
+def create_intraday_visualizations(predictor, train_df, test_df, output_dir="outputs", future_predictions=None, args=None):
     """
     Create intraday-specific visualizations.
-    
+
     Args:
         predictor: Trained IntradayPredictor
         train_df: Training data
         test_df: Test data
         output_dir: Output directory for plots
-        
+        future_predictions: DataFrame with future predictions (optional)
+        args: Command line arguments for crypto detection
+
     Returns:
         Dictionary with paths to created files
     """
@@ -84,20 +86,35 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
                     label='Predicted (Train)', alpha=0.8, linewidth=1)
         
         if test_predictions is not None and len(test_predictions) > 0:
-            axes[0].plot(test_timestamps, test_actual[:len(test_predictions)], 
+            axes[0].plot(test_timestamps, test_actual[:len(test_predictions)],
                         label='Actual (Test)', alpha=0.7, linewidth=1)
-            axes[0].plot(test_timestamps, test_predictions[:len(test_actual)], 
+            axes[0].plot(test_timestamps, test_predictions[:len(test_actual)],
                         label='Predicted (Test)', alpha=0.8, linewidth=1)
+
+        # Add future predictions to plot
+        if future_predictions is not None and len(future_predictions) > 0:
+            future_timestamps = future_predictions[predictor.timestamp_col]
+            future_values = future_predictions[f'predicted_{predictor.target_column}']
+            axes[0].plot(future_timestamps, future_values,
+                        label='Future Predictions', alpha=0.9, linewidth=2,
+                        linestyle='--', color='red', marker='o', markersize=3)
         
         axes[0].set_title(f'Intraday {predictor.target_column.title()} Predictions - {predictor.timeframe}')
         axes[0].set_ylabel(predictor.target_column.title())
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         
-        # Format x-axis for intraday data
+        # Format x-axis for intraday data (crypto-aware)
         if len(train_timestamps) > 0:
-            axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=1))
+            is_crypto = args and args.country == 'CRYPTO'
+            if is_crypto:
+                # 24/7 crypto trading - show date and time
+                axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+                axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=4))  # Every 4 hours
+            else:
+                # Traditional market hours - show time only
+                axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=1))
         
         # Plot 2: Training Progress
         if hasattr(predictor, 'history') and predictor.history['train_loss']:
@@ -130,18 +147,27 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
             f'predicted_{predictor.target_column}': train_predictions[:len(train_actual)]
         }
         
+        data_frames = [pd.DataFrame(csv_data)]
+
         if test_predictions is not None and len(test_predictions) > 0:
-            # Extend with test data
+            # Add test data
             test_csv_data = pd.DataFrame({
                 predictor.timestamp_col: test_timestamps,
                 f'actual_{predictor.target_column}': test_actual[:len(test_predictions)],
                 f'predicted_{predictor.target_column}': test_predictions[:len(test_actual)]
             })
-            
-            train_csv_data = pd.DataFrame(csv_data)
-            combined_data = pd.concat([train_csv_data, test_csv_data], ignore_index=True)
-        else:
-            combined_data = pd.DataFrame(csv_data)
+            data_frames.append(test_csv_data)
+
+        # Add future predictions to the same CSV
+        if future_predictions is not None and len(future_predictions) > 0:
+            future_csv_data = pd.DataFrame({
+                predictor.timestamp_col: future_predictions[predictor.timestamp_col],
+                f'actual_{predictor.target_column}': None,  # No actual values for future
+                f'predicted_{predictor.target_column}': future_predictions[f'predicted_{predictor.target_column}']
+            })
+            data_frames.append(future_csv_data)
+
+        combined_data = pd.concat(data_frames, ignore_index=True)
         
         csv_path = os.path.join(output_dir, f'intraday_predictions_{timestamp}.csv')
         combined_data.to_csv(csv_path, index=False)
@@ -171,8 +197,8 @@ def main():
                        choices=['1min', '5min', '15min', '1h'],
                        help='Trading timeframe for prediction')
     parser.add_argument('--country', type=str, default='US',
-                       choices=['US', 'INDIA'],
-                       help='Country market (US or INDIA)')
+                       choices=['US', 'INDIA', 'CRYPTO'],
+                       help='Country market (US, INDIA, or CRYPTO for 24/7 cryptocurrency trading)')
     parser.add_argument('--use_sample_data', action='store_true',
                        help='Use synthetic sample data instead of real data')
     parser.add_argument('--sample_days', type=int, default=5,
@@ -206,16 +232,26 @@ def main():
     parser.add_argument('--val_size', type=int, default=100,
                        help='Number of samples for validation set')
     
+    # Prediction arguments
+    parser.add_argument('--future_predictions', type=int, default=0,
+                       help='Number of future periods to predict (0 = no future predictions)')
+
     # Output arguments
     parser.add_argument('--model_path', type=str, default='outputs/models/intraday_model.pt',
                        help='Path to save trained model')
     parser.add_argument('--no_plots', action='store_true',
                        help='Skip generating plots')
-    parser.add_argument('--verbose', action='store_true',
-                       help='Enable verbose output')
+    parser.add_argument('--verbose', action='store_true', default=True,
+                       help='Enable verbose output (default: True)')
+    parser.add_argument('--quiet', action='store_true',
+                       help='Disable verbose output')
     
     args = parser.parse_args()
-    
+
+    # Handle quiet flag (overrides verbose)
+    if args.quiet:
+        args.verbose = False
+
     # Create output directory
     output_dir = Path(args.model_path).parent
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -238,9 +274,15 @@ def main():
             print("   Using sample data instead...")
             df = create_sample_intraday_data(n_days=args.sample_days)
         else:
+            # Auto-detect cryptocurrency data and set country to CRYPTO
+            file_name = os.path.basename(args.data_path).upper()
+            if any(crypto in file_name for crypto in ['BTC', 'ETH', 'CRYPTO']) and args.country == 'US':
+                print(f"   📊 Detected cryptocurrency data, automatically setting country to 'CRYPTO' for 24/7 trading")
+                args.country = 'CRYPTO'
+
             print(f"   Loading from: {args.data_path}")
             df = load_intraday_data(args.data_path)
-        
+
         print(f"   Loaded {len(df)} samples")
     
     # 2. Prepare Data for Training
@@ -337,13 +379,33 @@ def main():
         for metric, value in test_metrics.items():
             if not np.isnan(value):
                 print(f"   - {metric}: {value:.4f}")
-    
-    # 8. Generate Visualizations
+
+    # 8. Generate Future Predictions
+    future_predictions = None
+    if args.future_predictions > 0:
+        print(f"\n🔮 Predicting next {args.future_predictions} {args.timeframe} periods...")
+
+        # Use the full processed dataset for future predictions
+        future_predictions = model.predict_next_bars(df_processed, n_predictions=args.future_predictions)
+
+        if len(future_predictions) > 0:
+            print(f"   Future predictions:")
+            for _, row in future_predictions.iterrows():
+                timestamp = row[model.timestamp_col]
+                predicted_value = row[f'predicted_{args.target}']
+                if args.target == 'volume':
+                    print(f"   {timestamp.strftime('%Y-%m-%d %H:%M')}: {predicted_value:.0f}")
+                else:
+                    print(f"   {timestamp.strftime('%Y-%m-%d %H:%M')}: {predicted_value:.2f}")
+        else:
+            print(f"   ⚠️  No future predictions generated")
+
+    # 9. Generate Visualizations
     if not args.no_plots:
         print(f"\n📊 Generating intraday visualizations...")
         
         try:
-            saved_files = create_intraday_visualizations(model, train_df, test_df, "outputs")
+            saved_files = create_intraday_visualizations(model, train_df, test_df, "outputs", future_predictions, args)
             
             if saved_files:
                 if 'plot' in saved_files:
@@ -354,7 +416,7 @@ def main():
         except Exception as e:
             print(f"   ⚠️  Error generating visualizations: {e}")
     
-    # 9. Summary
+    # 10. Summary
     print(f"\n🎉 Intraday forecasting completed successfully!")
     print(f"   Model saved to: {args.model_path}")
     if not args.no_plots:

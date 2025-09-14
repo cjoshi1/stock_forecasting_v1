@@ -6,14 +6,29 @@ A comprehensive, modular framework for time series forecasting using the TF Pred
 
 ### For Intraday Market Prediction
 ```bash
-# Navigate to intraday forecasting
-cd intraday_forecasting/
-
 # Train with sample 5-minute data for the US market
-python main.py --use_sample_data --timeframe 5min --country US --epochs 30
+python run_intraday_forecasting.py --use_sample_data --timeframe 5min --country US --epochs 30
 
 # Train with sample 1-minute data for the Indian market
-python main.py --use_sample_data --timeframe 1min --country INDIA --epochs 50
+python run_intraday_forecasting.py --use_sample_data --timeframe 1min --country INDIA --epochs 50
+
+# Train with BTC cryptocurrency data (24/7 trading)
+python run_intraday_forecasting.py --csv_path /path/to/BTC-USD_1m_max.csv --timeframe 1min --country CRYPTO --epochs 20
+```
+
+### For Cryptocurrency Prediction
+```bash
+# Using the simplified BTC runner (auto-detects BTC data)
+python run_btc_forecasting.py --timeframe 1min --epochs 20
+
+# 15-minute BTC forecasting with predictions saved
+python run_btc_forecasting.py --timeframe 15min --epochs 50 --save_predictions
+
+# 1-hour BTC forecasting with verbose output
+python run_btc_forecasting.py --timeframe 1h --epochs 100 --verbose
+
+# Custom BTC data file
+python run_btc_forecasting.py --csv_path /path/to/your/BTC-USD_data.csv --timeframe 5min --epochs 30
 ```
 
 ### For Daily Stock Market Prediction
@@ -63,6 +78,28 @@ tf_future/
     └── README.md                      # Application documentation
 ```
 
+## 💰 Cryptocurrency Support
+
+The framework now supports cryptocurrency data in various formats:
+
+### Supported Data Formats
+- **BTC-USD Format**: `Datetime,Open,High,Low,Close,Volume,Dividends,Stock Splits`
+- **Yahoo Finance Crypto**: Standard OHLCV with timezone-aware timestamps
+- **Generic OHLCV**: Any CSV with timestamp and OHLCV columns
+
+### Features
+- **24/7 Trading**: No market hours filtering for cryptocurrency data
+- **Auto-Detection**: Automatically detects BTC, ETH, and crypto files
+- **Timezone Handling**: Properly handles UTC and timezone-aware timestamps
+- **Multiple Timeframes**: 1min, 5min, 15min, 1h cryptocurrency forecasting
+
+### Example Data Format
+```csv
+Datetime,Open,High,Low,Close,Volume,Dividends,Stock Splits
+2025-09-03 18:34:00+00:00,112093.55,112093.55,112093.55,112093.55,0,0.0,0.0
+2025-09-03 18:35:00+00:00,112153.06,112153.06,112153.06,112153.06,0,0.0,0.0
+```
+
 ## ✨ Key Features
 
 ### 🧠 Generic TF Predictor Library (`tf_predictor/`)
@@ -78,9 +115,10 @@ tf_future/
 - **CLI Interface**: Ready-to-use command-line application.
 
 ### 📊 Intraday Forecasting Application (`intraday_forecasting/`)
-- **High-Frequency**: Minute-level forecasting for US & India markets.
+- **Multi-Market**: US, India stock markets & cryptocurrency (24/7 trading).
 - **Intraday Patterns**: Models time-of-day, market sessions, and microstructure.
 - **Multi-Timeframe**: Supports 1min, 5min, 15min, and 1h frequencies.
+- **Crypto Support**: BTC-USD and other cryptocurrency data formats.
 - **Live Trading Ready**: Designed for real-time prediction scenarios.
 
 ## 💻 Programmatic API
@@ -139,7 +177,8 @@ predictor.fit(train_df, val_df, epochs=50)
 - **Intraday Forecasting** (with `intraday_forecasting/`):
     - Minute-level price and volume moves
     - Order flow and market microstructure analysis
-    - Multi-market (US, India) and multi-timeframe (1min, 5min, 1h) prediction
+    - Multi-market (US, India, Crypto) and multi-timeframe (1min, 5min, 15min, 1h) prediction
+    - Cryptocurrency trading (24/7 BTC-USD, ETH-USD, etc.)
 
 ## 📚 Documentation
 

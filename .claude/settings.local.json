@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(PYTHONPATH=. python tf_predictor/tests/test_core.py)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(PYTHONPATH=. venv/bin/python stock_forecasting/tests/test_stock.py)",
+      "Bash(PYTHONPATH=. venv/bin/python intraday_forecasting/tests/test_intraday.py)",
+      "Read(//home/ubuntu/chinmay/code/get_stock_data/downloaded_data/**)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []

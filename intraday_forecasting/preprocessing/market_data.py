@@ -15,29 +15,34 @@ from .timeframe_utils import prepare_intraday_data, get_timeframe_config
 from .intraday_features import create_intraday_features
 
 
-def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp', 
+def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
                       validate: bool = True) -> pd.DataFrame:
     """
     Load intraday data from CSV file.
-    
+
+    Supports various formats including:
+    - Standard OHLCV format with timestamp column
+    - BTC-USD format with Datetime, OHLCV, Dividends, Stock Splits columns
+    - Yahoo Finance format
+
     Args:
         file_path: Path to CSV file with intraday data
         timestamp_col: Name of timestamp column
         validate: Whether to validate data format
-        
+
     Returns:
         DataFrame with loaded intraday data
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Data file not found: {file_path}")
-    
+
     # Load CSV
     df = pd.read_csv(file_path)
-    
+
     # Map common column name variations to standard lowercase names
     column_mapping = {
         'Datetime': 'timestamp',
-        'Date': 'timestamp', 
+        'Date': 'timestamp',
         'Time': 'timestamp',
         'Open': 'open',
         'High': 'high',
@@ -46,22 +51,32 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
         'Volume': 'volume',
         'Vol': 'volume'
     }
-    
+
     # Apply column mapping
     df.rename(columns=column_mapping, inplace=True)
-    
+
+    # Handle BTC-USD format - remove extra columns not needed for forecasting
+    extra_columns_to_remove = ['Dividends', 'Stock Splits', 'dividends', 'stock_splits']
+    for col in extra_columns_to_remove:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
     # Validate required columns
     required_cols = [timestamp_col, 'open', 'high', 'low', 'close', 'volume']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
-        raise ValueError(f"Missing required columns: {missing_cols}")
-    
-    # Convert timestamp to datetime
+        raise ValueError(f"Missing required columns: {missing_cols}. Available columns: {list(df.columns)}")
+
+    # Convert timestamp to datetime and handle timezone-aware timestamps
     df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-    
+
+    # Convert timezone-aware timestamps to UTC and then remove timezone for consistency
+    if df[timestamp_col].dt.tz is not None:
+        df[timestamp_col] = df[timestamp_col].dt.tz_convert('UTC').dt.tz_localize(None)
+
     if validate:
         df = validate_intraday_data(df, timestamp_col)
-    
+
     return df
 
 
