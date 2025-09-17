@@ -45,6 +45,10 @@ class TimeSeriesPredictor(ABC):
         # Training history
         self.history = {'train_loss': [], 'val_loss': []}
         self.verbose = False  # Will be set during training
+
+        # Feature caching to avoid recomputation
+        self._feature_cache = {}
+        self._cache_enabled = True
     
     @abstractmethod
     def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
@@ -60,17 +64,34 @@ class TimeSeriesPredictor(ABC):
         """
         pass
     
+    def _get_dataframe_hash(self, df: pd.DataFrame) -> str:
+        """Generate a hash key for DataFrame caching."""
+        import hashlib
+        # Use shape, column names, and sample of data for hash
+        key_data = f"{df.shape}_{list(df.columns)}_{df.iloc[0].to_dict() if len(df) > 0 else {}}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+
     def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
         Prepare features by calling domain-specific feature creation and handling scaling.
-        
+        Uses caching to avoid recomputing features for the same data.
+
         Args:
             df: DataFrame with raw data
             fit_scaler: Whether to fit the scaler (True for training data)
-            
+
         Returns:
             processed_df: DataFrame with scaled features
         """
+        # Generate cache key
+        cache_key = f"{self._get_dataframe_hash(df)}_{fit_scaler}"
+
+        # Check cache first
+        if self._cache_enabled and cache_key in self._feature_cache:
+            if self.verbose:
+                print(f"   Using cached features for dataset ({len(df)} rows)")
+            return self._feature_cache[cache_key].copy()
+
         # Create domain-specific features
         df_processed = self.create_features(df, fit_scaler)
         
@@ -110,9 +131,30 @@ class TimeSeriesPredictor(ABC):
                 df_processed[self.feature_columns] = self.scaler.fit_transform(df_processed[self.feature_columns])
             else:
                 df_processed[self.feature_columns] = self.scaler.transform(df_processed[self.feature_columns])
-        
+
+        # Cache the result
+        if self._cache_enabled:
+            self._feature_cache[cache_key] = df_processed.copy()
+            if self.verbose:
+                print(f"   Cached features for dataset ({len(df)} rows)")
+
         return df_processed
-    
+
+    def clear_feature_cache(self):
+        """Clear the feature cache to free memory."""
+        self._feature_cache.clear()
+        if self.verbose:
+            print("   Feature cache cleared")
+
+    def disable_feature_cache(self):
+        """Disable feature caching."""
+        self._cache_enabled = False
+        self.clear_feature_cache()
+
+    def enable_feature_cache(self):
+        """Enable feature caching."""
+        self._cache_enabled = True
+
     def prepare_data(self, df: pd.DataFrame, fit_scaler: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Prepare sequential data for model training/inference.
@@ -227,12 +269,16 @@ class TimeSeriesPredictor(ABC):
         
         # Training setup
         dataset = TensorDataset(X_train, y_train)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
+        # Optimize batch size based on data size for better throughput
+        optimal_batch_size = min(batch_size, max(32, len(X_train) // 20))
+        dataloader = DataLoader(dataset, batch_size=optimal_batch_size, shuffle=True, num_workers=0, pin_memory=False)
+
+        # Use more aggressive optimizer settings for faster convergence
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate,
+                                     weight_decay=1e-5, eps=1e-6, betas=(0.9, 0.999))
         criterion = nn.MSELoss()
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=patience//2
+            optimizer, mode='min', factor=0.7, patience=max(2, patience//3), min_lr=1e-6
         )
         
         best_val_loss = float('inf')
@@ -242,50 +288,80 @@ class TimeSeriesPredictor(ABC):
         if verbose:
             print(f"Training FT-Transformer for {self.target_column} prediction")
             print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
-            print(f"Training samples: {len(X_train)}")
+            print(f"Training samples: {len(X_train)} (batch_size: {optimal_batch_size})")
             if X_val is not None:
                 print(f"Validation samples: {len(X_val)}")
-        
-        # Training loop
+
+        # Mixed precision training for speed
+        use_amp = torch.cuda.is_available()
+        scaler = torch.cuda.amp.GradScaler() if use_amp else None
+
+        # Training loop with optimizations
         for epoch in range(epochs):
             # Training
             self.model.train()
             train_loss = 0
             for batch_x, batch_y in dataloader:
-                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
-                
+                batch_x, batch_y = batch_x.to(self.device, non_blocking=True), batch_y.to(self.device, non_blocking=True)
+
                 optimizer.zero_grad()
-                
-                # Handle both sequence and non-sequence models
-                if len(batch_x.shape) == 3:  # Sequence data
-                    outputs = self.model(batch_x).squeeze()
-                else:  # Non-sequence data  
-                    outputs = self.model(batch_x, None).squeeze()  # No categorical features
-                
-                loss = criterion(outputs, batch_y)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                optimizer.step()
-                
+
+                # Use mixed precision training if available
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        if len(batch_x.shape) == 3:  # Sequence data
+                            outputs = self.model(batch_x).squeeze()
+                        else:  # Non-sequence data
+                            outputs = self.model(batch_x, None).squeeze()
+                        loss = criterion(outputs, batch_y)
+
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    # Handle both sequence and non-sequence models
+                    if len(batch_x.shape) == 3:  # Sequence data
+                        outputs = self.model(batch_x).squeeze()
+                    else:  # Non-sequence data
+                        outputs = self.model(batch_x, None).squeeze()
+
+                    loss = criterion(outputs, batch_y)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                    optimizer.step()
+
                 train_loss += loss.item()
             
             avg_train_loss = train_loss / len(dataloader)
             self.history['train_loss'].append(avg_train_loss)
             
-            # Validation
+            # Validation with optimizations
             val_loss = None
             if X_val is not None:
                 self.model.eval()
                 with torch.no_grad():
-                    # Handle both sequence and non-sequence models
-                    if len(X_val.shape) == 3:  # Sequence data
-                        val_outputs = self.model(X_val.to(self.device)).squeeze()
-                    else:  # Non-sequence data
-                        val_outputs = self.model(X_val.to(self.device), None).squeeze()
-                    
-                    val_loss = criterion(val_outputs, y_val.to(self.device)).item()
+                    X_val_device = X_val.to(self.device, non_blocking=True)
+                    y_val_device = y_val.to(self.device, non_blocking=True)
+
+                    # Use mixed precision for validation too
+                    if use_amp:
+                        with torch.cuda.amp.autocast():
+                            if len(X_val.shape) == 3:  # Sequence data
+                                val_outputs = self.model(X_val_device).squeeze()
+                            else:  # Non-sequence data
+                                val_outputs = self.model(X_val_device, None).squeeze()
+                            val_loss = criterion(val_outputs, y_val_device).item()
+                    else:
+                        if len(X_val.shape) == 3:  # Sequence data
+                            val_outputs = self.model(X_val_device).squeeze()
+                        else:  # Non-sequence data
+                            val_outputs = self.model(X_val_device, None).squeeze()
+                        val_loss = criterion(val_outputs, y_val_device).item()
+
                     self.history['val_loss'].append(val_loss)
-                    
+
                 scheduler.step(val_loss)
                 
                 # Early stopping
@@ -301,29 +377,26 @@ class TimeSeriesPredictor(ABC):
             else:
                 scheduler.step(avg_train_loss)
             
-            # Calculate MAPE and MAE for each epoch if verbose
+            # Optimized progress reporting - only detailed metrics occasionally
             if verbose:
-                # Get predictions for validation set to calculate MAPE/MAE
-                if X_val is not None and y_val is not None:
-                    self.model.eval()
-                    with torch.no_grad():
-                        if len(X_val.shape) == 3:  # Sequence data
-                            val_pred_scaled = self.model(X_val.to(self.device)).squeeze()
-                        else:  # Non-sequence data
-                            val_pred_scaled = self.model(X_val.to(self.device), None).squeeze()
-                        
-                        # Transform back to original scale for MAPE/MAE calculation
-                        val_pred_scaled_np = val_pred_scaled.cpu().numpy().reshape(-1, 1)
+                if X_val is not None and val_loss is not None:
+                    # Only calculate detailed metrics every 5 epochs or on last epoch
+                    if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
+                        # Reuse validation outputs to avoid recomputation
+                        val_pred_scaled_np = val_outputs.cpu().numpy().reshape(-1, 1)
                         val_pred = self.target_scaler.inverse_transform(val_pred_scaled_np).flatten()
-                        
-                        val_actual_scaled_np = y_val.cpu().numpy().reshape(-1, 1)
+
+                        val_actual_scaled_np = y_val_device.cpu().numpy().reshape(-1, 1)
                         val_actual = self.target_scaler.inverse_transform(val_actual_scaled_np).flatten()
-                        
+
                         # Calculate MAPE and MAE
                         val_mae = np.mean(np.abs(val_actual - val_pred))
                         val_mape = np.mean(np.abs((val_actual - val_pred) / val_actual)) * 100
-                        
+
                         print(f"Epoch {epoch+1:3d}: Train Loss = {avg_train_loss:.6f}, Val Loss = {val_loss:.6f}, Val MAE = ${val_mae:.2f}, Val MAPE = {val_mape:.2f}%")
+                    else:
+                        # Minimal progress indication
+                        print(f"Epoch {epoch+1:3d}: Train Loss = {avg_train_loss:.6f}, Val Loss = {val_loss:.6f}")
                 else:
                     print(f"Epoch {epoch+1:3d}: Train Loss = {avg_train_loss:.6f}")
         
@@ -357,7 +430,48 @@ class TimeSeriesPredictor(ABC):
             predictions_scaled = predictions_scaled.cpu().numpy().reshape(-1, 1)
             predictions = self.target_scaler.inverse_transform(predictions_scaled)
             return predictions.flatten()
-    
+
+    def predict_from_features(self, df_processed: pd.DataFrame) -> np.ndarray:
+        """
+        Make predictions from already-processed features.
+
+        Args:
+            df_processed: DataFrame with preprocessed features
+
+        Returns:
+            predictions: Numpy array of predictions (in original scale)
+        """
+        if self.model is None:
+            raise RuntimeError("Model must be trained first. Call fit().")
+
+        # Skip feature preprocessing since it's already done
+        from ..preprocessing.time_features import create_sequences
+
+        # Create sequences directly from processed features
+        if self.target_column in df_processed.columns:
+            sequences, _ = create_sequences(df_processed, self.sequence_length, self.target_column)
+        else:
+            # Use first feature as dummy target for sequence creation
+            dummy_target = df_processed[self.feature_columns[0]]
+            temp_df = df_processed.copy()
+            temp_df['__dummy_target__'] = dummy_target
+            sequences, _ = create_sequences(temp_df, self.sequence_length, '__dummy_target__')
+
+        X = torch.tensor(sequences, dtype=torch.float32)
+
+        self.model.eval()
+        with torch.no_grad():
+            if len(X.shape) == 3:  # Sequence data
+                predictions_scaled = self.model(X.to(self.device)).squeeze()
+            else:  # Non-sequence data
+                predictions_scaled = self.model(X.to(self.device), None).squeeze()
+
+            # Transform back to original scale
+            predictions_scaled = predictions_scaled.cpu().numpy().reshape(-1, 1)
+            predictions = self.target_scaler.inverse_transform(predictions_scaled)
+
+        return predictions.flatten()
+
     def evaluate(self, df: pd.DataFrame) -> Dict[str, float]:
         """
         Evaluate model performance.
@@ -391,7 +505,36 @@ class TimeSeriesPredictor(ABC):
         
         from ..core.utils import calculate_metrics
         return calculate_metrics(actual, predictions)
-    
+
+    def evaluate_from_features(self, df_processed: pd.DataFrame) -> Dict[str, float]:
+        """
+        Evaluate model performance from already-processed features.
+
+        Args:
+            df_processed: DataFrame with preprocessed features
+
+        Returns:
+            metrics: Dictionary of evaluation metrics
+        """
+        if self.target_column not in df_processed.columns:
+            raise ValueError(f"Target column '{self.target_column}' not found in processed features")
+
+        predictions = self.predict_from_features(df_processed)
+
+        # For sequences, align actual values with predictions
+        if hasattr(df_processed, 'iloc'):
+            actual = df_processed[self.target_column].iloc[self.sequence_length:self.sequence_length + len(predictions)].values
+        else:
+            actual = df_processed[self.target_column].values
+
+        # Ensure same length (take minimum to be safe)
+        min_len = min(len(actual), len(predictions))
+        actual = actual[:min_len]
+        predictions = predictions[:min_len]
+
+        from ..core.utils import calculate_metrics
+        return calculate_metrics(actual, predictions)
+
     def save(self, path: str):
         """Save the trained model and preprocessors."""
         if self.model is None:

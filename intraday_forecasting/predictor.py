@@ -99,6 +99,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             target_column=self.target_column,
             timestamp_col=self.timestamp_col,
             country=self.country,
+            timeframe=self.timeframe,
             verbose=self.verbose
         )
     

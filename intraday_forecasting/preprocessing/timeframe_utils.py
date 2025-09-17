@@ -57,7 +57,7 @@ TIMEFRAME_CONFIG = {
         'description': '15-minute bars'
     },
     '1h': {
-        'resample_rule': '1H',
+        'resample_rule': '1h',
         'sequence_length': 12,   # 12 hours of hourly bars
         'description': '1-hour bars'
     }

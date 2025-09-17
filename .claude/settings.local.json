@@ -6,7 +6,8 @@
       "Bash(PYTHONPATH=. venv/bin/python stock_forecasting/tests/test_stock.py)",
       "Bash(PYTHONPATH=. venv/bin/python intraday_forecasting/tests/test_intraday.py)",
       "Read(//home/ubuntu/chinmay/code/get_stock_data/downloaded_data/**)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Read(//Users/chinmay/code/get_stock_data/downloaded_data/**)"
     ],
     "deny": [],
     "ask": []

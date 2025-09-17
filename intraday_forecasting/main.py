@@ -36,7 +36,7 @@ else:
     from tf_predictor.core.utils import split_time_series
 
 
-def create_intraday_visualizations(predictor, train_df, test_df, output_dir="outputs", future_predictions=None, args=None):
+def create_intraday_visualizations(predictor, train_df, test_df, output_dir="outputs", future_predictions=None, args=None, train_features=None, test_features=None):
     """
     Create intraday-specific visualizations.
 
@@ -59,21 +59,36 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         # Create output directory
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
-        # Get predictions
-        train_predictions = predictor.predict(train_df)
-        test_predictions = predictor.predict(test_df) if test_df is not None else None
-        
+        # Get predictions using optimized method (reuse cached features if available)
+        if train_features is not None:
+            # Use provided cached features
+            train_predictions = predictor.predict_from_features(train_features)
+            train_processed = train_features
+        else:
+            # Fall back to regular prediction
+            train_predictions = predictor.predict(train_df)
+            train_processed = predictor.prepare_features(train_df, fit_scaler=False)
+
+        if test_df is not None:
+            if test_features is not None:
+                test_predictions = predictor.predict_from_features(test_features)
+                test_processed = test_features
+            else:
+                test_predictions = predictor.predict(test_df)
+                test_processed = predictor.prepare_features(test_df, fit_scaler=False)
+        else:
+            test_predictions = None
+            test_processed = None
+
         # Get timestamps for plotting
         train_timestamps = train_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
         if test_df is not None:
             test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
-        
+
         # Get actual values
-        train_processed = predictor.prepare_features(train_df, fit_scaler=False)
         train_actual = train_processed[predictor.target_column].iloc[predictor.sequence_length:]
-        
-        if test_df is not None:
-            test_processed = predictor.prepare_features(test_df, fit_scaler=False)
+
+        if test_df is not None and test_processed is not None:
             test_actual = test_processed[predictor.target_column].iloc[predictor.sequence_length:]
         
         # Create comprehensive plot
@@ -362,19 +377,25 @@ def main():
     print(f"\n💾 Saving model...")
     model.save(args.model_path)
     
-    # 7. Evaluate Model
+    # 7. Evaluate Model (optimized with cached features)
     print(f"\n📈 Evaluating model...")
-    
-    # Train metrics
-    train_metrics = model.evaluate(train_df)
+
+    # Prepare features once and cache them
+    print("   Preparing features for evaluation...")
+    train_features = model.prepare_features(train_df, fit_scaler=False)
+    if test_df is not None and len(test_df) > 0:
+        test_features = model.prepare_features(test_df, fit_scaler=False)
+
+    # Train metrics using cached features
+    train_metrics = model.evaluate_from_features(train_features)
     print(f"\n   Training Metrics:")
     for metric, value in train_metrics.items():
         if not np.isnan(value):
             print(f"   - {metric}: {value:.4f}")
-    
-    # Test metrics
+
+    # Test metrics using cached features
     if test_df is not None and len(test_df) > 0:
-        test_metrics = model.evaluate(test_df)
+        test_metrics = model.evaluate_from_features(test_features)
         print(f"\n   Test Metrics:")
         for metric, value in test_metrics.items():
             if not np.isnan(value):
@@ -405,7 +426,10 @@ def main():
         print(f"\n📊 Generating intraday visualizations...")
         
         try:
-            saved_files = create_intraday_visualizations(model, train_df, test_df, "outputs", future_predictions, args)
+            # Pass cached features to visualization function
+            cached_train_features = train_features if 'train_features' in locals() else None
+            cached_test_features = test_features if 'test_features' in locals() else None
+            saved_files = create_intraday_visualizations(model, train_df, test_df, "outputs", future_predictions, args, cached_train_features, cached_test_features)
             
             if saved_files:
                 if 'plot' in saved_files:
