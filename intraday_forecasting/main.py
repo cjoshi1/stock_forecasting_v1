@@ -36,7 +36,7 @@ else:
     from tf_predictor.core.utils import split_time_series
 
 
-def create_intraday_visualizations(predictor, train_df, test_df, output_dir="outputs", future_predictions=None, args=None, train_features=None, test_features=None):
+def create_intraday_visualizations(predictor, train_df, test_df, output_dir="outputs", future_predictions=None, args=None, train_features=None, test_features=None, val_df=None, val_features=None, train_metrics=None, val_metrics=None, test_metrics=None):
     """
     Create intraday-specific visualizations.
 
@@ -47,6 +47,13 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         output_dir: Output directory for plots
         future_predictions: DataFrame with future predictions (optional)
         args: Command line arguments for crypto detection
+        train_features: Preprocessed training features (optional)
+        test_features: Preprocessed test features (optional)
+        val_df: Validation data (optional)
+        val_features: Preprocessed validation features (optional)
+        train_metrics: Training metrics dictionary (optional)
+        val_metrics: Validation metrics dictionary (optional)
+        test_metrics: Test metrics dictionary (optional)
 
     Returns:
         Dictionary with paths to created files
@@ -69,6 +76,18 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
             train_predictions = predictor.predict(train_df)
             train_processed = predictor.prepare_features(train_df, fit_scaler=False)
 
+        # Handle validation data
+        if val_df is not None:
+            if val_features is not None:
+                val_predictions = predictor.predict_from_features(val_features)
+                val_processed = val_features
+            else:
+                val_predictions = predictor.predict(val_df)
+                val_processed = predictor.prepare_features(val_df, fit_scaler=False)
+        else:
+            val_predictions = None
+            val_processed = None
+
         if test_df is not None:
             if test_features is not None:
                 test_predictions = predictor.predict_from_features(test_features)
@@ -82,12 +101,15 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
 
         # Get timestamps for plotting
         train_timestamps = train_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
+        if val_df is not None:
+            val_timestamps = val_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
         if test_df is not None:
             test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
 
         # Get actual values
         train_actual = train_processed[predictor.target_column].iloc[predictor.sequence_length:]
-
+        if val_df is not None and val_processed is not None:
+            val_actual = val_processed[predictor.target_column].iloc[predictor.sequence_length:]
         if test_df is not None and test_processed is not None:
             test_actual = test_processed[predictor.target_column].iloc[predictor.sequence_length:]
         
@@ -155,37 +177,87 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        # Save predictions to CSV
-        csv_data = {
+        # Save enhanced predictions to CSV with data split indicators and metrics
+        data_frames = []
+
+        # Add training data
+        train_csv_data = pd.DataFrame({
             predictor.timestamp_col: train_timestamps,
             f'actual_{predictor.target_column}': train_actual[:len(train_predictions)],
-            f'predicted_{predictor.target_column}': train_predictions[:len(train_actual)]
-        }
-        
-        data_frames = [pd.DataFrame(csv_data)]
+            f'predicted_{predictor.target_column}': train_predictions[:len(train_actual)],
+            'data_split': 'train'
+        })
+        data_frames.append(train_csv_data)
 
+        # Add validation data if available
+        if val_predictions is not None and len(val_predictions) > 0:
+            val_csv_data = pd.DataFrame({
+                predictor.timestamp_col: val_timestamps,
+                f'actual_{predictor.target_column}': val_actual[:len(val_predictions)],
+                f'predicted_{predictor.target_column}': val_predictions[:len(val_actual)],
+                'data_split': 'validation'
+            })
+            data_frames.append(val_csv_data)
+
+        # Add test data if available
         if test_predictions is not None and len(test_predictions) > 0:
-            # Add test data
             test_csv_data = pd.DataFrame({
                 predictor.timestamp_col: test_timestamps,
                 f'actual_{predictor.target_column}': test_actual[:len(test_predictions)],
-                f'predicted_{predictor.target_column}': test_predictions[:len(test_actual)]
+                f'predicted_{predictor.target_column}': test_predictions[:len(test_actual)],
+                'data_split': 'test'
             })
             data_frames.append(test_csv_data)
 
-        # Add future predictions to the same CSV
+        # Add future predictions if available
         if future_predictions is not None and len(future_predictions) > 0:
             future_csv_data = pd.DataFrame({
                 predictor.timestamp_col: future_predictions[predictor.timestamp_col],
                 f'actual_{predictor.target_column}': None,  # No actual values for future
-                f'predicted_{predictor.target_column}': future_predictions[f'predicted_{predictor.target_column}']
+                f'predicted_{predictor.target_column}': future_predictions[f'predicted_{predictor.target_column}'],
+                'data_split': 'future'
             })
             data_frames.append(future_csv_data)
 
+        # Combine all data
         combined_data = pd.concat(data_frames, ignore_index=True)
-        
+
+        # Create enhanced CSV with metrics header
         csv_path = os.path.join(output_dir, f'intraday_predictions_{timestamp}.csv')
-        combined_data.to_csv(csv_path, index=False)
+
+        # Write metrics header and then the data
+        with open(csv_path, 'w') as f:
+            # Write metrics summary as comments
+            f.write("# METRICS SUMMARY\n")
+            f.write("# Dataset,MAE,MSE,RMSE,MAPE,R2,Directional_Accuracy\n")
+
+            # Helper function to format metric value
+            def format_metric(value):
+                if value is None:
+                    return 'N/A'
+                try:
+                    if np.isnan(value) or np.isinf(value):
+                        return 'N/A'
+                    return f"{value:.4f}"
+                except (TypeError, ValueError):
+                    return 'N/A'
+
+            # Write train metrics
+            if train_metrics:
+                f.write(f"# Train,{format_metric(train_metrics.get('MAE'))},{format_metric(train_metrics.get('MSE'))},{format_metric(train_metrics.get('RMSE'))},{format_metric(train_metrics.get('MAPE'))},{format_metric(train_metrics.get('R2'))},{format_metric(train_metrics.get('Directional_Accuracy'))}\n")
+
+            # Write validation metrics if available
+            if val_metrics:
+                f.write(f"# Validation,{format_metric(val_metrics.get('MAE'))},{format_metric(val_metrics.get('MSE'))},{format_metric(val_metrics.get('RMSE'))},{format_metric(val_metrics.get('MAPE'))},{format_metric(val_metrics.get('R2'))},{format_metric(val_metrics.get('Directional_Accuracy'))}\n")
+
+            # Write test metrics if available
+            if test_metrics:
+                f.write(f"# Test,{format_metric(test_metrics.get('MAE'))},{format_metric(test_metrics.get('MSE'))},{format_metric(test_metrics.get('RMSE'))},{format_metric(test_metrics.get('MAPE'))},{format_metric(test_metrics.get('R2'))},{format_metric(test_metrics.get('Directional_Accuracy'))}\n")
+
+            f.write("#\n")  # Separator line
+
+        # Append the actual data
+        combined_data.to_csv(csv_path, mode='a', index=False)
         
         return {
             'plot': plot_path,
@@ -211,6 +283,9 @@ def main():
     parser.add_argument('--timeframe', type=str, default='5min',
                        choices=['1min', '5min', '15min', '1h'],
                        help='Trading timeframe for prediction')
+    parser.add_argument('--model_type', type=str, default='ft',
+                       choices=['ft', 'csn'],
+                       help='Model architecture (ft=FT-Transformer, csn=CSNTransformer)')
     parser.add_argument('--country', type=str, default='US',
                        choices=['US', 'INDIA', 'CRYPTO'],
                        help='Country market (US, INDIA, or CRYPTO for 24/7 cryptocurrency trading)')
@@ -343,6 +418,7 @@ def main():
     model = IntradayPredictor(
         target_column=args.target,
         timeframe=args.timeframe,
+        model_type=args.model_type,
         country=args.country,
         sequence_length=sequence_length,
         d_token=args.d_token,
@@ -383,8 +459,14 @@ def main():
     # Prepare features once and cache them
     print("   Preparing features for evaluation...")
     train_features = model.prepare_features(train_df, fit_scaler=False)
+    if val_df is not None and len(val_df) > 0:
+        val_features = model.prepare_features(val_df, fit_scaler=False)
+    else:
+        val_features = None
     if test_df is not None and len(test_df) > 0:
         test_features = model.prepare_features(test_df, fit_scaler=False)
+    else:
+        test_features = None
 
     # Train metrics using cached features
     train_metrics = model.evaluate_from_features(train_features)
@@ -393,8 +475,18 @@ def main():
         if not np.isnan(value):
             print(f"   - {metric}: {value:.4f}")
 
+    # Validation metrics using cached features
+    val_metrics = None
+    if val_features is not None:
+        val_metrics = model.evaluate_from_features(val_features)
+        print(f"\n   Validation Metrics:")
+        for metric, value in val_metrics.items():
+            if not np.isnan(value):
+                print(f"   - {metric}: {value:.4f}")
+
     # Test metrics using cached features
-    if test_df is not None and len(test_df) > 0:
+    test_metrics = None
+    if test_features is not None:
         test_metrics = model.evaluate_from_features(test_features)
         print(f"\n   Test Metrics:")
         for metric, value in test_metrics.items():
@@ -426,10 +518,15 @@ def main():
         print(f"\n📊 Generating intraday visualizations...")
         
         try:
-            # Pass cached features to visualization function
+            # Pass cached features and metrics to visualization function
             cached_train_features = train_features if 'train_features' in locals() else None
+            cached_val_features = val_features if 'val_features' in locals() else None
             cached_test_features = test_features if 'test_features' in locals() else None
-            saved_files = create_intraday_visualizations(model, train_df, test_df, "outputs", future_predictions, args, cached_train_features, cached_test_features)
+            saved_files = create_intraday_visualizations(
+                model, train_df, test_df, "outputs", future_predictions, args,
+                cached_train_features, cached_test_features, val_df, cached_val_features,
+                train_metrics, val_metrics, test_metrics
+            )
             
             if saved_files:
                 if 'plot' in saved_files:

@@ -27,16 +27,17 @@ class IntradayPredictor(TimeSeriesPredictor):
     time-of-day effects, and market microstructure features.
     """
     
-    def __init__(self, target_column: str = 'close', timeframe: str = '5min',
+    def __init__(self, target_column: str = 'close', timeframe: str = '5min', model_type: str = 'ft',
                  timestamp_col: str = 'timestamp', country: str = 'US',
                  d_token: int = 128, n_layers: int = 3, n_heads: int = 8, 
                  dropout: float = 0.1, verbose: bool = False, **kwargs):
         """
         Initialize IntradayPredictor.
-        
+
         Args:
             target_column: Column to predict
             timeframe: Trading timeframe ('1min', '5min', '15min', '1h')
+            model_type: Model architecture ('ft' for FT-Transformer, 'csn' for CSNTransformer)
             timestamp_col: Name of timestamp column
             country: Country code ('US' or 'INDIA')
             d_token: Token embedding dimension
@@ -49,35 +50,60 @@ class IntradayPredictor(TimeSeriesPredictor):
         # Validate country
         if not validate_country(country):
             raise ValueError(f"Unsupported country: {country}. Use: US or INDIA")
-        
+
+        # Validate model type
+        if model_type not in ['ft', 'csn']:
+            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft' or 'csn'")
+
         # Get timeframe-specific configuration
         self.timeframe = timeframe
         self.timestamp_col = timestamp_col
         self.country = country
         config = get_timeframe_config(timeframe)
         market_config = get_country_market_hours(country)
-        
+
         # Use timeframe-specific sequence length if not provided
         sequence_length = kwargs.pop('sequence_length', config['sequence_length'])
-        
-        # Initialize base predictor
-        super().__init__(
-            target_column=target_column,
-            sequence_length=sequence_length,
-            d_token=d_token,
-            n_layers=n_layers,
-            n_heads=n_heads,
-            dropout=dropout,
-            verbose=verbose,
-            **kwargs
-        )
+
+        # Store model type for later use
+        self.model_type = model_type
+
+        # Initialize base predictor based on model_type
+        if model_type == 'csn':
+            from tf_predictor.core.csn_predictor import CSNPredictor
+            # Initialize CSNPredictor directly
+            CSNPredictor.__init__(
+                self,
+                target_column=target_column,
+                sequence_length=sequence_length,
+                d_model=d_token,  # CSNPredictor uses d_model instead of d_token
+                n_layers=n_layers,
+                n_heads=n_heads,
+                dropout=dropout,
+                verbose=verbose,
+                **kwargs
+            )
+        else:
+            # Default to FT-Transformer
+            super().__init__(
+                target_column=target_column,
+                sequence_length=sequence_length,
+                d_token=d_token,
+                n_layers=n_layers,
+                n_heads=n_heads,
+                dropout=dropout,
+                verbose=verbose,
+                **kwargs
+            )
         
         self.timeframe_config = config
         self.market_config = market_config
         
         if verbose:
+            model_name = "CSNTransformer" if model_type == 'csn' else "FT-Transformer"
             print(f"Initialized IntradayPredictor for {timeframe} forecasting")
             print(f"  - Target: {target_column}")
+            print(f"  - Model Type: {model_name}")
             print(f"  - Country: {country} ({market_config['description']})")
             print(f"  - Market Hours: {market_config['open']} - {market_config['close']}")
             print(f"  - Sequence length: {sequence_length} {timeframe} bars")

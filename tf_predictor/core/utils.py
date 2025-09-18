@@ -34,10 +34,15 @@ def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float
     mse = np.mean((y_true - y_pred) ** 2)
     rmse = np.sqrt(mse)
     
-    # MAPE (handle division by zero)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-        mape = np.nan_to_num(mape, nan=float('inf'))
+    # MAPE (handle division by zero by excluding zero values)
+    # Only calculate MAPE for non-zero actual values to avoid division by zero
+    non_zero_mask = y_true != 0
+    if np.any(non_zero_mask):
+        mape_values = np.abs((y_true[non_zero_mask] - y_pred[non_zero_mask]) / y_true[non_zero_mask])
+        mape = np.mean(mape_values) * 100
+    else:
+        # If all actual values are zero, MAPE is undefined
+        mape = float('nan')
     
     # R-squared
     ss_res = np.sum((y_true - y_pred) ** 2)

@@ -42,7 +42,7 @@ def categorize_features(all_features: List[str], essential_features: List[str]) 
 
 def create_essential_features(df: pd.DataFrame, timestamp_col: str = 'timestamp', timeframe: str = '5min') -> pd.DataFrame:
     """
-    Create essential features: volume + lnvwap + cyclical time features.
+    Create essential features: volume + vwap + cyclical time features.
 
     Args:
         df: DataFrame with OHLCV data and timestamp
@@ -57,12 +57,12 @@ def create_essential_features(df: pd.DataFrame, timestamp_col: str = 'timestamp'
     # 1. Keep volume as is (already essential)
     # Volume is already in df, no need to create
 
-    # 2. Add lnvwap = ln(average(high, low, close)) - only if OHLC columns exist
+    # 2. Add vwap = average(high, low, close) - only if OHLC columns exist
     if all(col in df_processed.columns for col in ['high', 'low', 'close']):
         typical_price = (df_processed['high'] + df_processed['low'] + df_processed['close']) / 3
-        df_processed['lnvwap'] = np.log(typical_price)
-    elif 'lnvwap' not in df_processed.columns:
-        raise ValueError("Cannot create lnvwap: OHLC columns not found and lnvwap not already present")
+        df_processed['vwap'] = typical_price
+    elif 'vwap' not in df_processed.columns:
+        raise ValueError("Cannot create vwap: OHLC columns not found and vwap not already present")
 
     # 3. Add essential cyclical time features by calling tf_predictor
     # For hourly timeframe, exclude minute features (always minute=0)
@@ -81,16 +81,16 @@ def create_essential_features(df: pd.DataFrame, timestamp_col: str = 'timestamp'
     time_features_to_drop = ['minute', 'hour', 'dayofweek', 'is_weekend']
     df_processed = df_processed.drop(columns=[col for col in time_features_to_drop if col in df_processed.columns])
 
-    # 4. Create future target column (lnvwap shifted by +1 timestamp)
-    df_processed['lnvwap_target'] = df_processed['lnvwap'].shift(-1)
+    # 4. Create future target column (vwap shifted by +1 timestamp)
+    df_processed['vwap_target'] = df_processed['vwap'].shift(-1)
 
     # Keep only essential features + timestamp + target (conditional on timeframe)
     if timeframe == '1h':
-        essential_features = ['volume', 'lnvwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
+        essential_features = ['volume', 'vwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
     else:
-        essential_features = ['volume', 'lnvwap', 'minute_sin', 'minute_cos', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
+        essential_features = ['volume', 'vwap', 'minute_sin', 'minute_cos', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
 
-    columns_to_keep = [timestamp_col] + essential_features + ['lnvwap_target']
+    columns_to_keep = [timestamp_col] + essential_features + ['vwap_target']
     df_processed = df_processed[columns_to_keep]
 
     return df_processed
@@ -298,7 +298,7 @@ def create_intraday_features(df: pd.DataFrame, target_column: str = 'close',
         country: Country code ('US' or 'INDIA')
         timeframe: Trading timeframe ('1min', '5min', '15min', '1h')
         verbose: Whether to print feature creation steps
-        use_essential_only: If True, only create essential features (volume + lnvwap + cyclical time)
+        use_essential_only: If True, only create essential features (volume + vwap + cyclical time)
         return_categories: If True, return feature categories along with DataFrame
 
     Returns:
@@ -314,13 +314,13 @@ def create_intraday_features(df: pd.DataFrame, target_column: str = 'close',
     if use_essential_only:
         # Only create essential features
         if verbose:
-            print("  ✓ Creating essential features (volume + lnvwap + cyclical time)...")
+            print("  ✓ Creating essential features (volume + vwap + cyclical time)...")
         df_processed = create_essential_features(df_processed, timestamp_col, timeframe)
         # Essential features depend on timeframe
         if timeframe == '1h':
-            all_categories['essential'] = ['volume', 'lnvwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
+            all_categories['essential'] = ['volume', 'vwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
         else:
-            all_categories['essential'] = ['volume', 'lnvwap', 'minute_sin', 'minute_cos', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
+            all_categories['essential'] = ['volume', 'vwap', 'minute_sin', 'minute_cos', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
     else:
         # Create all features (existing logic)
         # 1. Essential features first
@@ -329,9 +329,9 @@ def create_intraday_features(df: pd.DataFrame, target_column: str = 'close',
         df_processed = create_essential_features(df_processed, timestamp_col, timeframe)
         # Essential features depend on timeframe
         if timeframe == '1h':
-            all_categories['essential'] = ['volume', 'lnvwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
+            all_categories['essential'] = ['volume', 'vwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
         else:
-            all_categories['essential'] = ['volume', 'lnvwap', 'minute_sin', 'minute_cos', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
+            all_categories['essential'] = ['volume', 'vwap', 'minute_sin', 'minute_cos', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
 
         # 2. Time-based features
         if verbose:
