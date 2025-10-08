@@ -76,6 +76,25 @@ predictions = predictor.predict(test_df)
 metrics = predictor.evaluate(test_df)
 ```
 
+### 3. Multi-Horizon Predictions
+
+```python
+# Predict multiple steps ahead simultaneously
+multi_predictor = MyPredictor(
+    target_column='value',
+    sequence_length=7,
+    prediction_horizon=3  # Predict 3 steps ahead
+)
+
+# Train the model
+multi_predictor.fit(train_df, val_df, epochs=100)
+
+# Get predictions for all 3 horizons
+predictions = multi_predictor.predict(test_df)
+# predictions shape: (n_samples, 3) for 3 horizons
+print(f"Predictions shape: {predictions.shape}")
+```
+
 ## 📚 Core Components
 
 ### TimeSeriesPredictor (Abstract Base Class)
@@ -134,7 +153,8 @@ from tf_predictor.core.utils import (
 ### Model Parameters
 - `target_column`: Column to predict
 - `sequence_length`: Number of time steps to use as input (default: 5)
-- `d_token`: Token embedding dimension (default: 192)  
+- `prediction_horizon`: Number of steps ahead to predict (default: 1, >1 for multi-horizon)
+- `d_token`: Token embedding dimension (default: 192)
 - `n_layers`: Number of transformer layers (default: 3)
 - `n_heads`: Number of attention heads (default: 8)
 - `dropout`: Dropout rate (default: 0.1)
@@ -193,7 +213,7 @@ Comprehensive evaluation with `calculate_metrics()`:
 predictor.save('my_model.pt')
 
 # Load model later
-new_predictor = MyPredictor(target_column='value', sequence_length=7)
+new_predictor = MyPredictor(target_column='value', sequence_length=7, prediction_horizon=1)
 new_predictor.load('my_model.pt')
 predictions = new_predictor.predict(new_data)
 ```

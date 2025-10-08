@@ -21,18 +21,36 @@ class SimpleTestPredictor(TimeSeriesPredictor):
     def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """Simple feature engineering - just use numeric columns."""
         df_processed = df.copy()
-        
+
         # Add date features if date column exists
         if 'date' in df_processed.columns:
             df_processed = create_date_features(df_processed, 'date')
-            
+
         # Add some basic features
         if 'value' in df_processed.columns:
             df_processed['value_lag_1'] = df_processed['value'].shift(1)
             df_processed['value_ma_3'] = df_processed['value'].rolling(3).mean()
-            
+
         # Fill NaN values
         df_processed = df_processed.fillna(0)
+
+        # Create target variable(s) based on prediction horizon
+        # Use target_column attribute since that's what's available in base class
+        original_target = getattr(self, 'original_target_column', self.target_column)
+        if self.prediction_horizon == 1:
+            # Single horizon
+            target_col = f"{original_target}_target_h1"
+            df_processed[target_col] = df_processed[original_target].shift(-1)
+            df_processed = df_processed.dropna(subset=[target_col])
+        else:
+            # Multi-horizon
+            target_columns = []
+            for h in range(1, self.prediction_horizon + 1):
+                col_name = f"{original_target}_target_h{h}"
+                df_processed[col_name] = df_processed[original_target].shift(-h)
+                target_columns.append(col_name)
+            df_processed = df_processed.dropna(subset=target_columns)
+
         return df_processed
 
 
@@ -230,9 +248,10 @@ class TestTimeSeriesPredictor:
         predictor = SimpleTestPredictor(target_column='value', sequence_length=5)
         
         X, y = predictor.prepare_data(df, fit_scaler=True)
-        
-        # Check shapes
-        expected_samples = len(df) - predictor.sequence_length
+
+        # Check shapes - account for sequence length and target shift
+        # With sequence_length=5 and target shift of 1, we lose sequence_length + target_shift rows
+        expected_samples = len(df) - predictor.sequence_length - predictor.prediction_horizon
         assert X.shape[0] == expected_samples
         assert X.shape[1] == predictor.sequence_length
         assert y.shape[0] == expected_samples

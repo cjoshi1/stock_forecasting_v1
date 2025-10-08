@@ -4,6 +4,7 @@ A specialized high-frequency trading forecasting system using the TF Predictor (
 
 ## 🎯 Features
 
+- **Multi-Horizon Prediction**: Predict 1, 2, 3+ time periods ahead simultaneously
 - **Multi-Country Support**: US and India markets with specific trading hours
 - **Multiple Timeframes**: 1min, 5min, 15min, 1h trading frequencies
 - **Market Hours Filtering**: Automatic filtering for each country's trading hours
@@ -37,6 +38,7 @@ predictor = IntradayPredictor(
     target_column='close',
     timeframe='5min',
     country='US',  # or 'INDIA'
+    prediction_horizon=1,  # Predict 1 step ahead (can use 2, 3+ for multi-horizon)
     d_token=128,
     n_layers=3,
     n_heads=8
@@ -128,7 +130,8 @@ python main.py --use_sample_data --timeframe 5min --country US --target volume -
 
 ### Model Parameters
 - `target_column`: What to predict ('close', 'open', 'high', 'low', 'volume')
-- `timeframe`: Trading frequency ('1min', '5min', '15min', '1h')  
+- `timeframe`: Trading frequency ('1min', '5min', '15min', '1h')
+- `prediction_horizon`: Number of periods ahead to predict (default: 1, >1 for multi-horizon)
 - `sequence_length`: Historical periods to use (auto-configured per timeframe)
 - `d_token`: Token embedding dimension (32-512, default: 128)
 - `n_layers`: Transformer layers (1-8, default: 3)
@@ -223,7 +226,27 @@ volume_predictor.fit(train_df, val_df, epochs=30)
 volume_predictions = volume_predictor.predict(test_df)
 ```
 
-### 4. Real-time Predictions
+### 4. Multi-Horizon Intraday Prediction
+
+```python
+# Predict multiple periods ahead simultaneously
+multi_predictor = IntradayPredictor(
+    target_column='close',
+    timeframe='5min',
+    country='US',
+    prediction_horizon=3  # Predict 3 periods ahead (15 minutes total)
+)
+
+# Train on data
+multi_predictor.fit(train_df, val_df, epochs=50)
+
+# Get predictions for all 3 horizons
+predictions = multi_predictor.predict(test_df)
+# predictions shape: (n_samples, 3) for 3 horizons
+print(f"Multi-horizon predictions shape: {predictions.shape}")
+```
+
+### 5. Real-time Predictions
 
 ```python
 # Load recent intraday data
@@ -234,7 +257,7 @@ df = load_intraday_data('recent_data.csv')
 # Initialize predictor for specific market
 predictor = IntradayPredictor(
     target_column='close',
-    timeframe='5min', 
+    timeframe='5min',
     country='INDIA'  # Match your data's market
 )
 

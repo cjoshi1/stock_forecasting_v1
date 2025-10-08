@@ -36,11 +36,17 @@ python run_btc_forecasting.py --csv_path /path/to/your/BTC-USD_data.csv --timefr
 # Navigate to stock forecasting
 cd stock_forecasting/
 
-# Train with sample data
+# Train with sample data - single step prediction (default)
 python main.py --use_sample_data --target close --epochs 50
+
+# Multi-horizon prediction - predict 3 steps ahead simultaneously
+python main.py --use_sample_data --target close --prediction_horizon 3 --epochs 50
 
 # Train with your data
 python main.py --data_path data/raw/AAPL.csv --target close --epochs 100
+
+# Fast training with essential features
+python main.py --data_path data/raw/AAPL.csv --target close --use_essential_only --epochs 50
 ```
 
 ### For Custom Time Series (Generic Library)
@@ -55,7 +61,7 @@ class MyPredictor(TimeSeriesPredictor):
         # Add your domain-specific features...
         return df_processed.fillna(0)
 
-predictor = MyPredictor(target_column='value', sequence_length=10)
+predictor = MyPredictor(target_column='value', sequence_length=10, prediction_horizon=1)
 predictor.fit(train_df, val_df, epochs=100)
 ```
 
@@ -109,7 +115,8 @@ Datetime,Open,High,Low,Close,Volume,Dividends,Stock Splits
 - **Production Ready**: Model persistence, evaluation metrics, data splitting.
 
 ### 📈 Daily Stock Forecasting Application (`stock_forecasting/`)
-- **Specialized Features**: 30+ stock-specific technical indicators.
+- **Multi-Horizon Prediction**: Predict 1, 2, 3+ steps ahead simultaneously.
+- **Essential vs Full Features**: Fast training with 7 essential features or comprehensive 30+ indicators.
 - **Multiple Targets**: Price prediction, returns, percentage changes, volatility.
 - **Complete Workflow**: Data loading, validation, training, visualization.
 - **CLI Interface**: Ready-to-use command-line application.
@@ -134,6 +141,8 @@ df = load_stock_data('your_stock_data.csv')
 model = StockPredictor(
     target_column='close',         # or 'pct_change_1d', 'returns', etc.
     sequence_length=10,            # days of history
+    prediction_horizon=1,          # steps ahead to predict (1=single, >1=multi-horizon)
+    use_essential_only=False,      # False=30+ features, True=7 essential features
     d_token=128,                   # embedding dimension
     n_layers=3,                    # transformer layers
     n_heads=8,                     # attention heads

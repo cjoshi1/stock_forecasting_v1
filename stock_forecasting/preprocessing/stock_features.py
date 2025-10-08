@@ -7,20 +7,32 @@ import numpy as np
 from tf_predictor.preprocessing.time_features import create_date_features, create_rolling_features
 
 
-def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = False) -> pd.DataFrame:
+def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = False, use_essential_only: bool = False, prediction_horizon: int = 1) -> pd.DataFrame:
     """
     Create comprehensive stock-specific features from OHLCV data.
-    
+
     Args:
         df: DataFrame with OHLCV data and optional date column
         target_column: Target column name
         verbose: Whether to print verbose information
-        
+        use_essential_only: If True, only create essential features (volume, typical_price, seasonal)
+        prediction_horizon: Number of time steps to shift target (1 = predict next step)
+
     Returns:
-        processed_df: DataFrame with engineered features
+        processed_df: DataFrame with engineered features and shifted target
     """
     df_processed = df.copy()
-    
+
+    # Always calculate typical_price if we have OHLC data
+    if all(col in df_processed.columns for col in ['high', 'low', 'close']):
+        df_processed['typical_price'] = (df_processed['high'] + df_processed['low'] + df_processed['close']) / 3
+        if verbose:
+            print("   Added typical_price: (high + low + close) / 3")
+
+    # Handle essential features mode
+    if use_essential_only:
+        return _create_essential_features(df_processed, target_column, verbose, prediction_horizon)
+
     # Create date features if date column exists
     if 'date' in df_processed.columns:
         df_processed = create_date_features(df_processed, 'date')
@@ -81,8 +93,116 @@ def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = 
             
     # Fill NaN values
     df_processed = df_processed.bfill().fillna(0)
-    
+
+    # Create shifted target variable
+    df_processed = _create_shifted_target(df_processed, target_column, prediction_horizon, verbose)
+
     return df_processed
+
+
+def _create_essential_features(df: pd.DataFrame, target_column: str, verbose: bool = False, prediction_horizon: int = 1) -> pd.DataFrame:
+    """
+    Create only essential features: volume, typical_price, and seasonal features.
+
+    Args:
+        df: DataFrame with OHLC data and optional date column
+        target_column: Target column name
+        verbose: Whether to print verbose information
+        prediction_horizon: Number of time steps to shift target
+
+    Returns:
+        processed_df: DataFrame with essential features only and shifted target
+    """
+    from tf_predictor.preprocessing.time_features import create_cyclical_features
+
+    df_processed = df.copy()
+
+    # Extract seasonal features from date column using tf_predictor
+    if 'date' in df_processed.columns:
+        # Use tf_predictor's cyclical features function with the date column
+        df_processed = create_cyclical_features(df_processed, 'date', ['month', 'dayofweek', 'year'])
+
+        # Remove original temporal columns and date column (keep year as requested)
+        df_processed = df_processed.drop(['date', 'month', 'dayofweek'], axis=1)
+
+        if verbose:
+            print("   Added cyclical seasonal features: month_sin, month_cos, dayofweek_sin, dayofweek_cos")
+            print("   Kept year as raw value (not cyclical)")
+            print("   Removed original date column after extraction")
+
+    # Keep only essential features: volume, typical_price, and seasonal features
+    essential_features = ['volume', 'typical_price', 'month_sin', 'month_cos', 'dayofweek_sin', 'dayofweek_cos', 'year']
+
+    # Always include target column in essential features (target can be volume, typical_price, etc.)
+    if target_column not in essential_features:
+        essential_features.append(target_column)
+
+    # Filter to only essential features that exist in the dataframe
+    available_essential = [col for col in essential_features if col in df_processed.columns]
+    df_processed = df_processed[available_essential]
+
+    # Fill NaN values
+    df_processed = df_processed.bfill().fillna(0)
+
+    # Create shifted target variable
+    df_processed = _create_shifted_target(df_processed, target_column, prediction_horizon, verbose)
+
+    if verbose:
+        print(f"   Essential features only: {len(available_essential)} features")
+        print(f"   Features: {available_essential}")
+
+    return df_processed
+
+
+def _create_shifted_target(df: pd.DataFrame, target_column: str, prediction_horizon: int, verbose: bool = False) -> pd.DataFrame:
+    """
+    Create shifted target variable(s) for time series prediction.
+    Single horizon: Creates one target column
+    Multi-horizon: Creates multiple target columns for horizons 1 to N
+
+    Args:
+        df: DataFrame with features
+        target_column: Name of the original target column
+        prediction_horizon: Number of steps to predict (1 = single, >1 = multi-horizon)
+        verbose: Whether to print information
+
+    Returns:
+        df: DataFrame with shifted target column(s)
+    """
+    df = df.copy()
+
+    # Validate target column exists
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not found in dataframe")
+
+    if prediction_horizon == 1:
+        # Single horizon (existing behavior)
+        shifted_target_name = f"{target_column}_target_h1"
+        df[shifted_target_name] = df[target_column].shift(-1)
+        df = df.dropna(subset=[shifted_target_name])
+
+        if verbose:
+            print(f"   Created single target: {shifted_target_name}")
+            print(f"   Prediction horizon: 1 step ahead")
+            print(f"   Remaining samples after shift: {len(df)}")
+
+    else:
+        # Multi-horizon (new behavior)
+        target_columns = []
+        for h in range(1, prediction_horizon + 1):
+            col_name = f"{target_column}_target_h{h}"
+            df[col_name] = df[target_column].shift(-h)
+            target_columns.append(col_name)
+
+        # Remove rows where ANY target is NaN
+        df = df.dropna(subset=target_columns)
+
+        if verbose:
+            print(f"   Created multi-horizon targets: {target_columns}")
+            print(f"   Prediction horizons: 1 to {prediction_horizon} steps ahead")
+            print(f"   Remaining samples after shift: {len(df)}")
+
+    return df
 
 
 def create_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:

@@ -23,22 +23,26 @@ class TimeSeriesPredictor(ABC):
         self,
         target_column: str,
         sequence_length: int = 5,
+        prediction_horizon: int = 1,
         **ft_kwargs
     ):
         """
         Args:
             target_column: Name of the target column to predict
             sequence_length: Number of historical time steps to use for prediction
+            prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
             **ft_kwargs: FT-Transformer hyperparameters
         """
         self.target_column = target_column
         self.sequence_length = sequence_length
+        self.prediction_horizon = prediction_horizon
         self.ft_kwargs = ft_kwargs
         
         # Will be set during training
         self.model = None
         self.scaler = StandardScaler()  # For features
-        self.target_scaler = StandardScaler()  # For target
+        self.target_scaler = StandardScaler()  # For single target
+        self.target_scalers = []  # For multi-horizon targets
         self.feature_columns = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
@@ -170,29 +174,74 @@ class TimeSeriesPredictor(ABC):
         if len(df_processed) <= self.sequence_length:
             raise ValueError(f"Need at least {self.sequence_length + 1} samples for sequence_length={self.sequence_length}, got {len(df_processed)}")
         
-        # Validate target column exists after feature engineering
-        if self.target_column not in df_processed.columns:
-            available_cols = list(df_processed.columns)
-            raise ValueError(f"Target column '{self.target_column}' not found after feature engineering.\n"
-                           f"Available columns: {available_cols[:10]}{'...' if len(available_cols) > 10 else ''}")
-        
+        # Handle single vs multi-horizon target validation
+        if self.prediction_horizon == 1:
+            expected_target = f"{self.target_column}_target_h1" if not self.target_column.endswith('_target_h1') else self.target_column
+            if expected_target not in df_processed.columns:
+                available_cols = list(df_processed.columns)
+                raise ValueError(f"Single horizon target column '{expected_target}' not found after feature engineering.\n"
+                               f"Available columns: {available_cols[:10]}{'...' if len(available_cols) > 10 else ''}")
+            actual_target = expected_target
+        else:
+            # Multi-horizon: check all horizon targets exist
+            target_columns = [f"{self.target_column}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
+            missing_targets = [col for col in target_columns if col not in df_processed.columns]
+            if missing_targets:
+                available_cols = list(df_processed.columns)
+                raise ValueError(f"Multi-horizon target columns {missing_targets} not found after feature engineering.\n"
+                               f"Available columns: {available_cols[:10]}{'...' if len(available_cols) > 10 else ''}")
+            actual_target = target_columns[0]  # Use first for sequence creation
+
         # Create sequences - this will reduce our sample count
-        if self.target_column in df_processed.columns:
+        if actual_target in df_processed.columns:
             from ..preprocessing.time_features import create_sequences
             
             # For training: create sequences with targets
-            sequences, targets = create_sequences(df_processed, self.sequence_length, self.target_column)
+            sequences, targets = create_sequences(df_processed, self.sequence_length, actual_target)
             
-            # Scale target
-            targets = targets.reshape(-1, 1)
-            if fit_scaler:
-                targets_scaled = self.target_scaler.fit_transform(targets)
+            if self.prediction_horizon == 1:
+                # Single horizon target scaling
+                targets = targets.reshape(-1, 1)
+                if fit_scaler:
+                    targets_scaled = self.target_scaler.fit_transform(targets)
+                else:
+                    targets_scaled = self.target_scaler.transform(targets)
+
+                # Convert to tensors
+                X = torch.tensor(sequences, dtype=torch.float32)  # (n_samples, seq_len, n_features)
+                y = torch.tensor(targets_scaled.flatten(), dtype=torch.float32)
+
             else:
-                targets_scaled = self.target_scaler.transform(targets)
-            
-            # Convert to tensors
-            X = torch.tensor(sequences, dtype=torch.float32)  # (n_samples, seq_len, n_features)
-            y = torch.tensor(targets_scaled.flatten(), dtype=torch.float32)
+                # Multi-horizon target handling
+                target_columns = [f"{self.target_column}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
+
+                # Collect all horizon targets
+                all_targets = []
+                for target_col in target_columns:
+                    _, horizon_targets = create_sequences(df_processed, self.sequence_length, target_col)
+                    all_targets.append(horizon_targets)
+
+                # Stack into matrix: (samples, horizons)
+                targets_matrix = np.column_stack(all_targets)
+
+                # Scale each horizon separately
+                if fit_scaler:
+                    self.target_scalers = []
+                    scaled_targets = []
+                    for h in range(self.prediction_horizon):
+                        scaler = StandardScaler()
+                        scaled = scaler.fit_transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
+                        self.target_scalers.append(scaler)
+                        scaled_targets.append(scaled)
+                else:
+                    scaled_targets = []
+                    for h, scaler in enumerate(self.target_scalers):
+                        scaled = scaler.transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
+                        scaled_targets.append(scaled)
+
+                # Convert to tensors
+                X = torch.tensor(sequences, dtype=torch.float32)  # (n_samples, seq_len, n_features)
+                y = torch.tensor(np.column_stack(scaled_targets), dtype=torch.float32)  # (n_samples, horizons)
             
             if self.verbose:
                 print(f"   Created {len(sequences)} sequences of length {self.sequence_length}")
@@ -254,6 +303,7 @@ class TimeSeriesPredictor(ABC):
                 cat_cardinalities=[],  # All features are numerical for now
                 sequence_length=seq_len,
                 n_classes=1,  # Regression
+                prediction_horizons=self.prediction_horizon,
                 **model_kwargs
             ).to(self.device)
         else:  # Single timestep data: (batch, features) - fallback to original model
@@ -264,6 +314,7 @@ class TimeSeriesPredictor(ABC):
                 num_numerical=num_features,
                 cat_cardinalities=[],  # All features are numerical for now
                 n_classes=1,  # Regression
+                prediction_horizons=self.prediction_horizon,
                 **model_kwargs
             ).to(self.device)
         

@@ -198,8 +198,10 @@ class TestStockPredictor:
     def test_initialization(self):
         """Test StockPredictor initialization."""
         predictor = StockPredictor(target_column='close', sequence_length=5)
-        
-        assert predictor.target_column == 'close'
+
+        # For single horizon, target_column becomes 'close_target_h1' but original_target_column is 'close'
+        assert predictor.original_target_column == 'close'
+        assert predictor.target_column == 'close_target_h1'  # Transformed for single horizon
         assert predictor.sequence_length == 5
         assert predictor.model is None
     
@@ -231,8 +233,8 @@ class TestStockPredictor:
         # Test data preparation
         X, y = predictor.prepare_data(df, fit_scaler=True)
         
-        # Check shapes and types
-        expected_samples = len(df) - predictor.sequence_length
+        # Check shapes and types - account for sequence length and target shift
+        expected_samples = len(df) - predictor.sequence_length - predictor.prediction_horizon
         assert X.shape[0] == expected_samples
         assert X.shape[1] == predictor.sequence_length
         assert y.shape[0] == expected_samples
