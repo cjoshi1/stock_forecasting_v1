@@ -252,44 +252,48 @@ def create_sample_intraday_data(n_days: int = 5, start_date: str = "2023-01-01",
 
 def prepare_intraday_for_training(df: pd.DataFrame, target_column: str = 'close',
                                 timeframe: str = '5min', timestamp_col: str = 'timestamp',
-                                country: str = 'US', verbose: bool = False) -> Dict[str, Any]:
+                                country: str = 'US', prediction_horizon: int = 1,
+                                verbose: bool = False) -> Dict[str, Any]:
     """
     Complete pipeline to prepare intraday data for training.
-    
+
     Args:
         df: Raw minute-level DataFrame
         target_column: Column to predict
         timeframe: Target timeframe for resampling
         timestamp_col: Name of timestamp column
         country: Country code ('US' or 'INDIA')
+        prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
         verbose: Whether to print processing steps
-        
+
     Returns:
         Dictionary with processed data and metadata
     """
     if verbose:
-        print(f"Preparing intraday data for {timeframe} forecasting ({country} market)...")
+        horizon_text = f"{prediction_horizon}-step" if prediction_horizon > 1 else "single-step"
+        print(f"Preparing intraday data for {timeframe} forecasting ({country} market, {horizon_text})...")
         print(f"Original data: {len(df)} minute bars")
-    
+
     # Step 1: Prepare data (market hours + resampling)
     df_processed = prepare_intraday_data(df, timeframe, timestamp_col, country)
-    
+
     if verbose:
         print(f"After resampling to {timeframe}: {len(df_processed)} bars")
-    
+
     # Step 2: Create features
     df_features = create_intraday_features(
-        df_processed, target_column, timestamp_col, country, verbose
+        df_processed, target_column, timestamp_col, country,
+        timeframe, prediction_horizon, verbose
     )
-    
+
     # Step 3: Get timeframe configuration
     config = get_timeframe_config(timeframe)
-    
+
     if verbose:
         print(f"Suggested sequence length: {config['sequence_length']} bars")
         feature_cols = [col for col in df_features.columns if col != timestamp_col]
         print(f"Total features created: {len(feature_cols)}")
-    
+
     return {
         'data': df_features,
         'config': config,
@@ -297,5 +301,6 @@ def prepare_intraday_for_training(df: pd.DataFrame, target_column: str = 'close'
         'processed_length': len(df_features),
         'timeframe': timeframe,
         'target_column': target_column,
+        'prediction_horizon': prediction_horizon,
         'country': country
     }

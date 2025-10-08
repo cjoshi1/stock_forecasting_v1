@@ -29,7 +29,8 @@ class IntradayPredictor(TimeSeriesPredictor):
     
     def __init__(self, target_column: str = 'close', timeframe: str = '5min', model_type: str = 'ft',
                  timestamp_col: str = 'timestamp', country: str = 'US',
-                 d_token: int = 128, n_layers: int = 3, n_heads: int = 8, 
+                 prediction_horizon: int = 1,
+                 d_token: int = 128, n_layers: int = 3, n_heads: int = 8,
                  dropout: float = 0.1, verbose: bool = False, **kwargs):
         """
         Initialize IntradayPredictor.
@@ -40,6 +41,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             model_type: Model architecture ('ft' for FT-Transformer, 'csn' for CSNTransformer)
             timestamp_col: Name of timestamp column
             country: Country code ('US' or 'INDIA')
+            prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
             d_token: Token embedding dimension
             n_layers: Number of transformer layers
             n_heads: Number of attention heads
@@ -76,6 +78,7 @@ class IntradayPredictor(TimeSeriesPredictor):
                 self,
                 target_column=target_column,
                 sequence_length=sequence_length,
+                prediction_horizon=prediction_horizon,
                 d_model=d_token,  # CSNPredictor uses d_model instead of d_token
                 n_layers=n_layers,
                 n_heads=n_heads,
@@ -88,6 +91,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             super().__init__(
                 target_column=target_column,
                 sequence_length=sequence_length,
+                prediction_horizon=prediction_horizon,
                 d_token=d_token,
                 n_layers=n_layers,
                 n_heads=n_heads,
@@ -112,11 +116,11 @@ class IntradayPredictor(TimeSeriesPredictor):
     def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
         Create intraday-specific features for the dataset.
-        
+
         Args:
             df: DataFrame with intraday OHLCV data
             fit_scaler: Whether to fit the feature scaler
-            
+
         Returns:
             DataFrame with engineered features
         """
@@ -126,6 +130,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             timestamp_col=self.timestamp_col,
             country=self.country,
             timeframe=self.timeframe,
+            prediction_horizon=self.prediction_horizon,
             verbose=self.verbose
         )
     
