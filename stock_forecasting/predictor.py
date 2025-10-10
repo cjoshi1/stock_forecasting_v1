@@ -20,6 +20,7 @@ class StockPredictor(TimeSeriesPredictor):
         sequence_length: int = 5,  # Number of historical days to use
         use_essential_only: bool = False,  # Use only essential features
         prediction_horizon: int = 1,  # Number of steps ahead to predict
+        asset_type: str = 'stock',  # 'stock' or 'crypto'
         **ft_kwargs
     ):
         """
@@ -28,6 +29,7 @@ class StockPredictor(TimeSeriesPredictor):
             sequence_length: Number of historical days to use for prediction
             use_essential_only: If True, only use essential features (volume, typical_price, seasonal)
             prediction_horizon: Number of steps ahead to predict (1 = next step)
+            asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
             **ft_kwargs: FT-Transformer hyperparameters
         """
         # Handle target column naming for single vs multi-horizon
@@ -50,16 +52,17 @@ class StockPredictor(TimeSeriesPredictor):
         self.original_target_column = target_column
         self.use_essential_only = use_essential_only
         self.prediction_horizon = prediction_horizon
+        self.asset_type = asset_type
     
     def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
         Create stock-specific features from OHLCV data.
-        
+
         Args:
             df: DataFrame with OHLCV data and optional date column
             fit_scaler: Whether to fit the scaler (True for training data)
-            
+
         Returns:
             processed_df: DataFrame with engineered features
         """
-        return create_stock_features(df, self.original_target_column, self.verbose, self.use_essential_only, self.prediction_horizon)
+        return create_stock_features(df, self.original_target_column, self.verbose, self.use_essential_only, self.prediction_horizon, self.asset_type)

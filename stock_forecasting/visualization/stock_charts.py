@@ -109,6 +109,7 @@ def create_comprehensive_plots(
     plt.tight_layout()
     predictions_path = output_path / "comprehensive_predictions.png"
     plt.savefig(predictions_path, dpi=300, bbox_inches='tight')
+    print(f"   ✅ Predictions plot saved to: {predictions_path}")
     plt.close()
     saved_plots['predictions'] = str(predictions_path)
     
@@ -136,6 +137,7 @@ def create_comprehensive_plots(
     plt.tight_layout()
     training_path = output_path / "training_progress.png"
     plt.savefig(training_path, dpi=300, bbox_inches='tight')
+    print(f"   ✅ Training progress plot saved to: {training_path}")
     plt.close()
     saved_plots['training'] = str(training_path)
     
@@ -228,12 +230,12 @@ def export_predictions_csv(
     
     # Save CSV
     results_df.to_csv(csv_path, index=False)
-    
-    print(f"📄 Exported predictions CSV: {csv_path}")
+    print(f"   ✅ Predictions CSV saved to: {csv_path}")
+
     print(f"   📊 Total samples: {len(results_df)}")
     print(f"   🏋️ Training samples: {min_train_len}")
     print(f"   🧪 Test samples: {min_test_len}")
-    
+
     return str(csv_path)
 
 def print_performance_summary(

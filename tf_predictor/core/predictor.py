@@ -101,13 +101,19 @@ class TimeSeriesPredictor(ABC):
         
         # Get all feature columns (excluding target and non-numeric columns)
         feature_cols = []
+        # Get original target column if it exists (for multi-horizon prediction)
+        original_target = getattr(self, 'original_target_column', self.target_column)
+
         for col in df_processed.columns:
-            if col != self.target_column:
+            # Exclude both the target column and the original column it came from
+            if col != self.target_column and col != original_target:
                 # Only include numeric columns for scaling
                 if pd.api.types.is_numeric_dtype(df_processed[col]):
                     feature_cols.append(col)
                 elif self.verbose:
                     print(f"   Excluding non-numeric column from scaling: {col} (dtype: {df_processed[col].dtype})")
+            elif self.verbose and col == original_target and col != self.target_column:
+                print(f"   Excluding original target column from scaling: {col}")
         
         if self.feature_columns is None:
             # First time: establish the numeric feature columns from training data
@@ -572,11 +578,15 @@ class TimeSeriesPredictor(ABC):
 
         predictions = self.predict_from_features(df_processed)
 
+        # Get the original target column name (which should NOT be scaled in df_processed)
+        original_target = getattr(self, 'original_target_column', self.target_column)
+
         # For sequences, align actual values with predictions
+        # Use the original unscaled target column from df_processed
         if hasattr(df_processed, 'iloc'):
-            actual = df_processed[self.target_column].iloc[self.sequence_length:self.sequence_length + len(predictions)].values
+            actual = df_processed[original_target].iloc[self.sequence_length:self.sequence_length + len(predictions)].values
         else:
-            actual = df_processed[self.target_column].values
+            actual = df_processed[original_target].values
 
         # Ensure same length (take minimum to be safe)
         min_len = min(len(actual), len(predictions))

@@ -70,13 +70,20 @@ class IntradayPredictor(TimeSeriesPredictor):
         # Store model type for later use
         self.model_type = model_type
 
+        # Handle target column naming for single vs multi-horizon (same as StockPredictor)
+        if prediction_horizon == 1:
+            shifted_target_name = f"{target_column}_target_h1"
+        else:
+            # Multi-horizon: use base target name
+            shifted_target_name = target_column
+
         # Initialize base predictor based on model_type
         if model_type == 'csn':
             from tf_predictor.core.csn_predictor import CSNPredictor
             # Initialize CSNPredictor directly
             CSNPredictor.__init__(
                 self,
-                target_column=target_column,
+                target_column=shifted_target_name,
                 sequence_length=sequence_length,
                 prediction_horizon=prediction_horizon,
                 d_model=d_token,  # CSNPredictor uses d_model instead of d_token
@@ -89,7 +96,7 @@ class IntradayPredictor(TimeSeriesPredictor):
         else:
             # Default to FT-Transformer
             super().__init__(
-                target_column=target_column,
+                target_column=shifted_target_name,
                 sequence_length=sequence_length,
                 prediction_horizon=prediction_horizon,
                 d_token=d_token,
@@ -99,6 +106,10 @@ class IntradayPredictor(TimeSeriesPredictor):
                 verbose=verbose,
                 **kwargs
             )
+
+        # Store original target info (same as StockPredictor)
+        self.original_target_column = target_column
+        self.prediction_horizon = prediction_horizon
         
         self.timeframe_config = config
         self.market_config = market_config
@@ -126,7 +137,7 @@ class IntradayPredictor(TimeSeriesPredictor):
         """
         return create_intraday_features(
             df=df,
-            target_column=self.target_column,
+            target_column=self.original_target_column,  # Use original, not shifted
             timestamp_col=self.timestamp_col,
             country=self.country,
             timeframe=self.timeframe,

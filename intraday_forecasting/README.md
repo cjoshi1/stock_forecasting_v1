@@ -5,7 +5,7 @@ A specialized high-frequency trading forecasting system using the TF Predictor (
 ## 🎯 Features
 
 - **Multi-Horizon Prediction**: Predict 1, 2, 3+ time periods ahead simultaneously
-- **Multi-Country Support**: US and India markets with specific trading hours
+- **Multi-Country Support**: US, India, and Crypto markets with specific trading hours (24/7 for crypto)
 - **Multiple Timeframes**: 1min, 5min, 15min, 1h trading frequencies
 - **Market Hours Filtering**: Automatic filtering for each country's trading hours
 - **Intraday Pattern Recognition**: Country-specific time-of-day effects, market session analysis
@@ -37,7 +37,7 @@ train_df, val_df, test_df = split_time_series(df_processed, test_size=100, val_s
 predictor = IntradayPredictor(
     target_column='close',
     timeframe='5min',
-    country='US',  # or 'INDIA'
+    country='US',  # or 'INDIA' or 'CRYPTO'
     prediction_horizon=1,  # Predict 1 step ahead (can use 2, 3+ for multi-horizon)
     d_token=128,
     n_layers=3,
@@ -63,12 +63,17 @@ future_predictions = predictor.predict_next_bars(test_df, n_predictions=5)
 
 ### Command Line Interface
 
+#### Quick Start Examples
+
 ```bash
 # Basic 5-minute prediction with sample data (US market)
 python main.py --use_sample_data --timeframe 5min --country US --epochs 30
 
-# Indian market prediction  
+# Indian market prediction
 python main.py --use_sample_data --timeframe 5min --country INDIA --epochs 30
+
+# Cryptocurrency (24/7) market prediction
+python main.py --use_sample_data --timeframe 1h --country CRYPTO --epochs 30
 
 # Train on 1-minute data with custom settings
 python main.py --use_sample_data --timeframe 1min --country US --epochs 50 --d_token 256 --n_layers 4
@@ -83,12 +88,74 @@ python main.py --data_path data/NIFTY_1min.csv --timeframe 5min --country INDIA 
 python main.py --use_sample_data --timeframe 5min --country US --target volume --epochs 25
 ```
 
+#### Complete Command with All Parameters
+
+```bash
+PYTHONPATH=. venv/bin/python intraday_forecasting/main.py \
+  --data_path /path/to/your/data.csv \
+  --target close \
+  --timeframe 5min \
+  --model_type ft \
+  --country US \
+  --sequence_length 60 \
+  --d_token 128 \
+  --n_layers 3 \
+  --n_heads 8 \
+  --dropout 0.1 \
+  --epochs 50 \
+  --batch_size 32 \
+  --learning_rate 0.001 \
+  --patience 10 \
+  --test_size 200 \
+  --val_size 100 \
+  --future_predictions 12 \
+  --model_path outputs/models/intraday_model.pt \
+  --verbose
+```
+
+#### CLI Parameter Reference
+
+**Data Parameters:**
+- `--data_path PATH`: Path to your CSV file
+- `--target {close,open,high,low,volume}`: Target column to predict (default: close)
+- `--timeframe {1min,5min,15min,1h}`: Trading timeframe (default: 5min)
+- `--model_type {ft,csn}`: Model architecture (ft=FT-Transformer, csn=CSNTransformer)
+- `--country {US,INDIA,CRYPTO}`: Market type (default: US)
+- `--use_sample_data`: Use synthetic sample data instead of real data
+- `--sample_days N`: Number of days for sample data generation (default: 5)
+
+**Model Architecture:**
+- `--sequence_length N`: Historical lookback periods (auto if not specified)
+- `--d_token N`: Token embedding dimension (default: 128)
+- `--n_layers N`: Number of transformer layers (default: 3)
+- `--n_heads N`: Number of attention heads (default: 8)
+- `--dropout FLOAT`: Dropout rate (default: 0.1)
+
+**Training Parameters:**
+- `--epochs N`: Number of training epochs (default: 50)
+- `--batch_size N`: Training batch size (default: 32)
+- `--learning_rate FLOAT`: Learning rate (default: 0.001)
+- `--patience N`: Early stopping patience (default: 10)
+
+**Data Split:**
+- `--test_size N`: Number of samples for test set (default: 200)
+- `--val_size N`: Number of samples for validation set (default: 100)
+
+**Prediction & Output:**
+- `--future_predictions N`: Number of future periods to predict (0 = none, default: 0)
+- `--model_path PATH`: Path to save trained model (default: outputs/models/intraday_model.pt)
+- `--no_plots`: Skip generating plots
+- `--verbose`: Enable detailed output (default: True)
+- `--quiet`: Disable verbose output
+```
+
 ## 🌍 Supported Markets
 
 | Country | Market Hours | Timezone | Exchange |
 |---------|-------------|----------|----------|
 | `US` | 9:30 AM - 4:00 PM | America/New_York | NYSE/NASDAQ |
 | `INDIA` | 9:15 AM - 3:30 PM | Asia/Kolkata | NSE/BSE |
+| `CRYPTO` | 24/7 Trading | UTC | Cryptocurrency Exchanges |
 
 ## 📊 Supported Timeframes
 
@@ -175,7 +242,7 @@ from intraday_forecasting import IntradayPredictor, create_sample_intraday_data
 from intraday_forecasting.preprocessing.market_data import prepare_intraday_for_training
 
 df = create_sample_intraday_data(n_days=7)
-countries = ['US', 'INDIA']
+countries = ['US', 'INDIA', 'CRYPTO']
 
 for country in countries:
     # Prepare data for specific country
@@ -183,10 +250,10 @@ for country in countries:
         df, target_column='close', timeframe='5min', country=country
     )
     df_processed = result['data']
-    
+
     predictor = IntradayPredictor(
-        target_column='close', 
-        timeframe='5min', 
+        target_column='close',
+        timeframe='5min',
         country=country
     )
     # ... train model ...
@@ -203,9 +270,9 @@ timeframes = ['5min', '15min', '1h']
 
 for timeframe in timeframes:
     predictor = IntradayPredictor(
-        target_column='close', 
-        timeframe=timeframe, 
-        country='US'  # or 'INDIA'
+        target_column='close',
+        timeframe=timeframe,
+        country='US'  # or 'INDIA' or 'CRYPTO'
     )
     # ... prepare data and train ...
     print(f"{timeframe} MAPE: {metrics['MAPE']:.2f}%")
@@ -392,7 +459,7 @@ predictions = new_predictor.predict(new_data)
 
 1. **Run Examples**: Try `python examples/basic_intraday_example.py`
 2. **CLI Testing**: Run `python main.py --use_sample_data --timeframe 5min --country US`
-3. **Try Different Markets**: Test with both `--country US` and `--country INDIA`
+3. **Try Different Markets**: Test with `--country US`, `--country INDIA`, or `--country CRYPTO`
 4. **Real Data**: Load your CSV files with `load_intraday_data()`
 5. **Experiment**: Try different timeframes and model architectures
 6. **Production**: Implement real-time data feeds and monitoring

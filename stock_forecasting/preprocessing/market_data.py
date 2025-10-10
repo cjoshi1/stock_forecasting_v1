@@ -7,14 +7,15 @@ import numpy as np
 from tf_predictor.core.utils import load_time_series_data
 
 
-def load_stock_data(file_path: str, date_column: str = 'date') -> pd.DataFrame:
+def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str = 'stock') -> pd.DataFrame:
     """
-    Load and validate stock data.
-    
+    Load and validate stock or crypto data.
+
     Args:
         file_path: Path to CSV file
         date_column: Name of date column
-        
+        asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
+
     Returns:
         df: Validated DataFrame
     """
@@ -83,6 +84,17 @@ def load_stock_data(file_path: str, date_column: str = 'date') -> pd.DataFrame:
             # Sort by date (oldest first for proper time series analysis)
             df = df.sort_values(date_column).reset_index(drop=True)
             print(f"   Sorted data chronologically: {df[date_column].iloc[0]} to {df[date_column].iloc[-1]}")
+
+            # Validate trading days based on asset type
+            if asset_type == 'crypto':
+                # Crypto: Expect data for all 7 days of the week
+                print(f"   Asset type: Cryptocurrency (24/7 trading)")
+            else:
+                # Stock: Check for weekend data (might indicate data issues)
+                weekend_mask = df[date_column].dt.dayofweek >= 5
+                if weekend_mask.any():
+                    print(f"   Warning: Found {weekend_mask.sum()} weekend rows in stock data")
+                print(f"   Asset type: Traditional stock (weekday trading)")
         except:
             print(f"Warning: Could not parse date column '{date_column}'")
     
@@ -141,18 +153,24 @@ def validate_stock_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def create_sample_stock_data(n_samples: int = 300, start_price: float = 100.0) -> pd.DataFrame:
+def create_sample_stock_data(n_samples: int = 300, start_price: float = 100.0, asset_type: str = 'stock') -> pd.DataFrame:
     """
-    Create synthetic stock data for testing purposes.
-    
+    Create synthetic stock or crypto data for testing purposes.
+
     Args:
         n_samples: Number of data points to generate
         start_price: Starting price for the synthetic data
-        
+        asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
+
     Returns:
         df: DataFrame with synthetic OHLCV data
     """
-    dates = pd.date_range(start='2020-01-01', periods=n_samples, freq='D')
+    if asset_type == 'crypto':
+        # Crypto: Generate continuous daily data (all 7 days of the week)
+        dates = pd.date_range(start='2020-01-01', periods=n_samples, freq='D')
+    else:
+        # Stock: Generate business days only (Monday-Friday, skip weekends)
+        dates = pd.date_range(start='2020-01-01', periods=n_samples, freq='B')
     
     # Generate price data with some volatility and trend
     np.random.seed(42)  # For reproducibility

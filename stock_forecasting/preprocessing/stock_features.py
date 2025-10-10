@@ -7,7 +7,7 @@ import numpy as np
 from tf_predictor.preprocessing.time_features import create_date_features, create_rolling_features
 
 
-def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = False, use_essential_only: bool = False, prediction_horizon: int = 1) -> pd.DataFrame:
+def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = False, use_essential_only: bool = False, prediction_horizon: int = 1, asset_type: str = 'stock') -> pd.DataFrame:
     """
     Create comprehensive stock-specific features from OHLCV data.
 
@@ -17,6 +17,7 @@ def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = 
         verbose: Whether to print verbose information
         use_essential_only: If True, only create essential features (volume, typical_price, seasonal)
         prediction_horizon: Number of time steps to shift target (1 = predict next step)
+        asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
 
     Returns:
         processed_df: DataFrame with engineered features and shifted target
@@ -31,7 +32,7 @@ def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = 
 
     # Handle essential features mode
     if use_essential_only:
-        return _create_essential_features(df_processed, target_column, verbose, prediction_horizon)
+        return _create_essential_features(df_processed, target_column, verbose, prediction_horizon, asset_type)
 
     # Create date features if date column exists
     if 'date' in df_processed.columns:
@@ -100,7 +101,7 @@ def create_stock_features(df: pd.DataFrame, target_column: str, verbose: bool = 
     return df_processed
 
 
-def _create_essential_features(df: pd.DataFrame, target_column: str, verbose: bool = False, prediction_horizon: int = 1) -> pd.DataFrame:
+def _create_essential_features(df: pd.DataFrame, target_column: str, verbose: bool = False, prediction_horizon: int = 1, asset_type: str = 'stock') -> pd.DataFrame:
     """
     Create only essential features: volume, typical_price, and seasonal features.
 
@@ -109,6 +110,7 @@ def _create_essential_features(df: pd.DataFrame, target_column: str, verbose: bo
         target_column: Target column name
         verbose: Whether to print verbose information
         prediction_horizon: Number of time steps to shift target
+        asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
 
     Returns:
         processed_df: DataFrame with essential features only and shifted target
@@ -122,16 +124,31 @@ def _create_essential_features(df: pd.DataFrame, target_column: str, verbose: bo
         # Use tf_predictor's cyclical features function with the date column
         df_processed = create_cyclical_features(df_processed, 'date', ['month', 'dayofweek', 'year'])
 
+        # Add crypto-specific features if needed
+        if asset_type == 'crypto':
+            # Add weekend indicator for crypto (different behavior on weekends)
+            df_processed['is_weekend'] = df_processed['date'].dt.dayofweek.isin([5, 6]).astype(int)
+            if verbose:
+                print("   Added crypto-specific feature: is_weekend")
+
         # Remove original temporal columns and date column (keep year as requested)
         df_processed = df_processed.drop(['date', 'month', 'dayofweek'], axis=1)
 
         if verbose:
             print("   Added cyclical seasonal features: month_sin, month_cos, dayofweek_sin, dayofweek_cos")
+            if asset_type == 'crypto':
+                print("   Crypto mode: dayofweek uses 7-day week (0=Sunday, 6=Saturday)")
+            else:
+                print("   Stock mode: dayofweek uses 5-day week (0=Monday, 4=Friday)")
             print("   Kept year as raw value (not cyclical)")
             print("   Removed original date column after extraction")
 
     # Keep only essential features: volume, typical_price, and seasonal features
     essential_features = ['volume', 'typical_price', 'month_sin', 'month_cos', 'dayofweek_sin', 'dayofweek_cos', 'year']
+
+    # Add crypto-specific features to essential list
+    if asset_type == 'crypto':
+        essential_features.append('is_weekend')
 
     # Always include target column in essential features (target can be volume, typical_price, etc.)
     if target_column not in essential_features:

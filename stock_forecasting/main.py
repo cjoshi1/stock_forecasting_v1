@@ -44,6 +44,9 @@ def main():
                        help='Target column to predict (close, open, high, low)')
     parser.add_argument('--use_sample_data', action='store_true',
                        help='Use synthetic sample data instead of real data')
+    parser.add_argument('--asset_type', type=str, default='stock',
+                       choices=['stock', 'crypto'],
+                       help='Asset type: stock (5-day week) or crypto (7-day week, 24/7 trading)')
     
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=5,
@@ -91,15 +94,16 @@ def main():
     
     print("="*60)
     print("🚀 Stock Forecasting with FT-Transformer")
+    print(f"   Asset Type: {args.asset_type.upper()}")
     print("="*60)
-    
+
     # 1. Load Data
-    print(f"\n📊 Loading stock data...")
-    
+    print(f"\n📊 Loading {args.asset_type} data...")
+
     if args.use_sample_data:
-        print("   Using synthetic sample data")
-        df = create_sample_stock_data(n_samples=300)
-        print(f"   Generated {len(df)} samples of synthetic stock data")
+        print(f"   Using synthetic sample {args.asset_type} data")
+        df = create_sample_stock_data(n_samples=300, asset_type=args.asset_type)
+        print(f"   Generated {len(df)} samples of synthetic {args.asset_type} data")
     else:
         if args.data_path is None:
             # Try to find data file in stock_forecasting/data/
@@ -116,12 +120,12 @@ def main():
             
             if args.data_path is None:
                 print("   ❌ No data file found. Using sample data instead.")
-                df = create_sample_stock_data(n_samples=300)
+                df = create_sample_stock_data(n_samples=300, asset_type=args.asset_type)
             else:
                 print(f"   Found data file: {args.data_path}")
-                df = load_stock_data(args.data_path)
+                df = load_stock_data(args.data_path, asset_type=args.asset_type)
         else:
-            df = load_stock_data(args.data_path)
+            df = load_stock_data(args.data_path, asset_type=args.asset_type)
         
         print(f"   Loaded {len(df)} samples from {args.data_path}")
     
@@ -171,19 +175,21 @@ def main():
     
     # 3. Initialize Model
     print(f"\n🧠 Initializing Stock Predictor...")
-    
+
     model = StockPredictor(
         target_column=args.target,
         sequence_length=args.sequence_length,
         prediction_horizon=args.prediction_horizon,
         use_essential_only=args.use_essential_only,
+        asset_type=args.asset_type,
         d_token=args.d_token,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
         dropout=args.dropout
     )
-    
+
     print(f"   Model configuration:")
+    print(f"   - Asset type: {args.asset_type}")
     print(f"   - Target: {args.target}")
     print(f"   - Sequence length: {args.sequence_length}")
     print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
@@ -209,6 +215,7 @@ def main():
     # 5. Save Model
     print(f"\n💾 Saving model...")
     model.save(args.model_path)
+    print(f"   ✅ Model saved to: {args.model_path}")
     
     # 6. Evaluate Model
     print(f"\n📈 Evaluating model...")
@@ -238,30 +245,28 @@ def main():
             base_output = "outputs"
             saved_plots = create_comprehensive_plots(model, train_df, test_df, base_output)
             
-            print(f"   ✅ Comprehensive predictions plot: {saved_plots['predictions']}")
-            print(f"   ✅ Training progress plot: {saved_plots['training']}")
-            print(f"   ✅ Predictions CSV file: {saved_plots['csv']}")
-            
             # Get data for performance summary
             train_predictions = model.predict(train_df)
             test_predictions = model.predict(test_df) if test_df is not None else None
             
             train_actual_values = train_df[args.target].values[model.sequence_length:] if args.target in train_df.columns else None
-            
-            # For engineered features, get from processed data
+
+            # For engineered features, get from processed data and inverse transform
             if train_actual_values is None:
                 train_processed = model.prepare_features(train_df, fit_scaler=False)
-                train_actual_values = train_processed[args.target].values[model.sequence_length:]
-            
+                train_actual_scaled = train_processed[args.target].values[model.sequence_length:]
+                train_actual_values = model.target_scaler.inverse_transform(train_actual_scaled.reshape(-1, 1)).flatten()
+
             train_pred_aligned = train_predictions[:len(train_actual_values)]
-            
+
             if test_predictions is not None:
                 test_actual_values = test_df[args.target].values[model.sequence_length:] if args.target in test_df.columns else None
-                
-                # For engineered features, get from processed data
+
+                # For engineered features, get from processed data and inverse transform
                 if test_actual_values is None:
                     test_processed = model.prepare_features(test_df, fit_scaler=False)
-                    test_actual_values = test_processed[args.target].values[model.sequence_length:]
+                    test_actual_scaled = test_processed[args.target].values[model.sequence_length:]
+                    test_actual_values = model.target_scaler.inverse_transform(test_actual_scaled.reshape(-1, 1)).flatten()
                 
                 test_pred_aligned = test_predictions[:len(test_actual_values)]
                 

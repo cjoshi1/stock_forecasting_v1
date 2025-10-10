@@ -106,12 +106,12 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         if test_df is not None:
             test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
 
-        # Get actual values
-        train_actual = train_processed[predictor.target_column].iloc[predictor.sequence_length:]
+        # Get actual values from original dataframes (not scaled processed features)
+        train_actual = train_df[predictor.target_column].iloc[predictor.sequence_length:]
         if val_df is not None and val_processed is not None:
-            val_actual = val_processed[predictor.target_column].iloc[predictor.sequence_length:]
+            val_actual = val_df[predictor.target_column].iloc[predictor.sequence_length:]
         if test_df is not None and test_processed is not None:
-            test_actual = test_processed[predictor.target_column].iloc[predictor.sequence_length:]
+            test_actual = test_df[predictor.target_column].iloc[predictor.sequence_length:]
         
         # Create comprehensive plot
         fig, axes = plt.subplots(2, 1, figsize=(15, 10))
@@ -170,11 +170,12 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
             axes[1].set_title('Training Progress')
         
         plt.tight_layout()
-        
+
         # Save plot
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         plot_path = os.path.join(output_dir, f'intraday_predictions_{timestamp}.png')
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"   ✅ Plot saved to: {plot_path}")
         plt.close()
         
         # Save enhanced predictions to CSV with data split indicators and metrics
@@ -258,7 +259,8 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
 
         # Append the actual data
         combined_data.to_csv(csv_path, mode='a', index=False)
-        
+        print(f"   ✅ Predictions CSV saved to: {csv_path}")
+
         return {
             'plot': plot_path,
             'csv': csv_path
@@ -452,6 +454,7 @@ def main():
     # 6. Save Model
     print(f"\n💾 Saving model...")
     model.save(args.model_path)
+    print(f"   ✅ Model saved to: {args.model_path}")
     
     # 7. Evaluate Model (optimized with cached features)
     print(f"\n📈 Evaluating model...")
@@ -516,7 +519,7 @@ def main():
     # 9. Generate Visualizations
     if not args.no_plots:
         print(f"\n📊 Generating intraday visualizations...")
-        
+
         try:
             # Pass cached features and metrics to visualization function
             cached_train_features = train_features if 'train_features' in locals() else None
@@ -527,13 +530,7 @@ def main():
                 cached_train_features, cached_test_features, val_df, cached_val_features,
                 train_metrics, val_metrics, test_metrics
             )
-            
-            if saved_files:
-                if 'plot' in saved_files:
-                    print(f"   ✅ Intraday plot: {saved_files['plot']}")
-                if 'csv' in saved_files:
-                    print(f"   ✅ Predictions CSV: {saved_files['csv']}")
-            
+
         except Exception as e:
             print(f"   ⚠️  Error generating visualizations: {e}")
     

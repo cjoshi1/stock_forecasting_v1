@@ -1,16 +1,17 @@
 # 📈 Stock Forecasting with TF Predictor
 
-A specialized application for stock price prediction using the TF Predictor (Feature Tokenizer Transformer) architecture. This package extends the generic `tf_predictor` library with stock-specific features and workflows.
+A specialized application for daily stock and cryptocurrency price prediction using the TF Predictor (Feature Tokenizer Transformer) architecture. This package extends the generic `tf_predictor` library with market-specific features and workflows for both traditional stocks and cryptocurrencies.
 
 ## 🎯 Features
 
+- **Multi-Asset Support**: Traditional stocks (5-day week) and cryptocurrencies (7-day week, 24/7)
 - **Multi-Horizon Predictions**: Predict 1, 2, 3+ steps ahead with `prediction_horizon`
 - **Essential vs Full Features**: Choose between minimal essential features or comprehensive technical indicators
 - **Flexible Target Variables**: Any input feature can be the prediction target (volume, typical_price, close, etc.)
-- **Stock-Specific Predictions**: Price forecasting, return prediction, volatility modeling
-- **Rich Feature Engineering**: 30+ technical indicators and market features OR 7 essential features
+- **Market-Specific Predictions**: Price forecasting, return prediction, volatility modeling
+- **Rich Feature Engineering**: 30+ technical indicators and market features OR 7-8 essential features
 - **Production Ready**: Complete CLI application with visualization and model persistence
-- **Real Data Support**: Load and validate actual stock market data (OHLCV format)
+- **Real Data Support**: Load and validate actual stock/crypto market data (OHLCV format)
 
 ## 🚀 Quick Start
 
@@ -49,30 +50,96 @@ metrics = predictor.evaluate(test_df)
 
 ### Command Line Interface
 
+#### Quick Start Examples
+
 ```bash
 # Basic stock prediction with sample data
-python -m stock_forecasting.main --use_sample_data --target close --epochs 50
+python stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 50
 
-# Use your own data with essential features (fast training)
-python -m stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.csv --target volume --use_essential_only --prediction_horizon 2 --epochs 50
+# Crypto daily prediction with sample data
+python stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
+
+# Use your own stock data with essential features (fast training)
+python stock_forecasting/main.py --data_path data/MSFT_historical_price_cleaned.csv --target volume --asset_type stock --use_essential_only --prediction_horizon 2 --epochs 50
+
+# Crypto (BTC, ETH, etc.) daily prediction
+python stock_forecasting/main.py --data_path data/BTC-USD-daily.csv --target close --asset_type crypto --epochs 100
 
 # Multi-step ahead prediction with all features
-python -m stock_forecasting.main --data_path data/raw/AAPL.csv --target close --prediction_horizon 3 --sequence_length 7 --epochs 100
-
-# Predict volume using only essential features
-python -m stock_forecasting.main --data_path data/raw/MSFT.csv --target volume --use_essential_only --prediction_horizon 1 --epochs 50
+python stock_forecasting/main.py --data_path data/raw/AAPL.csv --target close --asset_type stock --prediction_horizon 3 --sequence_length 7 --epochs 100
 
 # Quick training with smaller model
-python -m stock_forecasting.main --use_sample_data --target close --epochs 20 --d_token 64 --n_layers 2 --batch_size 64
+python stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 20 --d_token 64 --n_layers 2 --batch_size 64
+```
+
+#### Complete Command with All Parameters
+
+```bash
+PYTHONPATH=. venv/bin/python stock_forecasting/main.py \
+  --data_path /path/to/your/data.csv \
+  --target close \
+  --asset_type stock \
+  --sequence_length 5 \
+  --prediction_horizon 1 \
+  --use_essential_only \
+  --d_token 128 \
+  --n_layers 3 \
+  --n_heads 8 \
+  --dropout 0.1 \
+  --epochs 100 \
+  --batch_size 32 \
+  --learning_rate 0.001 \
+  --patience 15 \
+  --test_size 30 \
+  --val_size 20 \
+  --model_path outputs/models/stock_model.pt \
+  --no_plots
+```
+
+#### CLI Parameter Reference
+
+**Data Parameters:**
+- `--data_path PATH`: Path to stock/crypto data CSV file (optional if using sample data)
+- `--use_sample_data`: Use synthetic sample data instead of real data
+- `--asset_type {stock,crypto}`: Asset type (default: stock)
+  - `stock`: Traditional 5-day trading week (Monday-Friday)
+  - `crypto`: 24/7 trading, 7-day week data (includes weekends)
+- `--target {close,open,high,low,volume}`: Column to predict (default: close)
+  - Also supports engineered features: `pct_change_1d`, `pct_change_3d`, `pct_change_5d`, `pct_change_10d`, `returns`, `log_returns`, `volatility_10d`, `momentum_5d`, `high_low_ratio`, `close_open_ratio`, `volume_ratio`
+
+**Model Architecture:**
+- `--sequence_length N`: Historical days to use for prediction (default: 5)
+- `--prediction_horizon N`: Steps ahead to predict - 1=next day, 2=two days ahead, etc. (default: 1)
+- `--use_essential_only`: Use only essential features (volume, typical_price, seasonal) - 7 features for stock, 8 for crypto (adds is_weekend) instead of 30+
+- `--d_token N`: Token embedding dimension (default: 128)
+- `--n_layers N`: Number of transformer layers (default: 3)
+- `--n_heads N`: Number of attention heads (default: 8)
+- `--dropout FLOAT`: Dropout rate (default: 0.1)
+
+**Training Parameters:**
+- `--epochs N`: Number of training epochs (default: 100)
+- `--batch_size N`: Training batch size (default: 32)
+- `--learning_rate FLOAT`: Learning rate (default: 0.001)
+- `--patience N`: Early stopping patience (default: 15)
+
+**Data Split:**
+- `--test_size N`: Number of samples for test set (default: 30)
+- `--val_size N`: Number of samples for validation set (default: 20)
+
+**Output:**
+- `--model_path PATH`: Path to save trained model (default: outputs/models/stock_model.pt)
+- `--no_plots`: Skip generating plots (plots are generated by default)
 ```
 
 ## 📊 Data Format
+
+### Stock Data Format
 
 Your CSV file should contain these columns:
 - `date`: Date (YYYY-MM-DD format)
 - `open`: Opening price
 - `high`: Highest price
-- `low`: Lowest price  
+- `low`: Lowest price
 - `close`: Closing price
 - `volume`: Trading volume
 
@@ -80,12 +147,33 @@ Optional columns:
 - `symbol`: Stock symbol
 - Any additional features
 
-Example:
+Example (Stock - weekdays only):
 ```csv
 date,open,high,low,close,volume
-2023-01-01,100.0,105.0,99.0,103.0,1000000
-2023-01-02,103.0,107.0,102.0,106.0,1200000
+2023-01-02,100.0,105.0,99.0,103.0,1000000
+2023-01-03,103.0,107.0,102.0,106.0,1200000
+2023-01-04,106.0,108.0,105.0,107.0,1100000
 ```
+
+### Cryptocurrency Data Format
+
+Same CSV format as stocks, but **must include all 7 days of the week** (no gaps for weekends):
+
+Example (Crypto - includes weekends):
+```csv
+date,open,high,low,close,volume
+2023-01-01,16500.0,16800.0,16400.0,16750.0,25000000000
+2023-01-02,16750.0,17000.0,16700.0,16900.0,28000000000
+2023-01-03,16900.0,17200.0,16850.0,17100.0,30000000000
+...includes Saturday and Sunday data...
+2023-01-07,17300.0,17500.0,17200.0,17400.0,26000000000
+2023-01-08,17400.0,17600.0,17350.0,17550.0,27000000000
+```
+
+**Important for Crypto:**
+- Data must be **continuous** (no weekend gaps)
+- Crypto markets trade 24/7, so expect 365 days per year of data
+- Use `--asset_type crypto` flag when training
 
 ## 🔧 Available Target Columns
 
@@ -139,12 +227,13 @@ date,open,high,low,close,volume
 ## 📈 Feature Engineering
 
 ### Essential Features Mode (`use_essential_only=True`)
-**7 Features Total** - Minimal, fast training with core market features:
+**7-8 Features Total** - Minimal, fast training with core market features:
 - `volume` - Trading volume
 - `typical_price` - (high + low + close) / 3
 - `month_sin`, `month_cos` - Cyclical month encoding
-- `dayofweek_sin`, `dayofweek_cos` - Cyclical day-of-week encoding
+- `dayofweek_sin`, `dayofweek_cos` - Cyclical day-of-week encoding (0-6 for crypto, 0-4 for stocks)
 - `year` - Raw year value (trend)
+- `is_weekend` - Weekend indicator (crypto only, 0=weekday, 1=weekend)
 
 ### Full Features Mode (`use_essential_only=False`)
 **30+ Features** - Comprehensive technical analysis:
