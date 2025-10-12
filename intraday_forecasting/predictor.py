@@ -166,44 +166,44 @@ class IntradayPredictor(TimeSeriesPredictor):
     def predict_next_bars(self, df: pd.DataFrame, n_predictions: int = 1) -> pd.DataFrame:
         """
         Predict next N bars for intraday trading.
-        
+
         Args:
             df: DataFrame with recent intraday data
             n_predictions: Number of future bars to predict
-            
+
         Returns:
             DataFrame with predicted values and timestamps
         """
         # Get base predictions
         predictions = self.predict(df)
-        
+
         if len(predictions) == 0:
             return pd.DataFrame()
-        
+
         # Create result DataFrame with future timestamps
         last_timestamp = df[self.timestamp_col].iloc[-1]
-        
+
         # Generate future timestamps based on timeframe
         freq_map = {
             '1min': '1T',
-            '5min': '5T', 
+            '5min': '5T',
             '15min': '15T',
             '1h': '1H'
         }
-        
+
         freq = freq_map.get(self.timeframe, '5T')
         future_timestamps = pd.date_range(
             start=last_timestamp + pd.Timedelta(freq),
             periods=n_predictions,
             freq=freq
         )
-        
-        # Create result DataFrame
+
+        # Create result DataFrame using original target column name
         result = pd.DataFrame({
             self.timestamp_col: future_timestamps,
-            f'predicted_{self.target_column}': predictions[:n_predictions]
+            f'predicted_{self.original_target_column}': predictions[:n_predictions]
         })
-        
+
         return result
     
     def get_feature_importance(self) -> Optional[pd.DataFrame]:

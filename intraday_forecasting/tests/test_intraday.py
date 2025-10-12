@@ -366,10 +366,10 @@ class TestIntradayPredictor(unittest.TestCase):
         
         # Predict next bars
         future_df = self.predictor.predict_next_bars(self.test_df, n_predictions=3)
-        
+
         self.assertEqual(len(future_df), 3)
         self.assertIn(self.predictor.timestamp_col, future_df.columns)
-        self.assertIn(f'predicted_{self.predictor.target_column}', future_df.columns)
+        self.assertIn(f'predicted_{self.predictor.original_target_column}', future_df.columns)
     
     def test_evaluation_metrics(self):
         """Test model evaluation."""
