@@ -245,38 +245,17 @@ def main():
             base_output = "outputs"
             saved_plots = create_comprehensive_plots(model, train_df, test_df, base_output)
             
-            # Get data for performance summary
-            train_predictions = model.predict(train_df)
-            test_predictions = model.predict(test_df) if test_df is not None else None
-            
-            train_actual_values = train_df[args.target].values[model.sequence_length:] if args.target in train_df.columns else None
+            # Get metrics and print performance summary
+            train_metrics = model.evaluate(train_df)
+            test_metrics = model.evaluate(test_df) if test_df is not None else None
 
-            # For engineered features, get from processed data and inverse transform
-            if train_actual_values is None:
-                train_processed = model.prepare_features(train_df, fit_scaler=False)
-                train_actual_scaled = train_processed[args.target].values[model.sequence_length:]
-                train_actual_values = model.target_scaler.inverse_transform(train_actual_scaled.reshape(-1, 1)).flatten()
-
-            train_pred_aligned = train_predictions[:len(train_actual_values)]
-
-            if test_predictions is not None:
-                test_actual_values = test_df[args.target].values[model.sequence_length:] if args.target in test_df.columns else None
-
-                # For engineered features, get from processed data and inverse transform
-                if test_actual_values is None:
-                    test_processed = model.prepare_features(test_df, fit_scaler=False)
-                    test_actual_scaled = test_processed[args.target].values[model.sequence_length:]
-                    test_actual_values = model.target_scaler.inverse_transform(test_actual_scaled.reshape(-1, 1)).flatten()
-                
-                test_pred_aligned = test_predictions[:len(test_actual_values)]
-                
+            if test_metrics is not None:
                 # Print comprehensive performance summary
                 print_performance_summary(
-                    model, 
-                    train_actual_values, 
-                    train_pred_aligned,
-                    test_actual_values,
-                    test_pred_aligned
+                    model,
+                    train_metrics,
+                    test_metrics,
+                    saved_plots
                 )
                 
         except Exception as e:

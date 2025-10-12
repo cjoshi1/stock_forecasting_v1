@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
+import gc
 from typing import Optional, Dict, Any, Tuple
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
@@ -218,14 +219,16 @@ class TimeSeriesPredictor(ABC):
                 y = torch.tensor(targets_scaled.flatten(), dtype=torch.float32)
 
             else:
-                # Multi-horizon target handling
+                # Multi-horizon target handling - MEMORY OPTIMIZED
                 target_columns = [f"{self.target_column}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
 
-                # Collect all horizon targets
+                # Extract target values directly without re-creating sequences
+                # This is much more memory efficient than calling create_sequences multiple times
                 all_targets = []
                 for target_col in target_columns:
-                    _, horizon_targets = create_sequences(df_processed, self.sequence_length, target_col)
-                    all_targets.append(horizon_targets)
+                    # Extract target values starting from sequence_length (matching sequence indexing)
+                    target_values = df_processed[target_col].values[self.sequence_length:]
+                    all_targets.append(target_values)
 
                 # Stack into matrix: (samples, horizons)
                 targets_matrix = np.column_stack(all_targets)
@@ -463,30 +466,51 @@ class TimeSeriesPredictor(ABC):
     def predict(self, df: pd.DataFrame) -> np.ndarray:
         """
         Make predictions on new data.
-        
+
         Args:
             df: DataFrame with same structure as training data
-            
+
         Returns:
             predictions: Numpy array of predictions (in original scale)
         """
         if self.model is None:
             raise RuntimeError("Model must be trained first. Call fit().")
-        
+
+        # Clear feature cache before prediction to free memory
+        self._feature_cache.clear()
+        gc.collect()  # Force garbage collection to free memory
+
         X, _ = self.prepare_data(df, fit_scaler=False)
         
         self.model.eval()
         with torch.no_grad():
             # Handle both sequence and non-sequence models
             if len(X.shape) == 3:  # Sequence data
-                predictions_scaled = self.model(X.to(self.device)).squeeze()
+                predictions_scaled = self.model(X.to(self.device))
             else:  # Non-sequence data
-                predictions_scaled = self.model(X.to(self.device), None).squeeze()
-            
-            # Transform back to original scale
-            predictions_scaled = predictions_scaled.cpu().numpy().reshape(-1, 1)
-            predictions = self.target_scaler.inverse_transform(predictions_scaled)
-            return predictions.flatten()
+                predictions_scaled = self.model(X.to(self.device), None)
+
+            # Convert to numpy
+            predictions_scaled = predictions_scaled.cpu().numpy()
+
+            # Handle single vs multi-horizon predictions
+            if self.prediction_horizon == 1:
+                # Single horizon: reshape to (n_samples, 1) for inverse transform
+                predictions_scaled = predictions_scaled.reshape(-1, 1)
+                predictions = self.target_scaler.inverse_transform(predictions_scaled)
+                return predictions.flatten()
+            else:
+                # Multi-horizon: predictions_scaled shape is (n_samples, horizons)
+                # Inverse transform each horizon separately using its own scaler
+                predictions_list = []
+                for h in range(self.prediction_horizon):
+                    horizon_preds = predictions_scaled[:, h].reshape(-1, 1)
+                    horizon_preds_original = self.target_scalers[h].inverse_transform(horizon_preds)
+                    predictions_list.append(horizon_preds_original.flatten())
+
+                # Stack predictions: (n_samples, horizons)
+                predictions = np.column_stack(predictions_list)
+                return predictions
 
     def predict_from_features(self, df_processed: pd.DataFrame) -> np.ndarray:
         """
@@ -519,49 +543,97 @@ class TimeSeriesPredictor(ABC):
         self.model.eval()
         with torch.no_grad():
             if len(X.shape) == 3:  # Sequence data
-                predictions_scaled = self.model(X.to(self.device)).squeeze()
+                predictions_scaled = self.model(X.to(self.device))
             else:  # Non-sequence data
-                predictions_scaled = self.model(X.to(self.device), None).squeeze()
+                predictions_scaled = self.model(X.to(self.device), None)
 
-            # Transform back to original scale
-            predictions_scaled = predictions_scaled.cpu().numpy().reshape(-1, 1)
-            predictions = self.target_scaler.inverse_transform(predictions_scaled)
+            # Convert to numpy
+            predictions_scaled = predictions_scaled.cpu().numpy()
 
-        return predictions.flatten()
+            # Handle single vs multi-horizon predictions
+            if self.prediction_horizon == 1:
+                # Single horizon: reshape to (n_samples, 1) for inverse transform
+                predictions_scaled = predictions_scaled.reshape(-1, 1)
+                predictions = self.target_scaler.inverse_transform(predictions_scaled)
+                return predictions.flatten()
+            else:
+                # Multi-horizon: predictions_scaled shape is (n_samples, horizons)
+                # Inverse transform each horizon separately using its own scaler
+                predictions_list = []
+                for h in range(self.prediction_horizon):
+                    horizon_preds = predictions_scaled[:, h].reshape(-1, 1)
+                    horizon_preds_original = self.target_scalers[h].inverse_transform(horizon_preds)
+                    predictions_list.append(horizon_preds_original.flatten())
 
-    def evaluate(self, df: pd.DataFrame) -> Dict[str, float]:
+                # Stack predictions: (n_samples, horizons)
+                predictions = np.column_stack(predictions_list)
+                return predictions
+
+    def evaluate(self, df: pd.DataFrame) -> Dict:
         """
         Evaluate model performance.
-        
+
+        For single-horizon models, returns simple metrics dict.
+        For multi-horizon models, returns nested dict with per-horizon metrics.
+
         Args:
             df: DataFrame with raw data (will be processed to extract target)
-            
+
         Returns:
             metrics: Dictionary of evaluation metrics
+                Single-horizon: {'MAE': ..., 'RMSE': ..., ...}
+                Multi-horizon: {
+                    'overall': {'MAE': ..., 'RMSE': ..., ...},
+                    'horizon_1': {'MAE': ..., 'RMSE': ..., ...},
+                    'horizon_2': {...}, ...
+                }
         """
+        # Clear feature cache before evaluation to free memory
+        self._feature_cache.clear()
+        gc.collect()  # Force garbage collection to free memory
+
         # Process features first to get the target column
         df_processed = self.prepare_features(df, fit_scaler=False)
-        
+
         # Now check if target column exists after processing
         if self.target_column not in df_processed.columns:
             raise ValueError(f"Target column '{self.target_column}' not found after feature engineering")
-        
+
         predictions = self.predict(df)
-        
+
         # For sequences, we need to align the actual values with predictions
         # Predictions correspond to targets starting from index sequence_length
         if self.sequence_length > 1:
             actual = df_processed[self.target_column].values[self.sequence_length:]
         else:
             actual = df_processed[self.target_column].values
-        
-        # Ensure same length (take minimum to be safe)
-        min_len = min(len(actual), len(predictions))
-        actual = actual[:min_len]
-        predictions = predictions[:min_len]
-        
-        from ..core.utils import calculate_metrics
-        return calculate_metrics(actual, predictions)
+
+        # Handle single vs multi-horizon evaluation
+        if self.prediction_horizon == 1:
+            # Single-horizon: return simple metrics dict (backward compatible)
+            from ..core.utils import calculate_metrics
+
+            # Ensure same length
+            min_len = min(len(actual), len(predictions))
+            actual = actual[:min_len]
+            predictions = predictions[:min_len]
+
+            return calculate_metrics(actual, predictions)
+        else:
+            # Multi-horizon: return nested dict with per-horizon metrics
+            from ..core.utils import calculate_metrics_multi_horizon
+
+            # For multi-horizon, predictions is 2D: (n_samples, horizons)
+            # Align actual values - we need enough actual values for all horizons
+            min_len = min(len(actual), predictions.shape[0])
+            actual_aligned = actual[:min_len + self.prediction_horizon - 1]  # Extra values for future horizons
+            predictions_aligned = predictions[:min_len]
+
+            return calculate_metrics_multi_horizon(
+                actual_aligned,
+                predictions_aligned,
+                self.prediction_horizon
+            )
 
     def evaluate_from_features(self, df_processed: pd.DataFrame) -> Dict[str, float]:
         """
