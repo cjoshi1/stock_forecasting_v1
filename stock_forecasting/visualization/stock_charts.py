@@ -269,9 +269,17 @@ def create_comprehensive_plots(
     train_predictions = model.predict(train_df)
     test_predictions = model.predict(test_df)
 
-    # Get corresponding actual values (base alignment for first horizon)
-    train_actual_base = train_df['close'].values[model.sequence_length:]
-    test_actual_base = test_df['close'].values[model.sequence_length:]
+    # Get corresponding actual values with proper alignment
+    # create_features() does shift(-h) and dropna() which removes last prediction_horizon rows
+    # Then create_sequences() removes first sequence_length rows
+    # So we need: [sequence_length : -prediction_horizon]
+    horizon = model.prediction_horizon
+    if horizon == 1:
+        train_actual_base = train_df['close'].values[model.sequence_length:-1]
+        test_actual_base = test_df['close'].values[model.sequence_length:-1]
+    else:
+        train_actual_base = train_df['close'].values[model.sequence_length:-horizon]
+        test_actual_base = test_df['close'].values[model.sequence_length:-horizon]
 
     saved_plots = {}
 
@@ -279,18 +287,11 @@ def create_comprehensive_plots(
     is_multi_horizon = len(train_predictions.shape) > 1 and train_predictions.shape[1] > 1
 
     if not is_multi_horizon:
-        # Single-horizon: create one comprehensive plot (existing behavior)
-        train_pred_h1 = train_predictions
-        test_pred_h1 = test_predictions
-
-        # Align actuals and predictions
-        min_train_len = min(len(train_actual_base), len(train_pred_h1))
-        min_test_len = min(len(test_actual_base), len(test_pred_h1))
-
-        train_actual = train_actual_base[:min_train_len]
-        train_pred = train_pred_h1[:min_train_len]
-        test_actual = test_actual_base[:min_test_len]
-        test_pred = test_pred_h1[:min_test_len]
+        # Single-horizon: create one comprehensive plot (arrays are now properly aligned)
+        train_actual = train_actual_base
+        train_pred = train_predictions
+        test_actual = test_actual_base
+        test_pred = test_predictions
 
         # Create single comprehensive plot
         predictions_path = output_path / "comprehensive_predictions.png"
@@ -311,10 +312,11 @@ def create_comprehensive_plots(
 
             # Get actual values h steps ahead
             # For horizon h (0-indexed), actual values are at position [h:]
+            # Arrays are already properly aligned from the base slicing above
             train_actual_h = train_actual_base[h:]
             test_actual_h = test_actual_base[h:]
 
-            # Align lengths
+            # Take minimum to handle horizon offsets (still needed for multi-horizon alignment)
             min_train_len = min(len(train_actual_h), len(train_pred_h))
             min_test_len = min(len(test_actual_h), len(test_pred_h))
 

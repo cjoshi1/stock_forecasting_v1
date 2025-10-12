@@ -99,33 +99,45 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
             test_predictions = None
             test_processed = None
 
-        # Get timestamps for plotting
-        train_timestamps = train_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
-        if val_df is not None:
-            val_timestamps = val_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
-        if test_df is not None:
-            test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:]
-
-        # Get actual values from original dataframes (not scaled processed features)
-        train_actual = train_df[predictor.target_column].iloc[predictor.sequence_length:]
-        if val_df is not None and val_processed is not None:
-            val_actual = val_df[predictor.target_column].iloc[predictor.sequence_length:]
-        if test_df is not None and test_processed is not None:
-            test_actual = test_df[predictor.target_column].iloc[predictor.sequence_length:]
+        # Get timestamps for plotting - align with predictions
+        # create_features() does shift(-h) and dropna() which removes last prediction_horizon rows
+        # Then create_sequences() removes first sequence_length rows from the processed data
+        # So we need: iloc[sequence_length : -prediction_horizon] to match
+        horizon = predictor.prediction_horizon
+        if horizon == 1:
+            # Single-horizon: drops last 1 row
+            train_timestamps = train_df[predictor.timestamp_col].iloc[predictor.sequence_length:-1].values
+            train_actual = train_df[predictor.target_column].iloc[predictor.sequence_length:-1].values
+            if val_df is not None:
+                val_timestamps = val_df[predictor.timestamp_col].iloc[predictor.sequence_length:-1].values
+                val_actual = val_df[predictor.target_column].iloc[predictor.sequence_length:-1].values
+            if test_df is not None:
+                test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:-1].values
+                test_actual = test_df[predictor.target_column].iloc[predictor.sequence_length:-1].values
+        else:
+            # Multi-horizon: drops last prediction_horizon rows
+            train_timestamps = train_df[predictor.timestamp_col].iloc[predictor.sequence_length:-horizon].values
+            train_actual = train_df[predictor.target_column].iloc[predictor.sequence_length:-horizon].values
+            if val_df is not None:
+                val_timestamps = val_df[predictor.timestamp_col].iloc[predictor.sequence_length:-horizon].values
+                val_actual = val_df[predictor.target_column].iloc[predictor.sequence_length:-horizon].values
+            if test_df is not None:
+                test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:-horizon].values
+                test_actual = test_df[predictor.target_column].iloc[predictor.sequence_length:-horizon].values
         
         # Create comprehensive plot
         fig, axes = plt.subplots(2, 1, figsize=(15, 10))
         
-        # Plot 1: Predictions vs Actual
-        axes[0].plot(train_timestamps, train_actual[:len(train_predictions)], 
+        # Plot 1: Predictions vs Actual (arrays are now properly aligned)
+        axes[0].plot(train_timestamps, train_actual,
                     label='Actual (Train)', alpha=0.7, linewidth=1)
-        axes[0].plot(train_timestamps, train_predictions[:len(train_actual)], 
+        axes[0].plot(train_timestamps, train_predictions,
                     label='Predicted (Train)', alpha=0.8, linewidth=1)
-        
+
         if test_predictions is not None and len(test_predictions) > 0:
-            axes[0].plot(test_timestamps, test_actual[:len(test_predictions)],
+            axes[0].plot(test_timestamps, test_actual,
                         label='Actual (Test)', alpha=0.7, linewidth=1)
-            axes[0].plot(test_timestamps, test_predictions[:len(test_actual)],
+            axes[0].plot(test_timestamps, test_predictions,
                         label='Predicted (Test)', alpha=0.8, linewidth=1)
 
         # Add future predictions to plot
@@ -181,11 +193,11 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         # Save enhanced predictions to CSV with data split indicators and metrics
         data_frames = []
 
-        # Add training data
+        # Add training data (arrays are now properly aligned)
         train_csv_data = pd.DataFrame({
             predictor.timestamp_col: train_timestamps,
-            f'actual_{predictor.target_column}': train_actual[:len(train_predictions)],
-            f'predicted_{predictor.target_column}': train_predictions[:len(train_actual)],
+            f'actual_{predictor.target_column}': train_actual,
+            f'predicted_{predictor.target_column}': train_predictions,
             'data_split': 'train'
         })
         data_frames.append(train_csv_data)
@@ -194,8 +206,8 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         if val_predictions is not None and len(val_predictions) > 0:
             val_csv_data = pd.DataFrame({
                 predictor.timestamp_col: val_timestamps,
-                f'actual_{predictor.target_column}': val_actual[:len(val_predictions)],
-                f'predicted_{predictor.target_column}': val_predictions[:len(val_actual)],
+                f'actual_{predictor.target_column}': val_actual,
+                f'predicted_{predictor.target_column}': val_predictions,
                 'data_split': 'validation'
             })
             data_frames.append(val_csv_data)
@@ -204,8 +216,8 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         if test_predictions is not None and len(test_predictions) > 0:
             test_csv_data = pd.DataFrame({
                 predictor.timestamp_col: test_timestamps,
-                f'actual_{predictor.target_column}': test_actual[:len(test_predictions)],
-                f'predicted_{predictor.target_column}': test_predictions[:len(test_actual)],
+                f'actual_{predictor.target_column}': test_actual,
+                f'predicted_{predictor.target_column}': test_predictions,
                 'data_split': 'test'
             })
             data_frames.append(test_csv_data)
