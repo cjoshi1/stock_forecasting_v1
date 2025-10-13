@@ -143,13 +143,15 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         # Add future predictions to plot
         if future_predictions is not None and len(future_predictions) > 0:
             future_timestamps = future_predictions[predictor.timestamp_col]
-            future_values = future_predictions[f'predicted_{predictor.target_column}']
+            # Use original_target_column for future predictions column name
+            future_col = f'predicted_{predictor.original_target_column}'
+            future_values = future_predictions[future_col]
             axes[0].plot(future_timestamps, future_values,
                         label='Future Predictions', alpha=0.9, linewidth=2,
                         linestyle='--', color='red', marker='o', markersize=3)
         
-        axes[0].set_title(f'Intraday {predictor.target_column.title()} Predictions - {predictor.timeframe}')
-        axes[0].set_ylabel(predictor.target_column.title())
+        axes[0].set_title(f'Intraday {predictor.original_target_column.title()} Predictions - {predictor.timeframe}')
+        axes[0].set_ylabel(predictor.original_target_column.title())
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         
