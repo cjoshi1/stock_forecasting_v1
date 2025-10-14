@@ -52,6 +52,7 @@ def create_essential_features(df: pd.DataFrame, target_column: str = 'close',
         timestamp_col: Name of timestamp column
         timeframe: Trading timeframe ('1min', '5min', '15min', '1h')
         prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
+        group_column: Optional column for group-based scaling (e.g., 'symbol')
 
     Returns:
         DataFrame with essential features added
@@ -339,6 +340,7 @@ def create_intraday_features(df: pd.DataFrame, target_column: str = 'close',
         verbose: Whether to print feature creation steps
         use_essential_only: If True, only create essential features (volume + vwap + cyclical time)
         return_categories: If True, return feature categories along with DataFrame
+        group_column: Optional column for group-based scaling (e.g., 'symbol')
 
     Returns:
         DataFrame with features (and optionally feature categories dict)
