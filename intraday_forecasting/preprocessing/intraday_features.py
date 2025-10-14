@@ -42,7 +42,7 @@ def categorize_features(all_features: List[str], essential_features: List[str]) 
 
 def create_essential_features(df: pd.DataFrame, target_column: str = 'close',
                              timestamp_col: str = 'timestamp', timeframe: str = '5min',
-                             prediction_horizon: int = 1) -> pd.DataFrame:
+                             prediction_horizon: int = 1, group_column: Optional[str] = None) -> pd.DataFrame:
     """
     Create essential features: volume + vwap + cyclical time features.
 
@@ -123,6 +123,10 @@ def create_essential_features(df: pd.DataFrame, target_column: str = 'close',
     # Also keep the original target column if it's not already in essential features
     if target_column not in columns_to_keep and target_column in df_processed.columns:
         columns_to_keep.append(target_column)
+
+    # Also keep the group column if specified (e.g., 'symbol' for multi-asset datasets)
+    if group_column is not None and group_column in df_processed.columns:
+        columns_to_keep.append(group_column)
 
     df_processed = df_processed[columns_to_keep]
 
@@ -321,7 +325,7 @@ def create_intraday_features(df: pd.DataFrame, target_column: str = 'close',
                            timestamp_col: str = 'timestamp', country: str = 'US',
                            timeframe: str = '5min', prediction_horizon: int = 1,
                            verbose: bool = False, use_essential_only: bool = True,
-                           return_categories: bool = False) -> Tuple[pd.DataFrame, Dict[str, List[str]]] | pd.DataFrame:
+                           return_categories: bool = False, group_column: Optional[str] = None) -> Tuple[pd.DataFrame, Dict[str, List[str]]] | pd.DataFrame:
     """
     Create comprehensive intraday feature set for specified country.
 
@@ -351,7 +355,7 @@ def create_intraday_features(df: pd.DataFrame, target_column: str = 'close',
         # Only create essential features
         if verbose:
             print("  ✓ Creating essential features (volume + vwap + cyclical time)...")
-        df_processed = create_essential_features(df_processed, target_column, timestamp_col, timeframe, prediction_horizon)
+        df_processed = create_essential_features(df_processed, target_column, timestamp_col, timeframe, prediction_horizon, group_column)
         # Essential features depend on timeframe
         if timeframe == '1h':
             all_categories['essential'] = ['volume', 'vwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']
@@ -362,7 +366,7 @@ def create_intraday_features(df: pd.DataFrame, target_column: str = 'close',
         # 1. Essential features first
         if verbose:
             print("  ✓ Creating essential features...")
-        df_processed = create_essential_features(df_processed, target_column, timestamp_col, timeframe, prediction_horizon)
+        df_processed = create_essential_features(df_processed, target_column, timestamp_col, timeframe, prediction_horizon, group_column)
         # Essential features depend on timeframe
         if timeframe == '1h':
             all_categories['essential'] = ['volume', 'vwap', 'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos']

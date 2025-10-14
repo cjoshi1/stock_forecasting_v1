@@ -145,7 +145,8 @@ class IntradayPredictor(TimeSeriesPredictor):
             country=self.country,
             timeframe=self.timeframe,
             prediction_horizon=self.prediction_horizon,
-            verbose=self.verbose
+            verbose=self.verbose,
+            group_column=self.group_column  # Pass group_column to preserve it
         )
     
     def get_timeframe_info(self) -> dict:
