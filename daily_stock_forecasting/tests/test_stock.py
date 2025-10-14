@@ -13,9 +13,9 @@ import sys
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stock_forecasting.predictor import StockPredictor
-from stock_forecasting.preprocessing.stock_features import create_stock_features, create_technical_indicators
-from stock_forecasting.preprocessing.market_data import (
+from daily_stock_forecasting.predictor import StockPredictor
+from daily_stock_forecasting.preprocessing.stock_features import create_stock_features, create_technical_indicators
+from daily_stock_forecasting.preprocessing.market_data import (
     load_stock_data, validate_stock_data, create_sample_stock_data
 )
 from tf_predictor.core.utils import calculate_metrics, split_time_series

@@ -309,7 +309,9 @@ def main():
                        help='Use synthetic sample data instead of real data')
     parser.add_argument('--sample_days', type=int, default=5,
                        help='Number of days for sample data generation')
-    
+    parser.add_argument('--group_column', type=str, default=None,
+                       help='Column for group-based scaling (e.g., "symbol" for multi-stock datasets). If specified, each group gets separate scalers.')
+
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=None,
                        help='Number of historical periods (auto-selected if not specified)')
@@ -437,6 +439,7 @@ def main():
         model_type=args.model_type,
         country=args.country,
         sequence_length=sequence_length,
+        group_column=args.group_column,
         d_token=args.d_token,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
@@ -451,7 +454,11 @@ def main():
     print(f"   - Token dimension: {args.d_token}")
     print(f"   - Layers: {args.n_layers}")
     print(f"   - Attention heads: {args.n_heads}")
-    
+    if args.group_column:
+        print(f"   - Group-based scaling: enabled (group_column='{args.group_column}')")
+    else:
+        print(f"   - Scaling: single-group (global)")
+
     # 5. Train Model
     print(f"\n🏋️ Training model...")
     

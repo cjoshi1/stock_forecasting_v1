@@ -5,6 +5,8 @@ A specialized application for daily stock and cryptocurrency price prediction us
 ## 🎯 Features
 
 - **Multi-Asset Support**: Traditional stocks (5-day week) and cryptocurrencies (7-day week, 24/7)
+- **Portfolio Support** ⭐ NEW: Train on multiple stocks with group-based scaling for better accuracy
+- **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
 - **Multi-Horizon Predictions**: Predict 1, 2, 3+ steps ahead with `prediction_horizon`
 - **Essential vs Full Features**: Choose between minimal essential features or comprehensive technical indicators
 - **Flexible Target Variables**: Any input feature can be the prediction target (volume, typical_price, close, etc.)
@@ -18,7 +20,7 @@ A specialized application for daily stock and cryptocurrency price prediction us
 ### Basic Usage
 
 ```python
-from stock_forecasting import StockPredictor, load_stock_data
+from daily_stock_forecasting import StockPredictor, load_stock_data
 
 # Load your stock data
 df = load_stock_data('path/to/your/stock_data.csv')
@@ -48,34 +50,97 @@ predictions = predictor.predict(test_df)
 metrics = predictor.evaluate(test_df)
 ```
 
+### Portfolio Prediction with Group-Based Scaling ⭐ NEW
+
+```python
+from daily_stock_forecasting import StockPredictor
+import pandas as pd
+
+# Load multi-stock portfolio data
+# DataFrame should have: date, symbol, open, high, low, close, volume
+df = pd.read_csv('portfolio_data.csv')
+
+# Initialize with group-based scaling
+predictor = StockPredictor(
+    target_column='close',
+    sequence_length=20,
+    group_column='symbol',       # ⭐ Enable group-based scaling
+    prediction_horizon=1,
+    asset_type='stock',
+    d_token=192,
+    n_layers=4,
+    n_heads=8,
+    dropout=0.15
+)
+
+# Data will be automatically sorted by [symbol, date]
+# Each symbol gets its own scaler for features and targets
+predictor.fit(
+    df=train_df,
+    val_df=val_df,
+    epochs=150,
+    batch_size=64,
+    learning_rate=8e-4
+)
+
+# Predictions automatically use correct scaler per symbol
+predictions = predictor.predict(test_df)
+```
+
 ### Command Line Interface
 
 #### Quick Start Examples
 
 ```bash
 # Basic stock prediction with sample data
-python stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 50
+python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 50
 
 # Crypto daily prediction with sample data
-python stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
+python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
 
 # Use your own stock data with essential features (fast training)
-python stock_forecasting/main.py --data_path data/MSFT_historical_price_cleaned.csv --target volume --asset_type stock --use_essential_only --prediction_horizon 2 --epochs 50
+python daily_stock_forecasting/main.py --data_path data/MSFT_historical_price_cleaned.csv --target volume --asset_type stock --use_essential_only --prediction_horizon 2 --epochs 50
 
 # Crypto (BTC, ETH, etc.) daily prediction
-python stock_forecasting/main.py --data_path data/BTC-USD-daily.csv --target close --asset_type crypto --epochs 100
+python daily_stock_forecasting/main.py --data_path data/BTC-USD-daily.csv --target close --asset_type crypto --epochs 100
 
 # Multi-step ahead prediction with all features
-python stock_forecasting/main.py --data_path data/raw/AAPL.csv --target close --asset_type stock --prediction_horizon 3 --sequence_length 7 --epochs 100
+python daily_stock_forecasting/main.py --data_path data/raw/AAPL.csv --target close --asset_type stock --prediction_horizon 3 --sequence_length 7 --epochs 100
 
 # Quick training with smaller model
-python stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 20 --d_token 64 --n_layers 2 --batch_size 64
+python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 20 --d_token 64 --n_layers 2 --batch_size 64
+```
+
+#### Portfolio with Group-Based Scaling ⭐ NEW
+
+```bash
+# Train on stock portfolio with independent scaling per symbol
+python daily_stock_forecasting/main.py \
+  --data_path portfolio_data.csv \
+  --group_column symbol \
+  --target close \
+  --asset_type stock \
+  --sequence_length 20 \
+  --epochs 150 \
+  --batch_size 64 \
+  --d_token 192 \
+  --n_layers 4
+
+# Multi-crypto portfolio with group scaling
+python daily_stock_forecasting/main.py \
+  --data_path crypto_portfolio.csv \
+  --group_column symbol \
+  --target close \
+  --asset_type crypto \
+  --prediction_horizon 3 \
+  --epochs 200 \
+  --model_path models/crypto_portfolio.pt
 ```
 
 #### Complete Command with All Parameters
 
 ```bash
-PYTHONPATH=. venv/bin/python stock_forecasting/main.py \
+PYTHONPATH=. venv/bin/python daily_stock_forecasting/main.py \
   --data_path /path/to/your/data.csv \
   --target close \
   --asset_type stock \
@@ -262,7 +327,7 @@ date,open,high,low,close,volume
 ## 📁 Project Structure
 
 ```
-stock_forecasting/
+daily_stock_forecasting/
 ├── data/
 │   ├── sample/                     # Sample datasets
 │   │   └── MSFT_sample.csv        # Microsoft sample data
@@ -289,7 +354,7 @@ stock_forecasting/
 
 ### 1. Essential Features - Fast Training
 ```python
-from stock_forecasting import StockPredictor, create_sample_stock_data
+from daily_stock_forecasting import StockPredictor, create_sample_stock_data
 from tf_predictor.core.utils import split_time_series
 
 # Create or load data
@@ -443,8 +508,8 @@ from tf_predictor.core.utils import split_time_series, calculate_metrics
 from tf_predictor.preprocessing.time_features import create_date_features
 
 # Use stock-specific components  
-from stock_forecasting import StockPredictor
-from stock_forecasting.preprocessing.stock_features import create_technical_indicators
+from daily_stock_forecasting import StockPredictor
+from daily_stock_forecasting.preprocessing.stock_features import create_technical_indicators
 ```
 
 ## 🧪 Testing
@@ -473,7 +538,7 @@ Successfully tested on real MSFT data (`data/MSFT_historical_price_cleaned.csv`,
 
 **Volume Prediction (Essential Features)**
 ```bash
-python -m stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.csv --target volume --prediction_horizon 2 --use_essential_only --epochs 20
+python -m daily_stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.csv --target volume --prediction_horizon 2 --use_essential_only --epochs 20
 ```
 - **Test MAPE: 16.25%** (predicting trading volume 2 steps ahead)
 - **Features: 7** (volume, typical_price, seasonal cyclical)
@@ -481,7 +546,7 @@ python -m stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.
 
 **Close Price Prediction (Essential Features)**
 ```bash
-python -m stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.csv --target close --prediction_horizon 1 --use_essential_only --epochs 20
+python -m daily_stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.csv --target close --prediction_horizon 1 --use_essential_only --epochs 20
 ```
 - **Test MAPE: 7.44%** (predicting close price 1 step ahead)
 - **Features: 8** (7 essential + close as feature)

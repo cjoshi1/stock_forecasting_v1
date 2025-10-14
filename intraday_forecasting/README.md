@@ -5,6 +5,8 @@ A specialized high-frequency trading forecasting system using the TF Predictor (
 ## 🎯 Features
 
 - **Multi-Horizon Prediction**: Predict 1, 2, 3+ time periods ahead simultaneously
+- **Multi-Symbol Support** ⭐ NEW: Train on multiple symbols with group-based scaling for better accuracy
+- **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
 - **Multi-Country Support**: US, India, and Crypto markets with specific trading hours (24/7 for crypto)
 - **Multiple Timeframes**: 1min, 5min, 15min, 1h trading frequencies
 - **Market Hours Filtering**: Automatic filtering for each country's trading hours
@@ -61,6 +63,43 @@ metrics = predictor.evaluate(test_df)
 future_predictions = predictor.predict_next_bars(test_df, n_predictions=5)
 ```
 
+### Multi-Symbol Trading with Group-Based Scaling ⭐ NEW
+
+```python
+from intraday_forecasting import IntradayPredictor
+import pandas as pd
+
+# Load multi-symbol intraday data
+# DataFrame should have: timestamp, symbol, open, high, low, close, volume
+df = pd.read_csv('multi_symbol_5min.csv')
+
+# Initialize with group-based scaling
+predictor = IntradayPredictor(
+    target_column='close',
+    timeframe='5min',
+    country='US',
+    group_column='symbol',  # ⭐ Enable group-based scaling
+    prediction_horizon=1,
+    d_token=192,
+    n_layers=4,
+    n_heads=8,
+    dropout=0.15
+)
+
+# Data will be automatically sorted by [symbol, timestamp]
+# Each symbol gets its own scaler for features and targets
+predictor.fit(
+    df=train_df,
+    val_df=val_df,
+    epochs=150,
+    batch_size=128,
+    verbose=True
+)
+
+# Predictions automatically use correct scaler per symbol
+predictions = predictor.predict(test_df)
+```
+
 ### Command Line Interface
 
 #### Quick Start Examples
@@ -86,6 +125,31 @@ python main.py --data_path data/NIFTY_1min.csv --timeframe 5min --country INDIA 
 
 # Volume prediction
 python main.py --use_sample_data --timeframe 5min --country US --target volume --epochs 25
+```
+
+#### Multi-Symbol with Group-Based Scaling ⭐ NEW
+
+```bash
+# Train on multiple symbols with independent scaling
+python main.py \
+  --data_path multi_symbol_5min.csv \
+  --group_column symbol \
+  --timeframe 5min \
+  --country US \
+  --epochs 150 \
+  --batch_size 128 \
+  --d_token 192 \
+  --n_layers 4
+
+# Crypto multi-pair trading
+python main.py \
+  --data_path crypto_multi_pair.csv \
+  --group_column symbol \
+  --timeframe 15min \
+  --country CRYPTO \
+  --epochs 200 \
+  --batch_size 128 \
+  --model_path models/crypto_portfolio.pt
 ```
 
 #### Complete Command with All Parameters

@@ -21,9 +21,9 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from stock_forecasting.predictor import StockPredictor
-from stock_forecasting.preprocessing.market_data import load_stock_data, create_sample_stock_data
-from stock_forecasting.preprocessing.stock_features import create_stock_features
+from daily_stock_forecasting.predictor import StockPredictor
+from daily_stock_forecasting.preprocessing.market_data import load_stock_data, create_sample_stock_data
+from daily_stock_forecasting.preprocessing.stock_features import create_stock_features
 from tf_predictor.core.utils import split_time_series, calculate_metrics
 
 

@@ -5,7 +5,9 @@ A reusable Python library for time series forecasting using the FT-Transformer (
 ## 🎯 Features
 
 - **Generic Time Series Predictor**: Abstract base class for any time series domain
-- **State-of-the-art Architecture**: FT-Transformer with attention mechanisms  
+- **State-of-the-art Architecture**: FT-Transformer with attention mechanisms
+- **Group-Based Scaling** ⭐ NEW: Independent scaling per group (e.g., per entity/symbol) while training unified models
+- **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
 - **Flexible Feature Engineering**: Extensible preprocessing pipeline
 - **Sequence Modeling**: Built-in support for multi-step temporal sequences
 - **Production Ready**: Model persistence, evaluation metrics, and utilities
@@ -93,6 +95,48 @@ multi_predictor.fit(train_df, val_df, epochs=100)
 predictions = multi_predictor.predict(test_df)
 # predictions shape: (n_samples, 3) for 3 horizons
 print(f"Predictions shape: {predictions.shape}")
+```
+
+### 4. Group-Based Scaling for Multi-Entity Predictions ⭐ NEW
+
+```python
+from tf_predictor.core.predictor import TimeSeriesPredictor
+from tf_predictor.preprocessing.time_features import create_date_features
+
+class MultiEntityPredictor(TimeSeriesPredictor):
+    def create_features(self, df, fit_scaler=False):
+        df_processed = df.copy()
+        if 'date' in df_processed.columns:
+            df_processed = create_date_features(df_processed, 'date')
+        return df_processed.fillna(0)
+
+# Load data with multiple entities
+# DataFrame should have: date, entity_id, value, ...
+df = pd.read_csv('multi_entity_data.csv')
+
+# Initialize with group-based scaling
+predictor = MultiEntityPredictor(
+    target_column='value',
+    sequence_length=10,
+    group_column='entity_id',  # ⭐ Each entity gets independent scaling
+    d_token=128,
+    n_layers=3,
+    n_heads=8
+)
+
+# Data will be automatically sorted by [entity_id, date]
+# Each entity gets its own scaler, but trains in a unified model
+predictor.fit(train_df, val_df, epochs=100)
+
+# Predictions automatically use correct scaler per entity
+predictions = predictor.predict(test_df)
+```
+
+**Benefits of Group-Based Scaling:**
+- ✅ Better predictions when entities have different value ranges
+- ✅ Single unified model learns patterns across all entities
+- ✅ Automatic temporal ordering within each group
+- ✅ Handles missing groups gracefully during prediction
 ```
 
 ## 📚 Core Components
@@ -332,7 +376,7 @@ pytest tf_predictor/tests/
 
 This library serves as the foundation for domain-specific applications:
 
-- **Stock Forecasting**: `stock_forecasting` package (financial markets)
+- **Stock Forecasting**: `daily_stock_forecasting` package (financial markets)
 - **Energy Forecasting**: Extend for power grid and consumption modeling
 - **Sales Forecasting**: E-commerce and retail demand prediction  
 - **IoT Monitoring**: Sensor data and anomaly detection

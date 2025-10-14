@@ -29,7 +29,7 @@ class IntradayPredictor(TimeSeriesPredictor):
     
     def __init__(self, target_column: str = 'close', timeframe: str = '5min', model_type: str = 'ft',
                  timestamp_col: str = 'timestamp', country: str = 'US',
-                 prediction_horizon: int = 1,
+                 prediction_horizon: int = 1, group_column: Optional[str] = None,
                  d_token: int = 128, n_layers: int = 3, n_heads: int = 8,
                  dropout: float = 0.1, verbose: bool = False, **kwargs):
         """
@@ -42,6 +42,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             timestamp_col: Name of timestamp column
             country: Country code ('US' or 'INDIA')
             prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
+            group_column: Optional column for group-based scaling (e.g., 'symbol' for multi-stock datasets)
             d_token: Token embedding dimension
             n_layers: Number of transformer layers
             n_heads: Number of attention heads
@@ -86,6 +87,7 @@ class IntradayPredictor(TimeSeriesPredictor):
                 target_column=shifted_target_name,
                 sequence_length=sequence_length,
                 prediction_horizon=prediction_horizon,
+                group_column=group_column,
                 d_model=d_token,  # CSNPredictor uses d_model instead of d_token
                 n_layers=n_layers,
                 n_heads=n_heads,
@@ -99,6 +101,7 @@ class IntradayPredictor(TimeSeriesPredictor):
                 target_column=shifted_target_name,
                 sequence_length=sequence_length,
                 prediction_horizon=prediction_horizon,
+                group_column=group_column,
                 d_token=d_token,
                 n_layers=n_layers,
                 n_heads=n_heads,
@@ -167,12 +170,17 @@ class IntradayPredictor(TimeSeriesPredictor):
         """
         Predict next N bars for intraday trading.
 
+        For single-horizon (prediction_horizon=1): Returns simple predictions
+        For multi-horizon (prediction_horizon>1): Returns predictions for each horizon as separate columns
+
         Args:
             df: DataFrame with recent intraday data
             n_predictions: Number of future bars to predict
 
         Returns:
             DataFrame with predicted values and timestamps
+            - Single-horizon: columns [timestamp, predicted_{target}]
+            - Multi-horizon: columns [timestamp, predicted_{target}_h1, predicted_{target}_h2, ...]
         """
         # Get base predictions
         predictions = self.predict(df)
@@ -198,11 +206,25 @@ class IntradayPredictor(TimeSeriesPredictor):
             freq=freq
         )
 
-        # Create result DataFrame using original target column name
-        result = pd.DataFrame({
-            self.timestamp_col: future_timestamps,
-            f'predicted_{self.original_target_column}': predictions[:n_predictions]
-        })
+        # Handle single vs multi-horizon predictions
+        if self.prediction_horizon == 1:
+            # Single-horizon: predictions is 1D array
+            result = pd.DataFrame({
+                self.timestamp_col: future_timestamps,
+                f'predicted_{self.original_target_column}': predictions[:n_predictions]
+            })
+        else:
+            # Multi-horizon: predictions is 2D array (n_samples, n_horizons)
+            # Create columns for each horizon
+            result_dict = {self.timestamp_col: future_timestamps}
+
+            for h in range(self.prediction_horizon):
+                horizon_num = h + 1
+                # Extract predictions for this specific horizon
+                horizon_predictions = predictions[:n_predictions, h]
+                result_dict[f'predicted_{self.original_target_column}_h{horizon_num}'] = horizon_predictions
+
+            result = pd.DataFrame(result_dict)
 
         return result
     

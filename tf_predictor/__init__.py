@@ -6,8 +6,8 @@ extended for any time series forecasting domain.
 """
 
 from .core.predictor import TimeSeriesPredictor
-from .core.model import (
-    FTTransformerPredictor, 
+from .core.ft_model import (
+    FTTransformerPredictor,
     SequenceFTTransformerPredictor,
     FeatureTokenizer
 )

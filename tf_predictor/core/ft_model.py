@@ -193,6 +193,10 @@ import torch.nn.functional as F
 from typing import Optional, List, Dict, Any
 import numpy as np
 
+# Import shared base components
+from .base.embeddings import CLSToken, NumericalTokenizer, CategoricalEmbedding
+from .base.prediction_heads import MultiHorizonHead
+
 
 class FeatureTokenizer(nn.Module):
     """Converts tabular features into transformer tokens."""
@@ -208,25 +212,19 @@ class FeatureTokenizer(nn.Module):
         self.cat_cardinalities = cat_cardinalities
         self.d_token = d_token
         
-        # CLS token for prediction - learnable parameter that aggregates all feature information
-        # Shape: [1, 1, d_token] → will be expanded to [batch_size, 1, d_token]
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_token))
+        # CLS token for prediction (using shared base component)
+        # Learnable parameter that aggregates all feature information
+        self.cls_token = CLSToken(d_token)
 
-        # Numerical feature tokenization: f(x) = x * W + b
+        # Numerical feature tokenization using shared base component
         # Each numerical feature gets its own weight vector and bias vector
-        # This allows each feature to be mapped to its own subspace in d_token dimensions
         if num_numerical > 0:
-            self.num_weights = nn.Parameter(torch.randn(num_numerical, d_token))  # [num_features, d_token]
-            self.num_biases = nn.Parameter(torch.randn(num_numerical, d_token))   # [num_features, d_token]
+            self.num_tokenizer = NumericalTokenizer(num_numerical, d_token)
 
-        # Categorical feature embeddings - standard embedding lookup tables
+        # Categorical feature embeddings using shared base component
         # Each categorical feature gets its own embedding table: vocab_size → d_token
-        # Example: year feature with 5 unique values gets Embedding(5, d_token)
         if cat_cardinalities:
-            self.cat_embeddings = nn.ModuleList([
-                nn.Embedding(cardinality, d_token)
-                for cardinality in cat_cardinalities
-            ])
+            self.cat_embedding = CategoricalEmbedding(cat_cardinalities, d_token)
     
     def forward(self, x_num: Optional[torch.Tensor], x_cat: Optional[torch.Tensor]) -> torch.Tensor:
         """
@@ -243,25 +241,14 @@ class FeatureTokenizer(nn.Module):
         batch_size = x_num.shape[0] if x_num is not None else x_cat.shape[0]
         tokens = []
 
-        # Process numerical features using learnable linear transformation
+        # Process numerical features using shared base tokenizer
         if self.num_numerical > 0 and x_num is not None:
-            # Transform: f(x) = x * W + b for each feature independently
-            # x_num: [batch, num_features] → [batch, num_features, 1]
-            # weights: [num_features, d_token] → [1, num_features, d_token]
-            # Result: [batch, num_features, d_token]
-            num_tokens = (x_num.unsqueeze(-1) * self.num_weights.unsqueeze(0) +
-                         self.num_biases.unsqueeze(0))
+            num_tokens = self.num_tokenizer(x_num)  # [batch, num_features, d_token]
             tokens.append(num_tokens)
 
-        # Process categorical features using embedding lookup
+        # Process categorical features using shared base embedding
         if self.cat_cardinalities and x_cat is not None:
-            # For each categorical feature, lookup its embedding
-            # x_cat[:, i]: [batch] → cat_embeddings[i]: [batch, d_token]
-            # Stack all: [batch, num_categorical, d_token]
-            cat_tokens = torch.stack([
-                self.cat_embeddings[i](x_cat[:, i])
-                for i in range(len(self.cat_cardinalities))
-            ], dim=1)
+            cat_tokens = self.cat_embedding(x_cat)  # [batch, num_categorical, d_token]
             tokens.append(cat_tokens)
 
         # Combine all feature tokens along feature dimension
@@ -270,9 +257,9 @@ class FeatureTokenizer(nn.Module):
 
         feature_tokens = torch.cat(tokens, dim=1)  # [batch, total_features, d_token]
 
-        # Prepend CLS token for final prediction aggregation
+        # Prepend CLS token for final prediction aggregation (using shared base component)
         # CLS token will collect information from all features via self-attention
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, d_token]
+        cls_tokens = self.cls_token.expand(batch_size)  # [batch, 1, d_token]
         return torch.cat([cls_tokens, feature_tokens], dim=1)    # [batch, 1+features, d_token]
 
 
@@ -291,20 +278,16 @@ class SequenceFeatureTokenizer(nn.Module):
         self.d_token = d_token
         self.sequence_length = sequence_length
         
-        # CLS token for prediction
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_token))
-        
-        # Numerical feature tokenization: f(x) = x * W + b (same for all timesteps)
+        # CLS token for prediction (using shared base component)
+        self.cls_token = CLSToken(d_token)
+
+        # Numerical feature tokenization using shared base component (same for all timesteps)
         if num_numerical > 0:
-            self.num_weights = nn.Parameter(torch.randn(num_numerical, d_token))
-            self.num_biases = nn.Parameter(torch.randn(num_numerical, d_token))
-        
-        # Categorical feature embeddings (same for all timesteps)
+            self.num_tokenizer = NumericalTokenizer(num_numerical, d_token)
+
+        # Categorical feature embeddings using shared base component (same for all timesteps)
         if cat_cardinalities:
-            self.cat_embeddings = nn.ModuleList([
-                nn.Embedding(cardinality, d_token) 
-                for cardinality in cat_cardinalities
-            ])
+            self.cat_embedding = CategoricalEmbedding(cat_cardinalities, d_token)
         
         # Temporal positional encoding - learnable position embeddings for each timestep
         self.temporal_pos_embedding = nn.Parameter(torch.randn(sequence_length, d_token))
@@ -336,21 +319,16 @@ class SequenceFeatureTokenizer(nn.Module):
         for t in range(seq_len):
             timestep_tokens = []
             
-            # Process numerical features for this timestep
+            # Process numerical features for this timestep (using shared base tokenizer)
             if self.num_numerical > 0 and x_num_seq is not None:
                 x_num_t = x_num_seq[:, t, :]  # [batch, num_numerical]
-                # Apply tokenization: value * weight + bias
-                num_tokens = (x_num_t.unsqueeze(-1) * self.num_weights.unsqueeze(0) + 
-                             self.num_biases.unsqueeze(0))  # [batch, num_numerical, d_token]
+                num_tokens = self.num_tokenizer(x_num_t)  # [batch, num_numerical, d_token]
                 timestep_tokens.append(num_tokens)
-            
-            # Process categorical features for this timestep  
+
+            # Process categorical features for this timestep (using shared base embedding)
             if self.cat_cardinalities and x_cat_seq is not None:
                 x_cat_t = x_cat_seq[:, t, :].long()  # [batch, num_categorical]
-                cat_tokens = torch.stack([
-                    self.cat_embeddings[i](x_cat_t[:, i]) 
-                    for i in range(len(self.cat_cardinalities))
-                ], dim=1)  # [batch, num_categorical, d_token]
+                cat_tokens = self.cat_embedding(x_cat_t)  # [batch, num_categorical, d_token]
                 timestep_tokens.append(cat_tokens)
             
             # Combine tokens for this timestep
@@ -370,8 +348,8 @@ class SequenceFeatureTokenizer(nn.Module):
             device = self.cls_token.device
             sequence_tokens = torch.empty(batch_size, 0, self.d_token, device=device)
         
-        # Prepend CLS token
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        # Prepend CLS token (using shared base component)
+        cls_tokens = self.cls_token.expand(batch_size)
         return torch.cat([cls_tokens, sequence_tokens], dim=1)
 
 
@@ -509,16 +487,13 @@ class FTTransformerPredictor(nn.Module):
         self.ft_transformer = FTTransformer(num_numerical, cat_cardinalities, **transformer_kwargs)
         self.prediction_horizons = prediction_horizons
 
-        # Prediction head - maps CLS token representation to final predictions
+        # Prediction head using shared base component
         d_token = self.ft_transformer.d_token
-        output_size = n_classes * prediction_horizons  # Multi-horizon: predict multiple time steps
-
-        # Simple MLP head: Normalize → Activate → Regularize → Project
-        self.head = nn.Sequential(
-            nn.LayerNorm(d_token),                                    # Stabilize input
-            nn.ReLU(),                                               # Non-linearity
-            nn.Dropout(transformer_kwargs.get('dropout', 0.1)),     # Regularization
-            nn.Linear(d_token, output_size)                         # Final projection
+        self.head = MultiHorizonHead(
+            d_input=d_token,
+            prediction_horizons=prediction_horizons,
+            hidden_dim=None,  # Simple linear head
+            dropout=transformer_kwargs.get('dropout', 0.1)
         )
 
         self.n_classes = n_classes
@@ -536,15 +511,8 @@ class FTTransformerPredictor(nn.Module):
         # Get CLS token representation from transformer
         cls_output = self.ft_transformer(x_num, x_cat)  # [batch, d_token]
 
-        # Apply prediction head
-        output = self.head(cls_output)  # [batch, output_size]
-
-        # Reshape for multi-horizon predictions
-        if self.prediction_horizons > 1:
-            # Convert [batch, horizons * classes] → [batch, horizons, classes] → [batch, horizons]
-            batch_size = output.size(0)
-            return output.view(batch_size, self.prediction_horizons, self.n_classes).squeeze(-1)
-        return output  # [batch, n_classes] for single horizon
+        # Apply prediction head (MultiHorizonHead handles reshaping automatically)
+        return self.head(cls_output)
 
 
 class SequenceFTTransformerPredictor(nn.Module):
@@ -566,15 +534,13 @@ class SequenceFTTransformerPredictor(nn.Module):
         )
         self.prediction_horizons = prediction_horizons
 
-        # Prediction head - conditional based on horizons
+        # Prediction head using shared base component
         d_token = self.sequence_ft_transformer.d_token
-        output_size = n_classes * prediction_horizons  # Multi-horizon output
-
-        self.head = nn.Sequential(
-            nn.LayerNorm(d_token),
-            nn.ReLU(),
-            nn.Dropout(transformer_kwargs.get('dropout', 0.1)),
-            nn.Linear(d_token, output_size)
+        self.head = MultiHorizonHead(
+            d_input=d_token,
+            prediction_horizons=prediction_horizons,
+            hidden_dim=None,  # Simple linear head
+            dropout=transformer_kwargs.get('dropout', 0.1)
         )
 
         self.n_classes = n_classes
@@ -589,10 +555,5 @@ class SequenceFTTransformerPredictor(nn.Module):
                        For regression: [batch_size, prediction_horizons]
         """
         cls_output = self.sequence_ft_transformer(x_seq)
-        output = self.head(cls_output)
-
-        # Reshape to separate horizons if multi-horizon
-        if self.prediction_horizons > 1:
-            batch_size = output.size(0)
-            return output.view(batch_size, self.prediction_horizons, self.n_classes).squeeze(-1)
-        return output
+        # MultiHorizonHead handles reshaping automatically
+        return self.head(cls_output)

@@ -22,9 +22,9 @@ if __name__ == "__main__" and __package__ is None:
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     
-    from stock_forecasting.predictor import StockPredictor
-    from stock_forecasting.preprocessing.market_data import load_stock_data, create_sample_stock_data
-    from stock_forecasting.visualization.stock_charts import create_comprehensive_plots, print_performance_summary
+    from daily_stock_forecasting.predictor import StockPredictor
+    from daily_stock_forecasting.preprocessing.market_data import load_stock_data, create_sample_stock_data
+    from daily_stock_forecasting.visualization.stock_charts import create_comprehensive_plots, print_performance_summary
     from tf_predictor.core.utils import split_time_series
 else:
     # Module import - use relative imports
@@ -47,7 +47,9 @@ def main():
     parser.add_argument('--asset_type', type=str, default='stock',
                        choices=['stock', 'crypto'],
                        help='Asset type: stock (5-day week) or crypto (7-day week, 24/7 trading)')
-    
+    parser.add_argument('--group_column', type=str, default=None,
+                       help='Column for group-based scaling (e.g., "symbol" for multi-stock datasets). If specified, each group gets separate scalers.')
+
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=5,
                        help='Number of historical days to use for prediction')
@@ -182,6 +184,7 @@ def main():
         prediction_horizon=args.prediction_horizon,
         use_essential_only=args.use_essential_only,
         asset_type=args.asset_type,
+        group_column=args.group_column,
         d_token=args.d_token,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
@@ -198,7 +201,11 @@ def main():
     print(f"   - Layers: {args.n_layers}")
     print(f"   - Attention heads: {args.n_heads}")
     print(f"   - Dropout: {args.dropout}")
-    
+    if args.group_column:
+        print(f"   - Group-based scaling: enabled (group_column='{args.group_column}')")
+    else:
+        print(f"   - Scaling: single-group (global)")
+
     # 4. Train Model
     print(f"\n🏋️ Training model...")
     
@@ -216,20 +223,42 @@ def main():
     print(f"\n💾 Saving model...")
     model.save(args.model_path)
     print(f"   ✅ Model saved to: {args.model_path}")
-    
-    # 6. Evaluate Model
+
+    # 6. Evaluate Model (optimized with cached features)
     print(f"\n📈 Evaluating model...")
-    
-    # Train metrics
-    train_metrics = model.evaluate(train_df)
+
+    # Prepare features once and cache them
+    print("   Preparing features for evaluation...")
+    train_features = model.prepare_features(train_df, fit_scaler=False)
+    if val_df is not None and len(val_df) > 0:
+        val_features = model.prepare_features(val_df, fit_scaler=False)
+    else:
+        val_features = None
+    if test_df is not None and len(test_df) > 0:
+        test_features = model.prepare_features(test_df, fit_scaler=False)
+    else:
+        test_features = None
+
+    # Train metrics using cached features
+    train_metrics = model.evaluate_from_features(train_features)
     print(f"\n   Training Metrics:")
     for metric, value in train_metrics.items():
         if not np.isnan(value):
             print(f"   - {metric}: {value:.4f}")
-    
-    # Test metrics
-    if test_df is not None and len(test_df) > 0:
-        test_metrics = model.evaluate(test_df)
+
+    # Validation metrics using cached features
+    val_metrics = None
+    if val_features is not None:
+        val_metrics = model.evaluate_from_features(val_features)
+        print(f"\n   Validation Metrics:")
+        for metric, value in val_metrics.items():
+            if not np.isnan(value):
+                print(f"   - {metric}: {value:.4f}")
+
+    # Test metrics using cached features
+    test_metrics = None
+    if test_features is not None:
+        test_metrics = model.evaluate_from_features(test_features)
         print(f"\n   Test Metrics:")
         for metric, value in test_metrics.items():
             if not np.isnan(value):
@@ -238,26 +267,22 @@ def main():
     # 7. Generate Comprehensive Plots
     if not args.no_plots:
         print(f"\n📊 Generating comprehensive visualizations...")
-        
+
         try:
             # Create comprehensive plots with proper alignment and MAPE annotations
             # Use organized output structure within stock_forecasting
             base_output = "outputs"
             saved_plots = create_comprehensive_plots(model, train_df, test_df, base_output)
-            
-            # Get metrics and print performance summary
-            train_metrics = model.evaluate(train_df)
-            test_metrics = model.evaluate(test_df) if test_df is not None else None
 
             if test_metrics is not None:
-                # Print comprehensive performance summary
+                # Print comprehensive performance summary (using cached metrics)
                 print_performance_summary(
                     model,
                     train_metrics,
                     test_metrics,
                     saved_plots
                 )
-                
+
         except Exception as e:
             print(f"   ⚠️  Error generating comprehensive plots: {e}")
     
