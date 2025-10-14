@@ -9,7 +9,7 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import gc
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 from abc import ABC, abstractmethod
@@ -706,15 +706,17 @@ class TimeSeriesPredictor(ABC):
         if verbose:
             print("Training completed!")
     
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
+    def predict(self, df: pd.DataFrame, return_group_info: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, list]]:
         """
         Make predictions on new data.
 
         Args:
             df: DataFrame with same structure as training data
+            return_group_info: If True and group_column is set, returns (predictions, group_indices)
 
         Returns:
             predictions: Numpy array of predictions (in original scale)
+            group_indices: List of group values for each prediction (only if return_group_info=True)
         """
         if self.model is None:
             raise RuntimeError("Model must be trained first. Call fit().")
@@ -724,7 +726,7 @@ class TimeSeriesPredictor(ABC):
         gc.collect()  # Force garbage collection to free memory
 
         X, _ = self.prepare_data(df, fit_scaler=False)
-        
+
         self.model.eval()
         with torch.no_grad():
             # Handle both sequence and non-sequence models
@@ -763,7 +765,12 @@ class TimeSeriesPredictor(ABC):
                         group_preds_original = self.group_target_scalers[group_value].inverse_transform(group_preds_scaled)
                         predictions[group_mask] = group_preds_original
 
-                return predictions.flatten() if self.prediction_horizon == 1 else predictions
+                final_predictions = predictions.flatten() if self.prediction_horizon == 1 else predictions
+
+                if return_group_info:
+                    return final_predictions, self._last_group_indices
+                else:
+                    return final_predictions
 
             else:
                 # Single-group inverse transform (original behavior)
@@ -842,24 +849,26 @@ class TimeSeriesPredictor(ABC):
                 predictions = np.column_stack(predictions_list)
                 return predictions
 
-    def evaluate(self, df: pd.DataFrame) -> Dict:
+    def evaluate(self, df: pd.DataFrame, per_group: bool = False) -> Dict:
         """
         Evaluate model performance.
 
-        For single-horizon models, returns simple metrics dict.
-        For multi-horizon models, returns nested dict with per-horizon metrics.
+        Returns nested dict structure based on configuration:
+        - Single-horizon, no groups: {'MAE': ..., 'RMSE': ..., ...}
+        - Multi-horizon, no groups: {'overall': {...}, 'horizon_1': {...}, ...}
+        - Single-horizon with groups (per_group=True): {'overall': {...}, 'AAPL': {...}, 'GOOGL': {...}, ...}
+        - Multi-horizon with groups (per_group=True): {
+            'overall': {'overall': {...}, 'horizon_1': {...}, ...},
+            'AAPL': {'overall': {...}, 'horizon_1': {...}, ...},
+            'GOOGL': {...}, ...
+          }
 
         Args:
             df: DataFrame with raw data (will be processed to extract target)
+            per_group: If True and group_column is set, return per-group metrics breakdown
 
         Returns:
-            metrics: Dictionary of evaluation metrics
-                Single-horizon: {'MAE': ..., 'RMSE': ..., ...}
-                Multi-horizon: {
-                    'overall': {'MAE': ..., 'RMSE': ..., ...},
-                    'horizon_1': {'MAE': ..., 'RMSE': ..., ...},
-                    'horizon_2': {...}, ...
-                }
+            metrics: Dictionary of evaluation metrics (structure depends on configuration)
         """
         # Clear feature cache before evaluation to free memory
         self._feature_cache.clear()
@@ -872,10 +881,18 @@ class TimeSeriesPredictor(ABC):
         if self.target_column not in df_processed.columns:
             raise ValueError(f"Target column '{self.target_column}' not found after feature engineering")
 
-        predictions = self.predict(df)
+        # Check if we should do per-group evaluation
+        if per_group and self.group_column is not None:
+            return self._evaluate_per_group(df, df_processed)
+        else:
+            # Standard evaluation (backward compatible)
+            return self._evaluate_standard(df_processed)
+
+    def _evaluate_standard(self, df_processed: pd.DataFrame) -> Dict:
+        """Standard evaluation without per-group breakdown."""
+        predictions = self.predict(df_processed.copy())  # Use processed features
 
         # For sequences, we need to align the actual values with predictions
-        # Predictions correspond to targets starting from index sequence_length
         if self.sequence_length > 1:
             actual = df_processed[self.target_column].values[self.sequence_length:]
         else:
@@ -907,6 +924,82 @@ class TimeSeriesPredictor(ABC):
                 predictions_aligned,
                 self.prediction_horizon
             )
+
+    def _evaluate_per_group(self, df: pd.DataFrame, df_processed: pd.DataFrame) -> Dict:
+        """
+        Evaluate performance per group (e.g., per stock symbol).
+
+        Returns nested dict with overall metrics plus per-group breakdown.
+        """
+        from ..core.utils import calculate_metrics, calculate_metrics_multi_horizon
+
+        # Get predictions with group information
+        predictions, group_indices = self.predict(df_processed.copy(), return_group_info=True)
+
+        # Prepare actual values
+        if self.sequence_length > 1:
+            actual_base = df_processed[self.target_column].values[self.sequence_length:]
+        else:
+            actual_base = df_processed[self.target_column].values
+
+        # Get unique groups
+        unique_groups = sorted(set(group_indices))
+
+        # Storage for per-group metrics
+        all_metrics = {}
+
+        # Calculate metrics per group
+        for group_value in unique_groups:
+            # Find indices for this group
+            group_mask = np.array([g == group_value for g in group_indices])
+            group_preds = predictions[group_mask] if self.prediction_horizon == 1 else predictions[group_mask, :]
+
+            # Get actual values for this group
+            # We need to figure out the actual indices in the original data
+            # The group_mask tells us which predictions belong to this group
+            group_pred_indices = np.where(group_mask)[0]
+
+            if self.prediction_horizon == 1:
+                # Single-horizon
+                group_actual = actual_base[group_pred_indices]
+                min_len = min(len(group_actual), len(group_preds))
+
+                group_metrics = calculate_metrics(group_actual[:min_len], group_preds[:min_len])
+                all_metrics[str(group_value)] = group_metrics
+
+            else:
+                # Multi-horizon
+                # For each prediction, we need actual values h steps ahead
+                group_actual_aligned = actual_base[group_pred_indices[0]:group_pred_indices[-1] + self.prediction_horizon]
+                min_len = min(len(group_actual_aligned) - self.prediction_horizon + 1, group_preds.shape[0])
+
+                group_metrics = calculate_metrics_multi_horizon(
+                    group_actual_aligned[:min_len + self.prediction_horizon - 1],
+                    group_preds[:min_len],
+                    self.prediction_horizon
+                )
+                all_metrics[str(group_value)] = group_metrics
+
+        # Calculate overall metrics across all groups
+        if self.prediction_horizon == 1:
+            # Single-horizon overall
+            min_len = min(len(actual_base), len(predictions))
+            overall_metrics = calculate_metrics(actual_base[:min_len], predictions[:min_len])
+        else:
+            # Multi-horizon overall
+            min_len = min(len(actual_base), predictions.shape[0])
+            actual_aligned = actual_base[:min_len + self.prediction_horizon - 1]
+            overall_metrics = calculate_metrics_multi_horizon(
+                actual_aligned,
+                predictions[:min_len],
+                self.prediction_horizon
+            )
+
+        # Combine into final structure
+        result = {'overall': overall_metrics}
+        result.update(all_metrics)
+
+        return result
 
     def evaluate_from_features(self, df_processed: pd.DataFrame) -> Dict[str, float]:
         """

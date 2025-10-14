@@ -384,27 +384,37 @@ def create_comprehensive_plots(
 def export_predictions_csv(
     model,
     train_df: pd.DataFrame,
-    test_df: pd.DataFrame, 
+    test_df: pd.DataFrame,
     output_dir: str
 ) -> str:
     """
     Export predictions to CSV file with date, actual, and predicted values.
-    
+    Supports group-based (multi-symbol) and multi-horizon predictions.
+
     Args:
         model: Trained StockPredictor model
-        train_df: Training DataFrame with date column
-        test_df: Test DataFrame with date column
+        train_df: Training DataFrame with date column (and optionally group column)
+        test_df: Test DataFrame with date column (and optionally group column)
         output_dir: Directory to save CSV file
-        
+
     Returns:
         Path to saved CSV file
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
-    # Get predictions
-    train_predictions = model.predict(train_df)
-    test_predictions = model.predict(test_df)
+
+    # Check if model uses groups
+    has_groups = model.group_column is not None and model.group_column in train_df.columns
+
+    # Get predictions (with group info if available)
+    if has_groups:
+        train_predictions, train_groups = model.predict(train_df, return_group_info=True)
+        test_predictions, test_groups = model.predict(test_df, return_group_info=True)
+    else:
+        train_predictions = model.predict(train_df)
+        test_predictions = model.predict(test_df)
+        train_groups = None
+        test_groups = None
 
     # Get actual values and dates (aligned with predictions)
     train_actual_base = train_df['close'].values[model.sequence_length:]
@@ -426,25 +436,31 @@ def export_predictions_csv(
 
         # Training data
         for i in range(min_train_len):
-            results.append({
+            row_data = {
                 'date': train_dates[i],
                 'actual': train_actual_base[i],
                 'predicted': train_predictions[i],
                 'dataset': 'train',
                 'error_abs': abs(train_actual_base[i] - train_predictions[i]),
                 'error_pct': abs(train_actual_base[i] - train_predictions[i]) / train_actual_base[i] * 100
-            })
+            }
+            if has_groups:
+                row_data[model.group_column] = train_groups[i]
+            results.append(row_data)
 
         # Test data
         for i in range(min_test_len):
-            results.append({
+            row_data = {
                 'date': test_dates[i],
                 'actual': test_actual_base[i],
                 'predicted': test_predictions[i],
                 'dataset': 'test',
                 'error_abs': abs(test_actual_base[i] - test_predictions[i]),
                 'error_pct': abs(test_actual_base[i] - test_predictions[i]) / test_actual_base[i] * 100
-            })
+            }
+            if has_groups:
+                row_data[model.group_column] = test_groups[i]
+            results.append(row_data)
 
         print(f"   Debug alignment check:")
         print(f"   Train: {min_train_len} samples")
@@ -464,6 +480,10 @@ def export_predictions_csv(
                 'actual': train_actual_base[i],
                 'dataset': 'train'
             }
+
+            # Add symbol/group column if present
+            if has_groups:
+                row_data[model.group_column] = train_groups[i]
 
             # Add predictions for each horizon
             for h in range(prediction_horizon):
@@ -490,6 +510,10 @@ def export_predictions_csv(
                 'actual': test_actual_base[i],
                 'dataset': 'test'
             }
+
+            # Add symbol/group column if present
+            if has_groups:
+                row_data[model.group_column] = test_groups[i]
 
             # Add predictions for each horizon
             for h in range(prediction_horizon):
@@ -532,6 +556,162 @@ def export_predictions_csv(
 
     return str(csv_path)
 
+def _print_per_group_metrics(train_metrics: Dict, test_metrics: Dict, model):
+    """
+    Print per-group (per-symbol) metrics breakdown.
+
+    Args:
+        train_metrics: Training metrics with per-group breakdown
+        test_metrics: Test metrics with per-group breakdown
+        model: Trained model
+    """
+    # Get all groups (excluding 'overall')
+    groups = sorted([k for k in train_metrics.keys() if k != 'overall'])
+
+    # Check if metrics are also multi-horizon
+    overall_metrics = train_metrics['overall']
+    is_multi_horizon = isinstance(overall_metrics, dict) and ('horizon_1' in overall_metrics or any(k.startswith('horizon_') for k in overall_metrics.keys()))
+
+    print(f"\n   📊 Per-Symbol Performance Summary:")
+    print(f"   Found {len(groups)} symbols: {', '.join(groups)}")
+
+    if not is_multi_horizon:
+        # Per-group, single-horizon
+        print(f"\n   📈 Training Metrics (by Symbol):")
+        print(f"   ┌{'─'*12}┬{'─'*11}┬{'─'*12}┬{'─'*11}┬{'─'*10}┐")
+        print(f"   │ {'Symbol':<10} │ {'MAE ($)':<9} │ {'RMSE ($)':<10} │ {'MAPE (%)':<9} │ {'R²':<8} │")
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+
+        for group in groups:
+            metrics = train_metrics[group]
+            mae = metrics.get('MAE', 0)
+            rmse = metrics.get('RMSE', 0)
+            mape = metrics.get('MAPE', 0)
+            r2 = metrics.get('R2', 0)
+            symbol_short = group[:10] if len(group) > 10 else group
+            print(f"   │ {symbol_short:<10} │ ${mae:<8.2f} │ ${rmse:<9.2f} │ {mape:<8.2f}% │ {r2:<8.3f} │")
+
+        # Overall
+        overall = train_metrics['overall']
+        mae_overall = overall.get('MAE', 0)
+        rmse_overall = overall.get('RMSE', 0)
+        mape_overall = overall.get('MAPE', 0)
+        r2_overall = overall.get('R2', 0)
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+        print(f"   │ {'Overall':<10} │ ${mae_overall:<8.2f} │ ${rmse_overall:<9.2f} │ {mape_overall:<8.2f}% │ {r2_overall:<8.3f} │")
+        print(f"   └{'─'*12}┴{'─'*11}┴{'─'*12}┴{'─'*11}┴{'─'*10}┘")
+
+        # Test metrics
+        print(f"\n   📊 Test Metrics (by Symbol):")
+        print(f"   ┌{'─'*12}┬{'─'*11}┬{'─'*12}┬{'─'*11}┬{'─'*10}┐")
+        print(f"   │ {'Symbol':<10} │ {'MAE ($)':<9} │ {'RMSE ($)':<10} │ {'MAPE (%)':<9} │ {'R²':<8} │")
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+
+        for group in groups:
+            metrics = test_metrics[group]
+            mae = metrics.get('MAE', 0)
+            rmse = metrics.get('RMSE', 0)
+            mape = metrics.get('MAPE', 0)
+            r2 = metrics.get('R2', 0)
+            symbol_short = group[:10] if len(group) > 10 else group
+            print(f"   │ {symbol_short:<10} │ ${mae:<8.2f} │ ${rmse:<9.2f} │ {mape:<8.2f}% │ {r2:<8.3f} │")
+
+        # Overall
+        overall_test = test_metrics['overall']
+        mae_overall_test = overall_test.get('MAE', 0)
+        rmse_overall_test = overall_test.get('RMSE', 0)
+        mape_overall_test = overall_test.get('MAPE', 0)
+        r2_overall_test = overall_test.get('R2', 0)
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+        print(f"   │ {'Overall':<10} │ ${mae_overall_test:<8.2f} │ ${rmse_overall_test:<9.2f} │ {mape_overall_test:<8.2f}% │ {r2_overall_test:<8.3f} │")
+        print(f"   └{'─'*12}┴{'─'*11}┴{'─'*12}┴{'─'*11}┴{'─'*10}┘")
+
+    else:
+        # Per-group, multi-horizon - print overall metrics then per-symbol summary
+        print(f"\n   📈 Overall Training Metrics (All Symbols Combined):")
+        overall_train = train_metrics['overall']
+        prediction_horizon = len([k for k in overall_train.keys() if k.startswith('horizon_')])
+
+        print(f"   ┌{'─'*12}┬{'─'*11}┬{'─'*12}┬{'─'*11}┬{'─'*10}┐")
+        print(f"   │ {'Horizon':<10} │ {'MAE ($)':<9} │ {'RMSE ($)':<10} │ {'MAPE (%)':<9} │ {'R²':<8} │")
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+
+        for h in range(1, prediction_horizon + 1):
+            metrics = overall_train[f'horizon_{h}']
+            mae = metrics.get('MAE', 0)
+            rmse = metrics.get('RMSE', 0)
+            mape = metrics.get('MAPE', 0)
+            r2 = metrics.get('R2', 0)
+            print(f"   │ h{h} (t+{h}){'':<4} │ ${mae:<8.2f} │ ${rmse:<9.2f} │ {mape:<8.2f}% │ {r2:<8.3f} │")
+
+        overall_avg = overall_train['overall']
+        mae_avg = overall_avg.get('MAE', 0)
+        rmse_avg = overall_avg.get('RMSE', 0)
+        mape_avg = overall_avg.get('MAPE', 0)
+        r2_avg = overall_avg.get('R2', 0)
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+        print(f"   │ {'Overall':<10} │ ${mae_avg:<8.2f} │ ${rmse_avg:<9.2f} │ {mape_avg:<8.2f}% │ {r2_avg:<8.3f} │")
+        print(f"   └{'─'*12}┴{'─'*11}┴{'─'*12}┴{'─'*11}┴{'─'*10}┘")
+
+        # Per-symbol summary (show overall MAPE per symbol)
+        print(f"\n   📈 Training MAPE by Symbol:")
+        print(f"   ┌{'─'*12}┬{'─'*50}┐")
+        print(f"   │ {'Symbol':<10} │ {'MAPE (%) per Horizon':<48} │")
+        print(f"   ├{'─'*12}┼{'─'*50}┤")
+
+        for group in groups:
+            group_metrics = train_metrics[group]
+            mape_str = ""
+            for h in range(1, prediction_horizon + 1):
+                mape_h = group_metrics[f'horizon_{h}'].get('MAPE', 0)
+                mape_str += f"h{h}:{mape_h:.1f}% "
+            symbol_short = group[:10] if len(group) > 10 else group
+            print(f"   │ {symbol_short:<10} │ {mape_str:<48} │")
+
+        print(f"   └{'─'*12}┴{'─'*50}┘")
+
+        # Test metrics - overall
+        print(f"\n   📊 Overall Test Metrics (All Symbols Combined):")
+        overall_test = test_metrics['overall']
+
+        print(f"   ┌{'─'*12}┬{'─'*11}┬{'─'*12}┬{'─'*11}┬{'─'*10}┐")
+        print(f"   │ {'Horizon':<10} │ {'MAE ($)':<9} │ {'RMSE ($)':<10} │ {'MAPE (%)':<9} │ {'R²':<8} │")
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+
+        for h in range(1, prediction_horizon + 1):
+            metrics = overall_test[f'horizon_{h}']
+            mae = metrics.get('MAE', 0)
+            rmse = metrics.get('RMSE', 0)
+            mape = metrics.get('MAPE', 0)
+            r2 = metrics.get('R2', 0)
+            print(f"   │ h{h} (t+{h}){'':<4} │ ${mae:<8.2f} │ ${rmse:<9.2f} │ {mape:<8.2f}% │ {r2:<8.3f} │")
+
+        overall_avg_test = overall_test['overall']
+        mae_avg_test = overall_avg_test.get('MAE', 0)
+        rmse_avg_test = overall_avg_test.get('RMSE', 0)
+        mape_avg_test = overall_avg_test.get('MAPE', 0)
+        r2_avg_test = overall_avg_test.get('R2', 0)
+        print(f"   ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+        print(f"   │ {'Overall':<10} │ ${mae_avg_test:<8.2f} │ ${rmse_avg_test:<9.2f} │ {mape_avg_test:<8.2f}% │ {r2_avg_test:<8.3f} │")
+        print(f"   └{'─'*12}┴{'─'*11}┴{'─'*12}┴{'─'*11}┴{'─'*10}┘")
+
+        # Per-symbol test summary
+        print(f"\n   📊 Test MAPE by Symbol:")
+        print(f"   ┌{'─'*12}┬{'─'*50}┐")
+        print(f"   │ {'Symbol':<10} │ {'MAPE (%) per Horizon':<48} │")
+        print(f"   ├{'─'*12}┼{'─'*50}┤")
+
+        for group in groups:
+            group_metrics = test_metrics[group]
+            mape_str = ""
+            for h in range(1, prediction_horizon + 1):
+                mape_h = group_metrics[f'horizon_{h}'].get('MAPE', 0)
+                mape_str += f"h{h}:{mape_h:.1f}% "
+            symbol_short = group[:10] if len(group) > 10 else group
+            print(f"   │ {symbol_short:<10} │ {mape_str:<48} │")
+
+        print(f"   └{'─'*12}┴{'─'*50}┘")
+
 def print_performance_summary(
     model,
     train_metrics: Dict,
@@ -541,20 +721,29 @@ def print_performance_summary(
     """
     Print comprehensive performance summary.
 
-    Handles both single-horizon and multi-horizon metrics.
+    Handles single-horizon, multi-horizon, and per-group metrics.
 
     Args:
         model: Trained model
-        train_metrics: Training metrics dict (simple or nested)
-        test_metrics: Test metrics dict (simple or nested)
+        train_metrics: Training metrics dict (simple, nested, or per-group)
+        test_metrics: Test metrics dict (simple, nested, or per-group)
         saved_plots: Dict of saved plot paths
     """
     print(f"\n🎯 Final Performance Summary:")
 
-    # Check if multi-horizon
-    is_multi_horizon = 'overall' in train_metrics
+    # Check if per-group metrics (has non-'overall' string keys that aren't 'horizon_X')
+    has_group_metrics = any(
+        isinstance(k, str) and k != 'overall' and not k.startswith('horizon_')
+        for k in train_metrics.keys()
+    )
 
-    if not is_multi_horizon:
+    # Check if multi-horizon ('overall' key with nested dict OR 'horizon_X' keys)
+    is_multi_horizon = 'overall' in train_metrics or any(k.startswith('horizon_') for k in train_metrics.keys())
+
+    if has_group_metrics:
+        # Per-group metrics display
+        _print_per_group_metrics(train_metrics, test_metrics, model)
+    elif not is_multi_horizon:
         # Single-horizon: simple display
         train_mape = train_metrics.get('MAPE', 0)
         train_mae = train_metrics.get('MAE', 0)
