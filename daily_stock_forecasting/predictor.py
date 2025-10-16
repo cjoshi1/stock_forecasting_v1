@@ -5,6 +5,7 @@ A specialized wrapper for stock price prediction with OHLCV data,
 including automatic feature engineering and model management.
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from typing import Optional, Union
@@ -42,6 +43,9 @@ class StockPredictor(TimeSeriesPredictor):
         self.use_essential_only = use_essential_only
         self.prediction_horizon = prediction_horizon
         self.asset_type = asset_type
+
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
 
         # Pass target_column as-is to base class
         # The base TimeSeriesPredictor will handle normalization
@@ -91,8 +95,10 @@ class StockPredictor(TimeSeriesPredictor):
             - Single-target, multi-horizon: columns [date, predicted_{target}_h1, predicted_{target}_h2, ...]
             - Multi-target: columns [date, predicted_{target1}, predicted_{target2}, ...] or with _h{n} suffixes
         """
-        # Get base predictions
-        predictions = self.predict(df)
+        try:
+            # Get base predictions
+            self.logger.info("Starting prediction for next bars")
+            predictions = self.predict(df)
 
         # Generate future dates based on asset type
         last_date = df['date'].iloc[-1]
@@ -153,4 +159,8 @@ class StockPredictor(TimeSeriesPredictor):
 
                 result = pd.DataFrame(result_dict)
 
-        return result
+            self.logger.info("Prediction completed successfully")
+            return result
+        except Exception as e:
+            self.logger.error(f"Error during prediction: {e}")
+            raise
