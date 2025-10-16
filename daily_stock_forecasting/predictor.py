@@ -103,19 +103,19 @@ class StockPredictor(TimeSeriesPredictor):
             # Generate future dates based on asset type
             last_date = df['date'].iloc[-1]
 
-        if self.asset_type == 'crypto':
-            # Crypto: 24/7 trading, use calendar days
-            future_dates = pd.date_range(
-                start=last_date + pd.Timedelta(days=1),
-                periods=n_predictions,
-                freq='D'
-            )
-        else:
-            # Stock: skip weekends, use business days
-            future_dates = pd.bdate_range(
-                start=last_date + pd.Timedelta(days=1),
-                periods=n_predictions
-            )
+            if self.asset_type == 'crypto':
+                # Crypto: 24/7 trading, use calendar days
+                future_dates = pd.date_range(
+                    start=last_date + pd.Timedelta(days=1),
+                    periods=n_predictions,
+                    freq='D'
+                )
+            else:
+                # Stock: skip weekends, use business days
+                future_dates = pd.bdate_range(
+                    start=last_date + pd.Timedelta(days=1),
+                    periods=n_predictions
+                )
 
         # Handle multi-target vs single-target
         if isinstance(predictions, dict):
