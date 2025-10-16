@@ -241,6 +241,35 @@ class TestTimeSeriesPredictor:
                 if std > 1e-6:  
                     assert abs(mean) < 0.1, f"Column {col} not properly scaled (mean={mean})"
                     assert abs(std - 1.0) < 0.1, f"Column {col} not properly scaled (std={std})"
+
+    def test_logger_initialization(self):
+        """Test logger initialization."""
+        predictor = SimpleTestPredictor(target_column='value', sequence_length=5)
+        assert predictor.logger is not None
+        assert predictor.logger.name == 'tf_predictor.core.predictor'
+        """Test feature preparation and scaling."""
+        df = create_sample_timeseries(50)
+        predictor = SimpleTestPredictor(target_column='value', sequence_length=5)
+        predictor.verbose = True
+        
+        # First call should fit the scaler
+        df_processed = predictor.prepare_features(df, fit_scaler=True)
+        
+        # Check that features were created
+        assert len(df_processed.columns) > len(df.columns)
+        assert predictor.feature_columns is not None
+        
+        # Check that numeric features were scaled (mean ~0, std ~1)
+        # Skip constant features like 'year' which have std=0
+        numeric_cols = [col for col in predictor.feature_columns[:5]]  # Check first few
+        for col in numeric_cols:
+            if col in df_processed.columns:
+                mean = df_processed[col].mean()
+                std = df_processed[col].std()
+                # Skip constant features (std = 0)
+                if std > 1e-6:  
+                    assert abs(mean) < 0.1, f"Column {col} not properly scaled (mean={mean})"
+                    assert abs(std - 1.0) < 0.1, f"Column {col} not properly scaled (std={std})"
     
     def test_prepare_data(self):
         """Test data preparation for model training."""

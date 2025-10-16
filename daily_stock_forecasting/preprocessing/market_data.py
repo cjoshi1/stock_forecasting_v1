@@ -22,8 +22,9 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
     """
     try:
         df = pd.read_csv(file_path)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Data file not found: {file_path}")
+    except FileNotFoundError as e:
+        logging.error(f"Data file not found: {file_path}", exc_info=True)
+        raise e
 
     # Remove any non-numeric columns that we don't need (except group column)
     # Keep only OHLCV + date + group column + any other useful columns
@@ -64,6 +65,7 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
     missing_cols = [col for col in expected_cols if col not in df.columns]
     
     if missing_cols:
+        logging.error(f"Missing required columns: {missing_cols}")
         raise ValueError(f"Missing required columns: {missing_cols}")
     
     # Validate and convert data types for OHLCV columns

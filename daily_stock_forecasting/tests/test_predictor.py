@@ -27,5 +27,14 @@ class TestStockPredictor(unittest.TestCase):
         self.assertIsInstance(predictions, pd.DataFrame)
         self.assertEqual(len(predictions), 3)
 
+    def test_logger_initialization(self):
+        # Test logger initialization
+        self.assertIsNotNone(self.predictor.logger)
+        self.assertEqual(self.predictor.logger.name, 'daily_stock_forecasting.predictor')
+        # Test prediction
+        predictions = self.predictor.predict_next_bars(self.sample_data, n_predictions=3)
+        self.assertIsInstance(predictions, pd.DataFrame)
+        self.assertEqual(len(predictions), 3)
+
 if __name__ == '__main__':
     unittest.main()

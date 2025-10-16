@@ -370,6 +370,30 @@ class TestIntradayPredictor(unittest.TestCase):
         self.assertEqual(len(future_df), 3)
         self.assertIn(self.predictor.timestamp_col, future_df.columns)
         self.assertIn(f'predicted_{self.predictor.original_target_column}', future_df.columns)
+
+    def test_logger_initialization(self):
+        """Test logger initialization."""
+        self.assertIsNotNone(self.predictor.logger)
+        self.assertEqual(self.predictor.logger.name, 'intraday_forecasting.predictor')
+        """Test future prediction functionality."""
+        if len(self.train_df) < 50:
+            self.skipTest("Insufficient training data")
+        
+        # Train model
+        self.predictor.fit(
+            df=self.train_df,
+            val_df=self.val_df,
+            epochs=3,
+            batch_size=8,
+            verbose=False
+        )
+        
+        # Predict next bars
+        future_df = self.predictor.predict_next_bars(self.test_df, n_predictions=3)
+
+        self.assertEqual(len(future_df), 3)
+        self.assertIn(self.predictor.timestamp_col, future_df.columns)
+        self.assertIn(f'predicted_{self.predictor.original_target_column}', future_df.columns)
     
     def test_evaluation_metrics(self):
         """Test model evaluation."""

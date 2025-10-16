@@ -116,6 +116,7 @@ class CSNPredictor(TimeSeriesPredictor):
             return
 
         if self.feature_info is None:
+            self.logger.error("Features must be detected before initializing model")
             raise ValueError("Features must be detected before initializing model")
 
         # Get feature dimensions

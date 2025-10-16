@@ -196,8 +196,12 @@ class IntradayPredictor(TimeSeriesPredictor):
             - Single-target, multi-horizon: columns [timestamp, predicted_{target}_h1, predicted_{target}_h2, ...]
             - Multi-target: columns [timestamp, predicted_{target1}, predicted_{target2}, ...] or with _h{n} suffixes
         """
-        # Get base predictions
-        predictions = self.predict(df)
+        try:
+            # Get base predictions
+            predictions = self.predict(df)
+        except Exception as e:
+            self.logger.error("Error during prediction", exc_info=True)
+            raise RuntimeError("Prediction failed due to an unexpected error.") from e
 
         # Generate future timestamps
         last_timestamp = df[self.timestamp_col].iloc[-1]

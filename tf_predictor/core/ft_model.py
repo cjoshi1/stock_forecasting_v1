@@ -206,6 +206,7 @@ class FeatureTokenizer(nn.Module):
         
         # Validation
         if num_numerical + len(cat_cardinalities) == 0:
+            logging.error("Must have at least one feature")
             raise ValueError("Must have at least one feature")
         
         self.num_numerical = num_numerical

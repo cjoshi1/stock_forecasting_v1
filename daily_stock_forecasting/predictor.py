@@ -166,5 +166,5 @@ class StockPredictor(TimeSeriesPredictor):
             self.logger.info("Prediction completed successfully")
             return result
         except Exception as e:
-            self.logger.exception(f"Exception occurred during prediction for {n_predictions} bars: {e}")
-            raise
+            self.logger.error(f"Exception occurred during prediction for {n_predictions} bars", exc_info=True)
+            raise RuntimeError("Prediction failed due to an unexpected error.") from e

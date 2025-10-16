@@ -34,6 +34,7 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
         DataFrame with loaded intraday data
     """
     if not os.path.exists(file_path):
+        logging.error(f"Data file not found: {file_path}")
         raise FileNotFoundError(f"Data file not found: {file_path}")
 
     # Load CSV
@@ -61,6 +62,7 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
     required_cols = [timestamp_col, 'open', 'high', 'low', 'close', 'volume']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
+        logging.error(f"Missing required columns: {missing_cols}. Available columns: {list(df.columns)}")
         raise ValueError(f"Missing required columns: {missing_cols}. Available columns: {list(df.columns)}")
 
     # Convert timestamp to datetime and handle timezone-aware timestamps

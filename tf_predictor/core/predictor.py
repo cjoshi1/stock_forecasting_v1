@@ -1035,6 +1035,7 @@ class TimeSeriesPredictor(ABC):
             group_indices: List of group values for each prediction (only if return_group_info=True)
         """
         if self.model is None:
+            self.logger.error("Model must be trained first. Call fit().")
             raise RuntimeError("Model must be trained first. Call fit().")
 
         # Clear feature cache before prediction to free memory
