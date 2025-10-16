@@ -117,47 +117,47 @@ class StockPredictor(TimeSeriesPredictor):
                     periods=n_predictions
                 )
 
-        # Handle multi-target vs single-target
-        if isinstance(predictions, dict):
-            # Multi-target mode: predictions is a dict
-            result_dict = {'date': future_dates}
-
-            for target_name, target_preds in predictions.items():
-                if len(target_preds) == 0:
-                    continue
-
-                if self.prediction_horizon == 1:
-                    # Single-horizon: 1D array
-                    result_dict[f'predicted_{target_name}'] = target_preds[:n_predictions]
-                else:
-                    # Multi-horizon: 2D array
-                    for h in range(self.prediction_horizon):
-                        horizon_num = h + 1
-                        horizon_predictions = target_preds[:n_predictions, h]
-                        result_dict[f'predicted_{target_name}_h{horizon_num}'] = horizon_predictions
-
-            result = pd.DataFrame(result_dict)
-        else:
-            # Single-target mode: predictions is an array
-            if len(predictions) == 0:
-                return pd.DataFrame()
-
-            if self.prediction_horizon == 1:
-                # Single-horizon: predictions is 1D array
-                result = pd.DataFrame({
-                    'date': future_dates,
-                    f'predicted_{self.original_target_column}': predictions[:n_predictions]
-                })
-            else:
-                # Multi-horizon: predictions is 2D array (n_samples, n_horizons)
+            # Handle multi-target vs single-target
+            if isinstance(predictions, dict):
+                # Multi-target mode: predictions is a dict
                 result_dict = {'date': future_dates}
 
-                for h in range(self.prediction_horizon):
-                    horizon_num = h + 1
-                    horizon_predictions = predictions[:n_predictions, h]
-                    result_dict[f'predicted_{self.original_target_column}_h{horizon_num}'] = horizon_predictions
+                for target_name, target_preds in predictions.items():
+                    if len(target_preds) == 0:
+                        continue
+
+                    if self.prediction_horizon == 1:
+                        # Single-horizon: 1D array
+                        result_dict[f'predicted_{target_name}'] = target_preds[:n_predictions]
+                    else:
+                        # Multi-horizon: 2D array
+                        for h in range(self.prediction_horizon):
+                            horizon_num = h + 1
+                            horizon_predictions = target_preds[:n_predictions, h]
+                            result_dict[f'predicted_{target_name}_h{horizon_num}'] = horizon_predictions
 
                 result = pd.DataFrame(result_dict)
+            else:
+                # Single-target mode: predictions is an array
+                if len(predictions) == 0:
+                    return pd.DataFrame()
+
+                if self.prediction_horizon == 1:
+                    # Single-horizon: predictions is 1D array
+                    result = pd.DataFrame({
+                        'date': future_dates,
+                        f'predicted_{self.original_target_column}': predictions[:n_predictions]
+                    })
+                else:
+                    # Multi-horizon: predictions is 2D array (n_samples, n_horizons)
+                    result_dict = {'date': future_dates}
+
+                    for h in range(self.prediction_horizon):
+                        horizon_num = h + 1
+                        horizon_predictions = predictions[:n_predictions, h]
+                        result_dict[f'predicted_{self.original_target_column}_h{horizon_num}'] = horizon_predictions
+
+                    result = pd.DataFrame(result_dict)
 
             self.logger.info("Prediction completed successfully")
             return result
