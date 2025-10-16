@@ -61,6 +61,7 @@ class StockPredictor(TimeSeriesPredictor):
         """Initialize and return a logger with a specific format."""
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         return logging.getLogger(__name__)
+    def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
         Create stock-specific features from OHLCV data.
 
