@@ -44,7 +44,8 @@ class StockPredictor(TimeSeriesPredictor):
         self.prediction_horizon = prediction_horizon
         self.asset_type = asset_type
 
-        # Initialize logger
+        # Initialize logger with a specific format
+        self.logger = self._initialize_logger()
         self.logger = self._initialize_logger()
 
         # Pass target_column as-is to base class
@@ -167,4 +168,5 @@ class StockPredictor(TimeSeriesPredictor):
             return result
         except Exception as e:
             self.logger.exception(f"Exception occurred during prediction for {n_predictions} bars: {e}")
+            raise
             raise
