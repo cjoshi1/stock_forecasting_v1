@@ -62,3 +62,4 @@ secrets.json
 
 # Development notes and documentation
 tf_predictor/notes.md
+.aider*
