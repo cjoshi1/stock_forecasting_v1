@@ -44,9 +44,8 @@ class StockPredictor(TimeSeriesPredictor):
         self.prediction_horizon = prediction_horizon
         self.asset_type = asset_type
 
-        # Initialize logger with a specific format
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        self.logger = logging.getLogger(__name__)
+        # Initialize logger
+        self.logger = self._initialize_logger()
 
         # Pass target_column as-is to base class
         # The base TimeSeriesPredictor will handle normalization
@@ -58,7 +57,10 @@ class StockPredictor(TimeSeriesPredictor):
             **ft_kwargs
         )
     
-    def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
+    def _initialize_logger(self):
+        """Initialize and return a logger with a specific format."""
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        return logging.getLogger(__name__)
         """
         Create stock-specific features from OHLCV data.
 
@@ -163,5 +165,5 @@ class StockPredictor(TimeSeriesPredictor):
             self.logger.info("Prediction completed successfully")
             return result
         except Exception as e:
-            self.logger.exception("Exception occurred during prediction")
+            self.logger.exception(f"Exception occurred during prediction for {n_predictions} bars: {e}")
             raise
