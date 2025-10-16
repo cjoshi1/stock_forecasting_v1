@@ -100,8 +100,8 @@ class StockPredictor(TimeSeriesPredictor):
             self.logger.info("Starting prediction for next bars")
             predictions = self.predict(df)
 
-        # Generate future dates based on asset type
-        last_date = df['date'].iloc[-1]
+            # Generate future dates based on asset type
+            last_date = df['date'].iloc[-1]
 
         if self.asset_type == 'crypto':
             # Crypto: 24/7 trading, use calendar days
