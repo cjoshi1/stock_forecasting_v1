@@ -116,6 +116,7 @@ Datetime,Open,High,Low,Close,Volume,Dividends,Stock Splits
 - **Group-Based Scaling** ⭐ NEW: Independent scaling per group (e.g., per stock symbol) while training a unified model.
 
 ### 📈 Daily Stock Forecasting Application (`daily_stock_forecasting/`)
+- **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously (e.g., close + volume).
 - **Multi-Horizon Prediction**: Predict 1, 2, 3+ steps ahead simultaneously.
 - **Essential vs Full Features**: Fast training with 7 essential features or comprehensive 30+ indicators.
 - **Multiple Targets**: Price prediction, returns, percentage changes, volatility.
@@ -124,6 +125,7 @@ Datetime,Open,High,Low,Close,Volume,Dividends,Stock Splits
 - **CLI Interface**: Ready-to-use command-line application.
 
 ### 📊 Intraday Forecasting Application (`intraday_forecasting/`)
+- **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously (e.g., close + volume).
 - **Multi-Market**: US, India stock markets & cryptocurrency (24/7 trading).
 - **Intraday Patterns**: Models time-of-day, market sessions, and microstructure.
 - **Multi-Timeframe**: Supports 1min, 5min, 15min, and 1h frequencies.
@@ -208,6 +210,58 @@ predictor = IntradayPredictor(
 
 # Automatic temporal ordering ensures sequences are correct
 predictor.fit(train_df, val_df, epochs=200, batch_size=128)
+```
+
+### Multi-Target Prediction ⭐ NEW
+```python
+from daily_stock_forecasting import StockPredictor
+
+# Predict multiple targets simultaneously (e.g., price AND volume)
+predictor = StockPredictor(
+    target_column=['close', 'volume'],  # ⭐ List of targets
+    sequence_length=20,
+    prediction_horizon=1,
+    d_token=192,
+    n_layers=4,
+    n_heads=8
+)
+
+# Train on multiple targets
+predictor.fit(train_df, val_df, epochs=150, batch_size=64)
+
+# Predictions returned as dictionary
+predictions = predictor.predict(test_df)
+# predictions = {'close': array([...]), 'volume': array([...])}
+
+# Evaluate per-target metrics
+metrics = predictor.evaluate(test_df)
+# metrics = {'close': {'MAE': ..., 'RMSE': ...}, 'volume': {'MAE': ..., 'RMSE': ...}}
+```
+
+### Multi-Target with Multi-Horizon and Group Scaling ⭐ NEW
+```python
+from intraday_forecasting import IntradayPredictor
+
+# The ultimate configuration: multiple targets, horizons, AND groups!
+predictor = IntradayPredictor(
+    target_column=['close', 'volume'],  # ⭐ Multiple targets
+    timeframe='5min',
+    country='US',
+    group_column='symbol',              # ⭐ Group-based scaling
+    prediction_horizon=3,               # ⭐ Multi-horizon (3 steps ahead)
+    sequence_length=20,
+    d_token=256,
+    n_layers=5
+)
+
+predictor.fit(train_df, val_df, epochs=200, batch_size=128)
+
+# Returns dict with arrays of shape (n_samples, 3) for each target
+predictions = predictor.predict(test_df)
+# predictions = {
+#   'close': array([[...], [...], [...]]),  # shape: (n_samples, 3)
+#   'volume': array([[...], [...], [...]])   # shape: (n_samples, 3)
+# }
 ```
 
 ### Custom Time Series Prediction

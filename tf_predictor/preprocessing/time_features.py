@@ -161,47 +161,52 @@ def create_rolling_features(df: pd.DataFrame, column: str, windows: list) -> pd.
     return df
 
 
-def create_sequences(df: pd.DataFrame, sequence_length: int, target_column: str) -> Tuple[np.ndarray, np.ndarray]:
+def create_sequences(df: pd.DataFrame, sequence_length: int, target_column: str,
+                    feature_columns: list = None) -> Tuple[np.ndarray, np.ndarray]:
     """
     Create sequences from time series data.
-    
+
     Args:
         df: DataFrame with features and target
         sequence_length: Length of input sequences
         target_column: Name of target column
-        
+        feature_columns: Optional list of feature column names to use.
+                        If None, uses all numeric columns except target.
+
     Returns:
         sequences: Array of shape (n_samples, sequence_length, n_features)
         targets: Array of shape (n_samples,)
     """
     if len(df) <= sequence_length:
         raise ValueError(f"DataFrame length ({len(df)}) must be greater than sequence_length ({sequence_length})")
-    
-    # Features (exclude target column and non-numeric columns)
-    feature_columns = []
-    for col in df.columns:
-        if col != target_column and pd.api.types.is_numeric_dtype(df[col]):
-            feature_columns.append(col)
-    
+
+    # Determine which feature columns to use
+    if feature_columns is None:
+        # Features (exclude target column and non-numeric columns)
+        feature_columns = []
+        for col in df.columns:
+            if col != target_column and pd.api.types.is_numeric_dtype(df[col]):
+                feature_columns.append(col)
+
     if len(feature_columns) == 0:
         raise ValueError("No numeric feature columns found for sequence creation")
-    
+
     features = df[feature_columns].values
     targets = df[target_column].values
-    
+
     sequences = []
     sequence_targets = []
-    
+
     # Create sequences
     for i in range(sequence_length, len(df)):
         # Sequence of features (look back)
         seq = features[i-sequence_length:i]
         # Target at current time step
         target = targets[i]
-        
+
         sequences.append(seq)
         sequence_targets.append(target)
-    
+
     return np.array(sequences), np.array(sequence_targets)
 
 

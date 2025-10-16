@@ -66,6 +66,10 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         # Create output directory
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
+        # Detect multi-target mode
+        is_multi_target = predictor.is_multi_target
+        target_columns = predictor.target_columns if is_multi_target else [predictor.target_column]
+
         # Get predictions using optimized method (reuse cached features if available)
         if train_features is not None:
             # Use provided cached features
@@ -104,131 +108,205 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         # Then create_sequences() removes first sequence_length rows from the processed data
         # So we need: iloc[sequence_length : -prediction_horizon] to match
         horizon = predictor.prediction_horizon
+
+        # Extract timestamps (same for all targets)
         if horizon == 1:
             # Single-horizon: drops last 1 row
             train_timestamps = train_df[predictor.timestamp_col].iloc[predictor.sequence_length:-1].values
-            train_actual = train_df[predictor.target_column].iloc[predictor.sequence_length:-1].values
             if val_df is not None:
                 val_timestamps = val_df[predictor.timestamp_col].iloc[predictor.sequence_length:-1].values
-                val_actual = val_df[predictor.target_column].iloc[predictor.sequence_length:-1].values
             if test_df is not None:
                 test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:-1].values
-                test_actual = test_df[predictor.target_column].iloc[predictor.sequence_length:-1].values
         else:
             # Multi-horizon: drops last prediction_horizon rows
             train_timestamps = train_df[predictor.timestamp_col].iloc[predictor.sequence_length:-horizon].values
-            train_actual = train_df[predictor.target_column].iloc[predictor.sequence_length:-horizon].values
             if val_df is not None:
                 val_timestamps = val_df[predictor.timestamp_col].iloc[predictor.sequence_length:-horizon].values
-                val_actual = val_df[predictor.target_column].iloc[predictor.sequence_length:-horizon].values
             if test_df is not None:
                 test_timestamps = test_df[predictor.timestamp_col].iloc[predictor.sequence_length:-horizon].values
-                test_actual = test_df[predictor.target_column].iloc[predictor.sequence_length:-horizon].values
-        
-        # Create comprehensive plot
-        fig, axes = plt.subplots(2, 1, figsize=(15, 10))
-        
-        # Plot 1: Predictions vs Actual (arrays are now properly aligned)
-        axes[0].plot(train_timestamps, train_actual,
-                    label='Actual (Train)', alpha=0.7, linewidth=1)
-        axes[0].plot(train_timestamps, train_predictions,
-                    label='Predicted (Train)', alpha=0.8, linewidth=1)
 
-        if test_predictions is not None and len(test_predictions) > 0:
-            axes[0].plot(test_timestamps, test_actual,
-                        label='Actual (Test)', alpha=0.7, linewidth=1)
-            axes[0].plot(test_timestamps, test_predictions,
-                        label='Predicted (Test)', alpha=0.8, linewidth=1)
+        # Extract group column values if group-based scaling is enabled
+        train_groups = None
+        val_groups = None
+        test_groups = None
 
-        # Add future predictions to plot
-        if future_predictions is not None and len(future_predictions) > 0:
-            future_timestamps = future_predictions[predictor.timestamp_col]
-            # Use original_target_column for future predictions column name
-            future_col = f'predicted_{predictor.original_target_column}'
-            future_values = future_predictions[future_col]
-            axes[0].plot(future_timestamps, future_values,
-                        label='Future Predictions', alpha=0.9, linewidth=2,
-                        linestyle='--', color='red', marker='o', markersize=3)
-        
-        axes[0].set_title(f'Intraday {predictor.original_target_column.title()} Predictions - {predictor.timeframe}')
-        axes[0].set_ylabel(predictor.original_target_column.title())
-        axes[0].legend()
-        axes[0].grid(True, alpha=0.3)
-        
-        # Format x-axis for intraday data (crypto-aware)
-        if len(train_timestamps) > 0:
-            is_crypto = args and args.country == 'CRYPTO'
-            if is_crypto:
-                # 24/7 crypto trading - show date and time
-                axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-                axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=4))  # Every 4 hours
+        if predictor.group_column is not None:
+            if horizon == 1:
+                train_groups = train_df[predictor.group_column].iloc[predictor.sequence_length:-1].values
+                if val_df is not None:
+                    val_groups = val_df[predictor.group_column].iloc[predictor.sequence_length:-1].values
+                if test_df is not None:
+                    test_groups = test_df[predictor.group_column].iloc[predictor.sequence_length:-1].values
             else:
-                # Traditional market hours - show time only
-                axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=1))
-        
-        # Plot 2: Training Progress
-        if hasattr(predictor, 'history') and predictor.history['train_loss']:
-            epochs = range(1, len(predictor.history['train_loss']) + 1)
-            axes[1].plot(epochs, predictor.history['train_loss'], label='Training Loss', linewidth=2)
-            if predictor.history['val_loss']:
-                axes[1].plot(epochs, predictor.history['val_loss'], label='Validation Loss', linewidth=2)
-            axes[1].set_title('Training Progress')
-            axes[1].set_xlabel('Epoch')
-            axes[1].set_ylabel('Loss')
-            axes[1].legend()
-            axes[1].grid(True, alpha=0.3)
-        else:
-            axes[1].text(0.5, 0.5, 'No training history available', 
-                        transform=axes[1].transAxes, ha='center', va='center')
-            axes[1].set_title('Training Progress')
-        
-        plt.tight_layout()
+                train_groups = train_df[predictor.group_column].iloc[predictor.sequence_length:-horizon].values
+                if val_df is not None:
+                    val_groups = val_df[predictor.group_column].iloc[predictor.sequence_length:-horizon].values
+                if test_df is not None:
+                    test_groups = test_df[predictor.group_column].iloc[predictor.sequence_length:-horizon].values
 
-        # Save plot
+        # Extract actual values per target
+        train_actual_dict = {}
+        val_actual_dict = {} if val_df is not None else None
+        test_actual_dict = {} if test_df is not None else None
+
+        for target_col in target_columns:
+            if horizon == 1:
+                train_actual_dict[target_col] = train_df[target_col].iloc[predictor.sequence_length:-1].values
+                if val_df is not None:
+                    val_actual_dict[target_col] = val_df[target_col].iloc[predictor.sequence_length:-1].values
+                if test_df is not None:
+                    test_actual_dict[target_col] = test_df[target_col].iloc[predictor.sequence_length:-1].values
+            else:
+                train_actual_dict[target_col] = train_df[target_col].iloc[predictor.sequence_length:-horizon].values
+                if val_df is not None:
+                    val_actual_dict[target_col] = val_df[target_col].iloc[predictor.sequence_length:-horizon].values
+                if test_df is not None:
+                    test_actual_dict[target_col] = test_df[target_col].iloc[predictor.sequence_length:-horizon].values
+        
+        # Create comprehensive plot(s)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        plot_path = os.path.join(output_dir, f'intraday_predictions_{timestamp}.png')
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"   ✅ Plot saved to: {plot_path}")
-        plt.close()
+        plot_paths = []
+
+        # For multi-target, create separate plots for each target
+        num_targets = len(target_columns)
+        for idx, target_col in enumerate(target_columns):
+            # Get predictions for this target
+            if is_multi_target:
+                train_preds = train_predictions[target_col]
+                test_preds = test_predictions[target_col] if test_predictions is not None else None
+            else:
+                train_preds = train_predictions
+                test_preds = test_predictions
+
+            # Get actual values for this target
+            train_act = train_actual_dict[target_col]
+            test_act = test_actual_dict[target_col] if test_df is not None else None
+
+            # Create figure
+            fig, axes = plt.subplots(2, 1, figsize=(15, 10))
+
+            # Plot 1: Predictions vs Actual
+            axes[0].plot(train_timestamps, train_act,
+                        label='Actual (Train)', alpha=0.7, linewidth=1)
+            axes[0].plot(train_timestamps, train_preds,
+                        label='Predicted (Train)', alpha=0.8, linewidth=1)
+
+            if test_preds is not None and len(test_preds) > 0:
+                axes[0].plot(test_timestamps, test_act,
+                            label='Actual (Test)', alpha=0.7, linewidth=1)
+                axes[0].plot(test_timestamps, test_preds,
+                            label='Predicted (Test)', alpha=0.8, linewidth=1)
+
+            # Add future predictions if available (only for single-target for now)
+            if not is_multi_target and future_predictions is not None and len(future_predictions) > 0:
+                future_timestamps = future_predictions[predictor.timestamp_col]
+                future_col = f'predicted_{predictor.original_target_column}'
+                future_values = future_predictions[future_col]
+                axes[0].plot(future_timestamps, future_values,
+                            label='Future Predictions', alpha=0.9, linewidth=2,
+                            linestyle='--', color='red', marker='o', markersize=3)
+
+            axes[0].set_title(f'Intraday {target_col.title()} Predictions - {predictor.timeframe}')
+            axes[0].set_ylabel(target_col.title())
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
+
+            # Format x-axis for intraday data (crypto-aware)
+            if len(train_timestamps) > 0:
+                is_crypto = args and args.country == 'CRYPTO'
+                if is_crypto:
+                    axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+                    axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=4))
+                else:
+                    axes[0].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    axes[0].xaxis.set_major_locator(mdates.HourLocator(interval=1))
+
+            # Plot 2: Training Progress (same for all targets)
+            if hasattr(predictor, 'history') and predictor.history['train_loss']:
+                epochs = range(1, len(predictor.history['train_loss']) + 1)
+                axes[1].plot(epochs, predictor.history['train_loss'], label='Training Loss', linewidth=2)
+                if predictor.history['val_loss']:
+                    axes[1].plot(epochs, predictor.history['val_loss'], label='Validation Loss', linewidth=2)
+                axes[1].set_title('Training Progress')
+                axes[1].set_xlabel('Epoch')
+                axes[1].set_ylabel('Loss')
+                axes[1].legend()
+                axes[1].grid(True, alpha=0.3)
+            else:
+                axes[1].text(0.5, 0.5, 'No training history available',
+                            transform=axes[1].transAxes, ha='center', va='center')
+                axes[1].set_title('Training Progress')
+
+            plt.tight_layout()
+
+            # Save plot
+            if is_multi_target:
+                plot_path = os.path.join(output_dir, f'intraday_predictions_{target_col}_{timestamp}.png')
+            else:
+                plot_path = os.path.join(output_dir, f'intraday_predictions_{timestamp}.png')
+
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"   ✅ Plot saved to: {plot_path}")
+            plt.close()
+            plot_paths.append(plot_path)
         
         # Save enhanced predictions to CSV with data split indicators and metrics
         data_frames = []
 
-        # Add training data (arrays are now properly aligned)
-        train_csv_data = pd.DataFrame({
-            predictor.timestamp_col: train_timestamps,
-            f'actual_{predictor.target_column}': train_actual,
-            f'predicted_{predictor.target_column}': train_predictions,
-            'data_split': 'train'
-        })
+        # Build CSV data - handle both single and multi-target
+        csv_dict = {predictor.timestamp_col: train_timestamps}
+
+        # Add group column if group-based scaling is enabled
+        if predictor.group_column is not None and train_groups is not None:
+            csv_dict[predictor.group_column] = train_groups
+
+        # Add actual and predicted values for each target
+        for target_col in target_columns:
+            csv_dict[f'actual_{target_col}'] = train_actual_dict[target_col]
+            if is_multi_target:
+                csv_dict[f'predicted_{target_col}'] = train_predictions[target_col]
+            else:
+                csv_dict[f'predicted_{target_col}'] = train_predictions
+
+        csv_dict['data_split'] = 'train'
+        train_csv_data = pd.DataFrame(csv_dict)
         data_frames.append(train_csv_data)
 
         # Add validation data if available
         if val_predictions is not None and len(val_predictions) > 0:
-            val_csv_data = pd.DataFrame({
-                predictor.timestamp_col: val_timestamps,
-                f'actual_{predictor.target_column}': val_actual,
-                f'predicted_{predictor.target_column}': val_predictions,
-                'data_split': 'validation'
-            })
+            val_csv_dict = {predictor.timestamp_col: val_timestamps}
+            if predictor.group_column is not None and val_groups is not None:
+                val_csv_dict[predictor.group_column] = val_groups
+            for target_col in target_columns:
+                val_csv_dict[f'actual_{target_col}'] = val_actual_dict[target_col]
+                if is_multi_target:
+                    val_csv_dict[f'predicted_{target_col}'] = val_predictions[target_col]
+                else:
+                    val_csv_dict[f'predicted_{target_col}'] = val_predictions
+            val_csv_dict['data_split'] = 'validation'
+            val_csv_data = pd.DataFrame(val_csv_dict)
             data_frames.append(val_csv_data)
 
         # Add test data if available
         if test_predictions is not None and len(test_predictions) > 0:
-            test_csv_data = pd.DataFrame({
-                predictor.timestamp_col: test_timestamps,
-                f'actual_{predictor.target_column}': test_actual,
-                f'predicted_{predictor.target_column}': test_predictions,
-                'data_split': 'test'
-            })
+            test_csv_dict = {predictor.timestamp_col: test_timestamps}
+            if predictor.group_column is not None and test_groups is not None:
+                test_csv_dict[predictor.group_column] = test_groups
+            for target_col in target_columns:
+                test_csv_dict[f'actual_{target_col}'] = test_actual_dict[target_col]
+                if is_multi_target:
+                    test_csv_dict[f'predicted_{target_col}'] = test_predictions[target_col]
+                else:
+                    test_csv_dict[f'predicted_{target_col}'] = test_predictions
+            test_csv_dict['data_split'] = 'test'
+            test_csv_data = pd.DataFrame(test_csv_dict)
             data_frames.append(test_csv_data)
 
-        # Add future predictions if available
-        if future_predictions is not None and len(future_predictions) > 0:
+        # Add future predictions if available (only for single-target for now)
+        if not is_multi_target and future_predictions is not None and len(future_predictions) > 0:
             future_csv_data = pd.DataFrame({
                 predictor.timestamp_col: future_predictions[predictor.timestamp_col],
-                f'actual_{predictor.target_column}': None,  # No actual values for future
+                f'actual_{predictor.target_column}': None,
                 f'predicted_{predictor.target_column}': future_predictions[f'predicted_{predictor.target_column}'],
                 'data_split': 'future'
             })
@@ -257,17 +335,27 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
                 except (TypeError, ValueError):
                     return 'N/A'
 
-            # Write train metrics
-            if train_metrics:
-                f.write(f"# Train,{format_metric(train_metrics.get('MAE'))},{format_metric(train_metrics.get('MSE'))},{format_metric(train_metrics.get('RMSE'))},{format_metric(train_metrics.get('MAPE'))},{format_metric(train_metrics.get('R2'))},{format_metric(train_metrics.get('Directional_Accuracy'))}\n")
+            # Helper to write metrics for a dataset
+            def write_metrics(dataset_name, metrics):
+                if not metrics:
+                    return
+                if is_multi_target:
+                    # Multi-target: write metrics for each target
+                    for target_col in target_columns:
+                        if target_col in metrics:
+                            m = metrics[target_col]
+                            if 'overall' in m:
+                                m = m['overall']
+                            f.write(f"# {dataset_name}_{target_col},{format_metric(m.get('MAE'))},{format_metric(m.get('MSE'))},{format_metric(m.get('RMSE'))},{format_metric(m.get('MAPE'))},{format_metric(m.get('R2'))},{format_metric(m.get('Directional_Accuracy'))}\n")
+                else:
+                    # Single-target
+                    m = metrics.get('overall', metrics)
+                    f.write(f"# {dataset_name},{format_metric(m.get('MAE'))},{format_metric(m.get('MSE'))},{format_metric(m.get('RMSE'))},{format_metric(m.get('MAPE'))},{format_metric(m.get('R2'))},{format_metric(m.get('Directional_Accuracy'))}\n")
 
-            # Write validation metrics if available
-            if val_metrics:
-                f.write(f"# Validation,{format_metric(val_metrics.get('MAE'))},{format_metric(val_metrics.get('MSE'))},{format_metric(val_metrics.get('RMSE'))},{format_metric(val_metrics.get('MAPE'))},{format_metric(val_metrics.get('R2'))},{format_metric(val_metrics.get('Directional_Accuracy'))}\n")
-
-            # Write test metrics if available
-            if test_metrics:
-                f.write(f"# Test,{format_metric(test_metrics.get('MAE'))},{format_metric(test_metrics.get('MSE'))},{format_metric(test_metrics.get('RMSE'))},{format_metric(test_metrics.get('MAPE'))},{format_metric(test_metrics.get('R2'))},{format_metric(test_metrics.get('Directional_Accuracy'))}\n")
+            # Write metrics for each dataset
+            write_metrics("Train", train_metrics)
+            write_metrics("Validation", val_metrics)
+            write_metrics("Test", test_metrics)
 
             f.write("#\n")  # Separator line
 
@@ -276,7 +364,7 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         print(f"   ✅ Predictions CSV saved to: {csv_path}")
 
         return {
-            'plot': plot_path,
+            'plots': plot_paths,  # List of plot paths (one per target for multi-target)
             'csv': csv_path
         }
         
@@ -295,7 +383,7 @@ def main():
     parser.add_argument('--data_path', type=str, default=None,
                        help='Path to intraday data CSV file')
     parser.add_argument('--target', type=str, default='close',
-                       help='Target column to predict (close, open, high, low)')
+                       help='Target column(s) to predict. Single: "close" or Multiple: "close,volume"')
     parser.add_argument('--timeframe', type=str, default='5min',
                        choices=['1min', '5min', '15min', '1h'],
                        help='Trading timeframe for prediction')
@@ -315,6 +403,8 @@ def main():
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=None,
                        help='Number of historical periods (auto-selected if not specified)')
+    parser.add_argument('--prediction_horizon', type=int, default=1,
+                       help='Number of future steps to predict (1=next step, 3=three steps ahead, etc.)')
     parser.add_argument('--d_token', type=int, default=128,
                        help='Token embedding dimension')
     parser.add_argument('--n_layers', type=int, default=3,
@@ -323,6 +413,10 @@ def main():
                        help='Number of attention heads')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
+
+    # Evaluation arguments
+    parser.add_argument('--per_group_metrics', action='store_true',
+                       help='Calculate and display per-group metrics (only when --group_column is set)')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50,
@@ -389,18 +483,25 @@ def main():
                 args.country = 'CRYPTO'
 
             print(f"   Loading from: {args.data_path}")
-            df = load_intraday_data(args.data_path)
+            df = load_intraday_data(args.data_path, group_column=args.group_column)
 
         print(f"   Loaded {len(df)} samples")
     
     # 2. Prepare Data for Training
     print(f"\n🔄 Preparing data for {args.timeframe} forecasting ({args.country} market)...")
-    
+
+    # Parse target column(s) early for preparation
+    if ',' in args.target:
+        target_for_prep = [t.strip() for t in args.target.split(',')]
+    else:
+        target_for_prep = args.target
+
     preparation_result = prepare_intraday_for_training(
-        df, 
-        target_column=args.target,
+        df,
+        target_column=target_for_prep,
         timeframe=args.timeframe,
         country=args.country,
+        group_column=args.group_column,
         verbose=args.verbose
     )
     
@@ -415,7 +516,9 @@ def main():
     train_df, val_df, test_df = split_time_series(
         df_processed,
         test_size=args.test_size,
-        val_size=args.val_size if len(df_processed) > args.test_size + args.val_size + 100 else None
+        val_size=args.val_size if len(df_processed) > args.test_size + args.val_size + 100 else None,
+        group_column=args.group_column,
+        time_column='timestamp'
     )
     
     if train_df is None:
@@ -429,16 +532,24 @@ def main():
     
     # 4. Initialize Model
     print(f"\n🧠 Initializing Intraday Predictor...")
-    
+
+    # Parse target column(s)
+    if ',' in args.target:
+        target_columns = [t.strip() for t in args.target.split(',')]
+        print(f"   Multi-target prediction: {target_columns}")
+    else:
+        target_columns = args.target
+
     # Use timeframe-specific sequence length if not provided
     sequence_length = args.sequence_length or timeframe_config['sequence_length']
-    
+
     model = IntradayPredictor(
-        target_column=args.target,
+        target_column=target_columns,  # Can be str or list
         timeframe=args.timeframe,
         model_type=args.model_type,
         country=args.country,
         sequence_length=sequence_length,
+        prediction_horizon=args.prediction_horizon,
         group_column=args.group_column,
         d_token=args.d_token,
         n_layers=args.n_layers,
@@ -446,11 +557,16 @@ def main():
         dropout=args.dropout,
         verbose=args.verbose
     )
-    
+
     print(f"   Model configuration:")
     print(f"   - Market: {args.country}")
     print(f"   - Timeframe: {args.timeframe} ({timeframe_config['description']})")
     print(f"   - Sequence length: {sequence_length} {args.timeframe} bars")
+    print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
+    if isinstance(target_columns, list):
+        print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
+    else:
+        print(f"   - Target: {target_columns}")
     print(f"   - Token dimension: {args.d_token}")
     print(f"   - Layers: {args.n_layers}")
     print(f"   - Attention heads: {args.n_heads}")
@@ -477,65 +593,93 @@ def main():
     model.save(args.model_path)
     print(f"   ✅ Model saved to: {args.model_path}")
     
-    # 7. Evaluate Model (optimized with cached features)
+    # 7. Evaluate Model
     print(f"\n📈 Evaluating model...")
 
-    # Prepare features once and cache them
-    print("   Preparing features for evaluation...")
-    train_features = model.prepare_features(train_df, fit_scaler=False)
-    if val_df is not None and len(val_df) > 0:
-        val_features = model.prepare_features(val_df, fit_scaler=False)
-    else:
-        val_features = None
-    if test_df is not None and len(test_df) > 0:
-        test_features = model.prepare_features(test_df, fit_scaler=False)
-    else:
-        test_features = None
+    # Helper function to recursively print metrics
+    def print_metrics_recursive(metrics_dict, indent=0, prefix=""):
+        """Recursively print nested metrics dictionary."""
+        indent_str = "   " * indent
 
-    # Train metrics using cached features
-    train_metrics = model.evaluate_from_features(train_features)
-    print(f"\n   Training Metrics:")
-    for metric, value in train_metrics.items():
-        if not np.isnan(value):
-            print(f"   - {metric}: {value:.4f}")
+        for key, value in metrics_dict.items():
+            if isinstance(value, dict):
+                # Nested dict (e.g., per-target, per-horizon, or per-group)
+                print(f"{indent_str}{prefix}{key}:")
+                print_metrics_recursive(value, indent + 1)
+            elif isinstance(value, (int, float)):
+                # Leaf metric value
+                if not np.isnan(value):
+                    # Format differently based on metric type
+                    if key in ['MAPE', 'Directional_Accuracy']:
+                        print(f"{indent_str}- {key}: {value:.2f}%")
+                    else:
+                        print(f"{indent_str}- {key}: {value:.4f}")
 
-    # Validation metrics using cached features
+    # Determine if we should use per-group evaluation
+    use_per_group = args.per_group_metrics and args.group_column is not None
+
+    # Train metrics
+    if use_per_group:
+        train_metrics = model.evaluate(train_df, per_group=True)
+        print(f"\n   Training Metrics (per-group):")
+        print_metrics_recursive(train_metrics, indent=2)
+    else:
+        train_metrics = model.evaluate(train_df, per_group=False)
+        print(f"\n   Training Metrics:")
+        print_metrics_recursive(train_metrics, indent=2)
+
+    # Validation metrics
     val_metrics = None
-    if val_features is not None:
-        val_metrics = model.evaluate_from_features(val_features)
-        print(f"\n   Validation Metrics:")
-        for metric, value in val_metrics.items():
-            if not np.isnan(value):
-                print(f"   - {metric}: {value:.4f}")
+    if val_df is not None and len(val_df) > 0:
+        if use_per_group:
+            val_metrics = model.evaluate(val_df, per_group=True)
+            print(f"\n   Validation Metrics (per-group):")
+            print_metrics_recursive(val_metrics, indent=2)
+        else:
+            val_metrics = model.evaluate(val_df, per_group=False)
+            print(f"\n   Validation Metrics:")
+            print_metrics_recursive(val_metrics, indent=2)
 
-    # Test metrics using cached features
+    # Test metrics
     test_metrics = None
-    if test_features is not None:
-        test_metrics = model.evaluate_from_features(test_features)
-        print(f"\n   Test Metrics:")
-        for metric, value in test_metrics.items():
-            if not np.isnan(value):
-                print(f"   - {metric}: {value:.4f}")
+    if test_df is not None and len(test_df) > 0:
+        if use_per_group:
+            test_metrics = model.evaluate(test_df, per_group=True)
+            print(f"\n   Test Metrics (per-group):")
+            print_metrics_recursive(test_metrics, indent=2)
+        else:
+            test_metrics = model.evaluate(test_df, per_group=False)
+            print(f"\n   Test Metrics:")
+            print_metrics_recursive(test_metrics, indent=2)
 
     # 8. Generate Future Predictions
     future_predictions = None
     if args.future_predictions > 0:
         print(f"\n🔮 Predicting next {args.future_predictions} {args.timeframe} periods...")
 
-        # Use the full processed dataset for future predictions
-        future_predictions = model.predict_next_bars(df_processed, n_predictions=args.future_predictions)
-
-        if len(future_predictions) > 0:
-            print(f"   Future predictions:")
-            for _, row in future_predictions.iterrows():
-                timestamp = row[model.timestamp_col]
-                predicted_value = row[f'predicted_{args.target}']
-                if args.target == 'volume':
-                    print(f"   {timestamp.strftime('%Y-%m-%d %H:%M')}: {predicted_value:.0f}")
-                else:
-                    print(f"   {timestamp.strftime('%Y-%m-%d %H:%M')}: {predicted_value:.2f}")
+        # Note: predict_next_bars may not work correctly with group-based predictions for future bars
+        # This is a limitation when using group_column since we don't know which group to predict for
+        if args.group_column is not None:
+            print(f"   ⚠️  Future predictions not supported with group-based scaling (--group_column)")
+            print(f"   Skipping future predictions...")
         else:
-            print(f"   ⚠️  No future predictions generated")
+            # Use the full processed dataset for future predictions
+            try:
+                future_predictions = model.predict_next_bars(df_processed, n_predictions=args.future_predictions)
+
+                if isinstance(future_predictions, pd.DataFrame) and len(future_predictions) > 0:
+                    print(f"   Future predictions:")
+                    for _, row in future_predictions.iterrows():
+                        timestamp = row[model.timestamp_col]
+                        predicted_value = row[f'predicted_{args.target}']
+                        if args.target == 'volume':
+                            print(f"   {timestamp.strftime('%Y-%m-%d %H:%M')}: {predicted_value:.0f}")
+                        else:
+                            print(f"   {timestamp.strftime('%Y-%m-%d %H:%M')}: {predicted_value:.2f}")
+                else:
+                    print(f"   ⚠️  No future predictions generated")
+            except Exception as e:
+                print(f"   ⚠️  Error generating future predictions: {e}")
 
     # 9. Generate Visualizations
     if not args.no_plots:
@@ -560,16 +704,41 @@ def main():
     print(f"   Model saved to: {args.model_path}")
     if not args.no_plots:
         print(f"   Outputs saved to: outputs/")
-    
-    # Show best metrics
-    if test_df is not None:
-        mape_value = test_metrics.get('MAPE', 0)
-        print(f"   Test MAPE: {mape_value:.2f}%")
-        
-        # Intraday-specific insights
-        if 'Directional_Accuracy' in test_metrics:
-            direction_acc = test_metrics['Directional_Accuracy']
-            print(f"   Directional Accuracy: {direction_acc:.1f}%")
+
+    # Show best metrics (handle both single and multi-target)
+    if test_df is not None and test_metrics is not None:
+        if isinstance(target_columns, list):
+            # Multi-target: show summary for each target
+            print(f"\n   Test Metrics Summary (multi-target):")
+            for target in target_columns:
+                if target in test_metrics:
+                    target_metrics = test_metrics[target]
+                    # Handle nested structure for multi-horizon
+                    if 'overall' in target_metrics:
+                        overall = target_metrics['overall']
+                    else:
+                        overall = target_metrics
+
+                    mape = overall.get('MAPE', 0)
+                    print(f"   - {target.upper()} MAPE: {mape:.2f}%")
+
+                    if 'Directional_Accuracy' in overall:
+                        direction_acc = overall['Directional_Accuracy']
+                        print(f"     Directional Accuracy: {direction_acc:.1f}%")
+        else:
+            # Single-target (handle both flat and nested structure)
+            if 'overall' in test_metrics:
+                overall_metrics = test_metrics['overall']
+            else:
+                overall_metrics = test_metrics
+
+            mape_value = overall_metrics.get('MAPE', 0)
+            print(f"   Test MAPE: {mape_value:.2f}%")
+
+            # Intraday-specific insights
+            if 'Directional_Accuracy' in overall_metrics:
+                direction_acc = overall_metrics['Directional_Accuracy']
+                print(f"   Directional Accuracy: {direction_acc:.1f}%")
     
     print(f"\n📝 Model Summary:")
     timeframe_info = model.get_timeframe_info()

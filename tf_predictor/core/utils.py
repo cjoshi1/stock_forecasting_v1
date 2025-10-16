@@ -121,8 +121,8 @@ def calculate_metrics_multi_horizon(
         # Since y_true_base is aligned with horizon 0 (t+1),
         # horizon h needs actual values at index [h:]
         if h < len(y_true_base):
-            # We can only evaluate where we have future actual values
-            max_samples = len(y_true_base) - h
+            # We can only evaluate where we have both predictions and future actual values
+            max_samples = min(len(horizon_preds), len(y_true_base) - h)
             y_true_horizon = y_true_base[h:h + max_samples]
             y_pred_horizon = horizon_preds[:max_samples]
         else:
@@ -199,32 +199,116 @@ def load_time_series_data(file_path: str, date_column: str = 'date') -> pd.DataF
     return df
 
 
-def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = None) -> tuple:
+def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = None,
+                      group_column: str = None, time_column: str = None) -> tuple:
     """
     Split time series data maintaining temporal order.
-    
+
+    When group_column is specified, splits each group separately to ensure:
+    - Equal representation from each group in train/val/test
+    - Temporal order within each group (earliest data in train, most recent in test)
+
     Args:
         df: DataFrame sorted by time
-        test_size: Number of samples for test set
-        val_size: Number of samples for validation set (optional)
-        
+        test_size: Number of samples for test set (per group if group_column specified)
+        val_size: Number of samples for validation set (per group if group_column specified)
+        group_column: Optional column name to split by groups (e.g., 'symbol' for stocks)
+        time_column: Time column for sorting within groups. Auto-detected if None.
+
     Returns:
         train_df, val_df, test_df (val_df is None if val_size is None)
     """
-    if len(df) <= test_size:
-        print(f"Warning: Dataset has only {len(df)} samples, cannot create test split of {test_size}")
-        return df, None, None
-    
-    # Test split
-    test_df = df.iloc[-test_size:].copy()
-    remaining_df = df.iloc[:-test_size].copy()
-    
-    # Validation split
-    if val_size is not None and len(remaining_df) > val_size:
-        val_df = remaining_df.iloc[-val_size:].copy()
-        train_df = remaining_df.iloc[:-val_size].copy()
+    if group_column is None:
+        # Original behavior: simple temporal split
+        if len(df) <= test_size:
+            print(f"Warning: Dataset has only {len(df)} samples, cannot create test split of {test_size}")
+            return df, None, None
+
+        # Test split
+        test_df = df.iloc[-test_size:].copy()
+        remaining_df = df.iloc[:-test_size].copy()
+
+        # Validation split
+        if val_size is not None and len(remaining_df) > val_size:
+            val_df = remaining_df.iloc[-val_size:].copy()
+            train_df = remaining_df.iloc[:-val_size].copy()
+        else:
+            val_df = None
+            train_df = remaining_df.copy()
+
+        return train_df, val_df, test_df
+
     else:
-        val_df = None
-        train_df = remaining_df.copy()
-    
-    return train_df, val_df, test_df
+        # Group-wise splitting: split each group separately
+        if group_column not in df.columns:
+            raise ValueError(f"Group column '{group_column}' not found in dataframe")
+
+        # Auto-detect time column if not provided
+        if time_column is None:
+            possible_time_cols = ['timestamp', 'date', 'datetime', 'time', 'Date', 'Timestamp', 'DateTime']
+            for col in possible_time_cols:
+                if col in df.columns:
+                    time_column = col
+                    break
+            if time_column is None:
+                print(f"Warning: No time column found, assuming data is already sorted")
+
+        # Sort by group and time to ensure temporal order within each group
+        if time_column:
+            df_sorted = df.sort_values([group_column, time_column]).reset_index(drop=True)
+        else:
+            df_sorted = df.copy()
+
+        # Split each group separately
+        train_dfs = []
+        val_dfs = []
+        test_dfs = []
+
+        unique_groups = df_sorted[group_column].unique()
+
+        for group_value in unique_groups:
+            group_mask = df_sorted[group_column] == group_value
+            group_df = df_sorted[group_mask].copy()
+
+            # Check if group has enough data
+            min_required = test_size + (val_size if val_size else 0) + 10  # At least 10 for training
+            if len(group_df) < min_required:
+                print(f"Warning: Group '{group_value}' has only {len(group_df)} samples, skipping (needs {min_required})")
+                continue
+
+            # Split this group: most recent data goes to test, earliest to train
+            group_test = group_df.iloc[-test_size:].copy()
+            group_remaining = group_df.iloc[:-test_size].copy()
+
+            # Validation split for this group
+            if val_size is not None and len(group_remaining) > val_size:
+                group_val = group_remaining.iloc[-val_size:].copy()
+                group_train = group_remaining.iloc[:-val_size].copy()
+            else:
+                group_val = None
+                group_train = group_remaining.copy()
+
+            # Collect splits
+            train_dfs.append(group_train)
+            if group_val is not None:
+                val_dfs.append(group_val)
+            test_dfs.append(group_test)
+
+        # Combine all groups
+        if len(train_dfs) == 0:
+            print(f"Warning: No groups had sufficient data for splitting")
+            return df, None, None
+
+        train_df = pd.concat(train_dfs, ignore_index=True)
+        val_df = pd.concat(val_dfs, ignore_index=True) if val_dfs else None
+        test_df = pd.concat(test_dfs, ignore_index=True)
+
+        # Print split summary
+        print(f"   Group-wise split summary:")
+        print(f"   - {len(unique_groups)} groups processed")
+        print(f"   - Train: {len(train_df)} samples ({len(train_dfs)} groups × ~{len(train_df)//len(train_dfs)} samples)")
+        if val_df is not None:
+            print(f"   - Val: {len(val_df)} samples ({len(val_dfs)} groups × ~{len(val_df)//len(val_dfs)} samples)")
+        print(f"   - Test: {len(test_df)} samples ({len(test_dfs)} groups × {test_size} samples)")
+
+        return train_df, val_df, test_df

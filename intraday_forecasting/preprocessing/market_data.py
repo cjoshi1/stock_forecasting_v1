@@ -16,7 +16,7 @@ from .intraday_features import create_intraday_features
 
 
 def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
-                      validate: bool = True) -> pd.DataFrame:
+                      validate: bool = True, group_column: Optional[str] = None) -> pd.DataFrame:
     """
     Load intraday data from CSV file.
 
@@ -49,17 +49,13 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
         'Low': 'low',
         'Close': 'close',
         'Volume': 'volume',
-        'Vol': 'volume'
+        'Vol': 'volume',
+        'Symbol': 'symbol'
     }
 
     # Apply column mapping
     df.rename(columns=column_mapping, inplace=True)
 
-    # Handle BTC-USD format - remove extra columns not needed for forecasting
-    extra_columns_to_remove = ['Dividends', 'Stock Splits', 'dividends', 'stock_splits']
-    for col in extra_columns_to_remove:
-        if col in df.columns:
-            df = df.drop(columns=[col])
 
     # Validate required columns
     required_cols = [timestamp_col, 'open', 'high', 'low', 'close', 'volume']
@@ -75,12 +71,12 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
         df[timestamp_col] = df[timestamp_col].dt.tz_convert('UTC').dt.tz_localize(None)
 
     if validate:
-        df = validate_intraday_data(df, timestamp_col)
+        df = validate_intraday_data(df, timestamp_col, group_column)
 
     return df
 
 
-def validate_intraday_data(df: pd.DataFrame, timestamp_col: str = 'timestamp') -> pd.DataFrame:
+def validate_intraday_data(df: pd.DataFrame, timestamp_col: str = 'timestamp', group_column: Optional[str] = None) -> pd.DataFrame:
     """
     Validate intraday data quality and format.
     
@@ -126,12 +122,19 @@ def validate_intraday_data(df: pd.DataFrame, timestamp_col: str = 'timestamp') -
         df_clean = df_clean[~invalid_ohlc]
     
     # Remove duplicates
+    # If group_column is specified, deduplicate on both timestamp and group_column
+    # Otherwise, deduplicate only on timestamp
     before_dedup = len(df_clean)
-    df_clean = df_clean.drop_duplicates(subset=[timestamp_col]).reset_index(drop=True)
+    if group_column is not None and group_column in df_clean.columns:
+        dedup_cols = [timestamp_col, group_column]
+    else:
+        dedup_cols = [timestamp_col]
+
+    df_clean = df_clean.drop_duplicates(subset=dedup_cols).reset_index(drop=True)
     after_dedup = len(df_clean)
     if before_dedup != after_dedup:
         print(f"Warning: Removed {before_dedup - after_dedup} duplicate timestamps")
-    
+
     return df_clean
 
 
@@ -253,6 +256,7 @@ def create_sample_intraday_data(n_days: int = 5, start_date: str = "2023-01-01",
 def prepare_intraday_for_training(df: pd.DataFrame, target_column: str = 'close',
                                 timeframe: str = '5min', timestamp_col: str = 'timestamp',
                                 country: str = 'US', prediction_horizon: int = 1,
+                                group_column: Optional[str] = None,
                                 verbose: bool = False) -> Dict[str, Any]:
     """
     Complete pipeline to prepare intraday data for training.
@@ -264,6 +268,7 @@ def prepare_intraday_for_training(df: pd.DataFrame, target_column: str = 'close'
         timestamp_col: Name of timestamp column
         country: Country code ('US' or 'INDIA')
         prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
+        group_column: Optional column for group-based scaling (e.g., 'symbol' for multi-stock datasets)
         verbose: Whether to print processing steps
 
     Returns:
@@ -275,7 +280,7 @@ def prepare_intraday_for_training(df: pd.DataFrame, target_column: str = 'close'
         print(f"Original data: {len(df)} minute bars")
 
     # Step 1: Prepare data (market hours + resampling)
-    df_processed = prepare_intraday_data(df, timeframe, timestamp_col, country)
+    df_processed = prepare_intraday_data(df, timeframe, timestamp_col, country, group_column)
 
     if verbose:
         print(f"After resampling to {timeframe}: {len(df_processed)} bars")
@@ -283,7 +288,7 @@ def prepare_intraday_for_training(df: pd.DataFrame, target_column: str = 'close'
     # Step 2: Create features
     df_features = create_intraday_features(
         df_processed, target_column, timestamp_col, country,
-        timeframe, prediction_horizon, verbose
+        timeframe, prediction_horizon, verbose, group_column=group_column
     )
 
     # Step 3: Get timeframe configuration

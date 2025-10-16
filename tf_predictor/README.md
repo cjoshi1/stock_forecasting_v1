@@ -4,6 +4,7 @@ A reusable Python library for time series forecasting using the FT-Transformer (
 
 ## 🎯 Features
 
+- **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously with one unified model
 - **Generic Time Series Predictor**: Abstract base class for any time series domain
 - **State-of-the-art Architecture**: FT-Transformer with attention mechanisms
 - **Group-Based Scaling** ⭐ NEW: Independent scaling per group (e.g., per entity/symbol) while training unified models
@@ -137,6 +138,79 @@ predictions = predictor.predict(test_df)
 - ✅ Single unified model learns patterns across all entities
 - ✅ Automatic temporal ordering within each group
 - ✅ Handles missing groups gracefully during prediction
+
+### 5. Multi-Target Prediction ⭐ NEW
+
+```python
+from tf_predictor.core.predictor import TimeSeriesPredictor
+from tf_predictor.preprocessing.time_features import create_date_features
+
+class MultiTargetPredictor(TimeSeriesPredictor):
+    def create_features(self, df, fit_scaler=False):
+        df_processed = df.copy()
+        if 'date' in df_processed.columns:
+            df_processed = create_date_features(df_processed, 'date')
+        return df_processed.fillna(0)
+
+# Initialize with multiple target columns
+predictor = MultiTargetPredictor(
+    target_column=['temperature', 'humidity', 'pressure'],  # ⭐ Multiple targets
+    sequence_length=10,
+    prediction_horizon=1,  # Or use >1 for multi-horizon per target
+    d_token=128,
+    n_layers=3,
+    n_heads=8
+)
+
+# Train on multiple targets simultaneously
+predictor.fit(train_df, val_df, epochs=100)
+
+# Predictions returned as dictionary
+predictions = predictor.predict(test_df)
+# predictions = {
+#   'temperature': array([...]),
+#   'humidity': array([...]),
+#   'pressure': array([...])
+# }
+
+# Evaluate with per-target metrics
+metrics = predictor.evaluate(test_df)
+# metrics = {
+#   'temperature': {'MAE': 1.2, 'RMSE': 2.3, ...},
+#   'humidity': {'MAE': 5.4, 'RMSE': 8.1, ...},
+#   'pressure': {'MAE': 0.8, 'RMSE': 1.5, ...}
+# }
+```
+
+**Benefits of Multi-Target Prediction:**
+- ✅ Train one model for multiple predictions
+- ✅ Capture correlations between target variables
+- ✅ More efficient than training separate models
+- ✅ Works with multi-horizon and group-based scaling
+
+### 6. Combining All Features ⭐ NEW
+
+```python
+# Ultimate configuration: Multi-target + Multi-horizon + Group-based scaling
+predictor = MultiTargetPredictor(
+    target_column=['value1', 'value2'],  # Multiple targets
+    sequence_length=10,
+    prediction_horizon=3,                 # 3 steps ahead per target
+    group_column='entity_id',             # Group-based scaling
+    d_token=192,
+    n_layers=4,
+    n_heads=8
+)
+
+predictor.fit(train_df, val_df, epochs=150, batch_size=64)
+
+# Returns dict with arrays of shape (n_samples, 3) for each target
+predictions = predictor.predict(test_df)
+# predictions = {
+#   'value1': array([[...], [...], [...]]),  # shape: (n_samples, 3)
+#   'value2': array([[...], [...], [...]])   # shape: (n_samples, 3)
+# }
+```
 ```
 
 ## 📚 Core Components
@@ -195,9 +269,10 @@ from tf_predictor.core.utils import (
 ## 🛠️ Configuration
 
 ### Model Parameters
-- `target_column`: Column to predict
+- `target_column`: Column(s) to predict - str for single-target or list for multi-target (e.g., 'value' or ['value1', 'value2'])
 - `sequence_length`: Number of time steps to use as input (default: 5)
 - `prediction_horizon`: Number of steps ahead to predict (default: 1, >1 for multi-horizon)
+- `group_column`: Column for group-based scaling (default: None)
 - `d_token`: Token embedding dimension (default: 192)
 - `n_layers`: Number of transformer layers (default: 3)
 - `n_heads`: Number of attention heads (default: 8)

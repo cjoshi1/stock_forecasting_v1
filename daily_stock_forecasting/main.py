@@ -41,7 +41,7 @@ def main():
     parser.add_argument('--data_path', type=str, default=None,
                        help='Path to stock data CSV file')
     parser.add_argument('--target', type=str, default='close',
-                       help='Target column to predict (close, open, high, low)')
+                       help='Target column(s) to predict. Single: "close" or Multiple: "close,volume"')
     parser.add_argument('--use_sample_data', action='store_true',
                        help='Use synthetic sample data instead of real data')
     parser.add_argument('--asset_type', type=str, default='stock',
@@ -65,6 +65,10 @@ def main():
                        help='Number of attention heads')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
+
+    # Evaluation arguments
+    parser.add_argument('--per_group_metrics', action='store_true',
+                       help='Calculate and display per-group metrics (only when --group_column is set)')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=100,
@@ -125,45 +129,60 @@ def main():
                 df = create_sample_stock_data(n_samples=300, asset_type=args.asset_type)
             else:
                 print(f"   Found data file: {args.data_path}")
-                df = load_stock_data(args.data_path, asset_type=args.asset_type)
+                df = load_stock_data(args.data_path, asset_type=args.asset_type, group_column=args.group_column)
         else:
-            df = load_stock_data(args.data_path, asset_type=args.asset_type)
+            df = load_stock_data(args.data_path, asset_type=args.asset_type, group_column=args.group_column)
         
         print(f"   Loaded {len(df)} samples from {args.data_path}")
     
     # Validate target column (include engineered features)
     base_columns = df.columns.tolist()
-    
+
     # Add engineered percentage change features that will be created
     engineered_pct_features = []
     periods = [1, 3, 5, 10]
     for period in periods:
         engineered_pct_features.append(f'pct_change_{period}d')
-    
+
     # Add other engineered features
     other_engineered = [
         'returns', 'log_returns', 'volatility_10d', 'momentum_5d',
         'high_low_ratio', 'close_open_ratio', 'volume_ratio'
     ]
-    
+
     all_possible_targets = base_columns + engineered_pct_features + other_engineered
-    
-    if args.target not in all_possible_targets:
-        print(f"   ❌ Target column '{args.target}' not found.")
-        print(f"   📊 Base columns: {base_columns}")
-        print(f"   🔧 Engineered % change features: pct_change_[1,3,5,10]d")
-        print(f"   📈 Other features: returns, volatility_10d, momentum_5d, ratios")
-        return
-    
-    print(f"   Target column: {args.target}")
+
+    # Parse target column(s) for validation
+    if ',' in args.target:
+        target_list = [t.strip() for t in args.target.split(',')]
+        # Validate each target
+        for target in target_list:
+            if target not in all_possible_targets:
+                print(f"   ❌ Target column '{target}' not found.")
+                print(f"   📊 Base columns: {base_columns}")
+                print(f"   🔧 Engineered % change features: pct_change_[1,3,5,10]d")
+                print(f"   📈 Other features: returns, volatility_10d, momentum_5d, ratios")
+                return
+        print(f"   Target columns: {', '.join(target_list)} (multi-target)")
+    else:
+        if args.target not in all_possible_targets:
+            print(f"   ❌ Target column '{args.target}' not found.")
+            print(f"   📊 Base columns: {base_columns}")
+            print(f"   🔧 Engineered % change features: pct_change_[1,3,5,10]d")
+            print(f"   📈 Other features: returns, volatility_10d, momentum_5d, ratios")
+            return
+        print(f"   Target column: {args.target}")
+
     print(f"   Date range: {df['date'].min()} to {df['date'].max()}" if 'date' in df.columns else "   No date column found")
     
     # 2. Split Data
     print(f"\n🔄 Splitting data...")
     train_df, val_df, test_df = split_time_series(
-        df, 
-        test_size=args.test_size, 
-        val_size=args.val_size if len(df) > args.test_size + args.val_size + 50 else None
+        df,
+        test_size=args.test_size,
+        val_size=args.val_size if len(df) > args.test_size + args.val_size + 50 else None,
+        group_column=args.group_column,
+        time_column='date'
     )
     
     if train_df is None:
@@ -178,8 +197,15 @@ def main():
     # 3. Initialize Model
     print(f"\n🧠 Initializing Stock Predictor...")
 
+    # Parse target column(s)
+    if ',' in args.target:
+        target_columns = [t.strip() for t in args.target.split(',')]
+        print(f"   Multi-target prediction: {target_columns}")
+    else:
+        target_columns = args.target
+
     model = StockPredictor(
-        target_column=args.target,
+        target_column=target_columns,  # Can be str or list
         sequence_length=args.sequence_length,
         prediction_horizon=args.prediction_horizon,
         use_essential_only=args.use_essential_only,
@@ -193,7 +219,10 @@ def main():
 
     print(f"   Model configuration:")
     print(f"   - Asset type: {args.asset_type}")
-    print(f"   - Target: {args.target}")
+    if isinstance(target_columns, list):
+        print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
+    else:
+        print(f"   - Target: {target_columns}")
     print(f"   - Sequence length: {args.sequence_length}")
     print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
     print(f"   - Essential features only: {args.use_essential_only}")
@@ -224,11 +253,67 @@ def main():
     model.save(args.model_path)
     print(f"   ✅ Model saved to: {args.model_path}")
 
-    # 6. Evaluate Model (optimized with cached features)
+    # 6. Evaluate Model
     print(f"\n📈 Evaluating model...")
 
-    # Prepare features once and cache them
-    print("   Preparing features for evaluation...")
+    # Helper function to recursively print metrics
+    def print_metrics_recursive(metrics_dict, indent=0, prefix=""):
+        """Recursively print nested metrics dictionary."""
+        indent_str = "   " * indent
+
+        for key, value in metrics_dict.items():
+            if isinstance(value, dict):
+                # Nested dict (e.g., per-target, per-horizon, or per-group)
+                print(f"{indent_str}{prefix}{key}:")
+                print_metrics_recursive(value, indent + 1)
+            elif isinstance(value, (int, float)):
+                # Leaf metric value
+                if not np.isnan(value):
+                    # Format differently based on metric type
+                    if key in ['MAPE', 'Directional_Accuracy']:
+                        print(f"{indent_str}- {key}: {value:.2f}%")
+                    else:
+                        print(f"{indent_str}- {key}: {value:.4f}")
+
+    # Determine if we should use per-group evaluation
+    use_per_group = args.per_group_metrics and args.group_column is not None
+
+    # Train metrics
+    if use_per_group:
+        train_metrics = model.evaluate(train_df, per_group=True)
+        print(f"\n   Training Metrics (per-group):")
+        print_metrics_recursive(train_metrics, indent=2)
+    else:
+        train_metrics = model.evaluate(train_df, per_group=False)
+        print(f"\n   Training Metrics:")
+        print_metrics_recursive(train_metrics, indent=2)
+
+    # Validation metrics
+    val_metrics = None
+    if val_df is not None and len(val_df) > 0:
+        if use_per_group:
+            val_metrics = model.evaluate(val_df, per_group=True)
+            print(f"\n   Validation Metrics (per-group):")
+            print_metrics_recursive(val_metrics, indent=2)
+        else:
+            val_metrics = model.evaluate(val_df, per_group=False)
+            print(f"\n   Validation Metrics:")
+            print_metrics_recursive(val_metrics, indent=2)
+
+    # Test metrics
+    test_metrics = None
+    if test_df is not None and len(test_df) > 0:
+        if use_per_group:
+            test_metrics = model.evaluate(test_df, per_group=True)
+            print(f"\n   Test Metrics (per-group):")
+            print_metrics_recursive(test_metrics, indent=2)
+        else:
+            test_metrics = model.evaluate(test_df, per_group=False)
+            print(f"\n   Test Metrics:")
+            print_metrics_recursive(test_metrics, indent=2)
+
+    # Prepare features for visualization (after evaluation to avoid double computation)
+    print("\n   Preparing features for visualization...")
     train_features = model.prepare_features(train_df, fit_scaler=False)
     if val_df is not None and len(val_df) > 0:
         val_features = model.prepare_features(val_df, fit_scaler=False)
@@ -238,31 +323,6 @@ def main():
         test_features = model.prepare_features(test_df, fit_scaler=False)
     else:
         test_features = None
-
-    # Train metrics using cached features
-    train_metrics = model.evaluate_from_features(train_features)
-    print(f"\n   Training Metrics:")
-    for metric, value in train_metrics.items():
-        if not np.isnan(value):
-            print(f"   - {metric}: {value:.4f}")
-
-    # Validation metrics using cached features
-    val_metrics = None
-    if val_features is not None:
-        val_metrics = model.evaluate_from_features(val_features)
-        print(f"\n   Validation Metrics:")
-        for metric, value in val_metrics.items():
-            if not np.isnan(value):
-                print(f"   - {metric}: {value:.4f}")
-
-    # Test metrics using cached features
-    test_metrics = None
-    if test_features is not None:
-        test_metrics = model.evaluate_from_features(test_features)
-        print(f"\n   Test Metrics:")
-        for metric, value in test_metrics.items():
-            if not np.isnan(value):
-                print(f"   - {metric}: {value:.4f}")
     
     # 7. Generate Comprehensive Plots
     if not args.no_plots:
@@ -291,12 +351,41 @@ def main():
     print(f"   Model saved to: {args.model_path}")
     if not args.no_plots:
         print(f"   Plots saved to: outputs/")
-    
-    # Show best metrics
-    if test_df is not None:
-        mape_value = test_metrics.get('MAPE', 0)
-        print(f"   Test MAPE: {mape_value:.2f}%")
-    
+
+    # Show best metrics (handle both single and multi-target)
+    if test_df is not None and test_metrics is not None:
+        if isinstance(target_columns, list):
+            # Multi-target: show summary for each target
+            print(f"\n   Test Metrics Summary (multi-target):")
+            for target in target_columns:
+                if target in test_metrics:
+                    target_metrics = test_metrics[target]
+                    # Handle nested structure for multi-horizon
+                    if 'overall' in target_metrics:
+                        overall = target_metrics['overall']
+                    else:
+                        overall = target_metrics
+
+                    mape = overall.get('MAPE', 0)
+                    print(f"   - {target.upper()} MAPE: {mape:.2f}%")
+
+                    if 'Directional_Accuracy' in overall:
+                        direction_acc = overall['Directional_Accuracy']
+                        print(f"     Directional Accuracy: {direction_acc:.1f}%")
+        else:
+            # Single-target (handle both flat and nested structure)
+            if 'overall' in test_metrics:
+                overall_metrics = test_metrics['overall']
+            else:
+                overall_metrics = test_metrics
+
+            mape_value = overall_metrics.get('MAPE', 0)
+            print(f"   Test MAPE: {mape_value:.2f}%")
+
+            if 'Directional_Accuracy' in overall_metrics:
+                direction_acc = overall_metrics['Directional_Accuracy']
+                print(f"   Directional Accuracy: {direction_acc:.1f}%")
+
     print("\n" + "="*60)
 
 

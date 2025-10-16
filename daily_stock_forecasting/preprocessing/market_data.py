@@ -7,7 +7,7 @@ import numpy as np
 from tf_predictor.core.utils import load_time_series_data
 
 
-def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str = 'stock') -> pd.DataFrame:
+def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str = 'stock', group_column: str = None) -> pd.DataFrame:
     """
     Load and validate stock or crypto data.
 
@@ -15,6 +15,7 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
         file_path: Path to CSV file
         date_column: Name of date column
         asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
+        group_column: Optional group column to preserve (e.g., 'symbol' for multi-stock datasets)
 
     Returns:
         df: Validated DataFrame
@@ -23,21 +24,25 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
         df = pd.read_csv(file_path)
     except FileNotFoundError:
         raise FileNotFoundError(f"Data file not found: {file_path}")
-    
-    # Remove any non-numeric columns that we don't need (like 'symbol')
-    # Keep only OHLCV + date + any other useful columns
+
+    # Remove any non-numeric columns that we don't need (except group column)
+    # Keep only OHLCV + date + group column + any other useful columns
     cols_to_keep = []
-    
+
     # Always keep OHLCV columns if they exist
     ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
     for col in ohlcv_cols:
         if col in df.columns:
             cols_to_keep.append(col)
-    
+
     # Keep date column if it exists
     if date_column in df.columns:
         cols_to_keep.append(date_column)
-    
+
+    # Keep group column if specified and exists
+    if group_column is not None and group_column in df.columns:
+        cols_to_keep.append(group_column)
+
     # Keep any other numeric columns (like vwap, change, etc.)
     for col in df.columns:
         if col not in cols_to_keep:
@@ -46,10 +51,11 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
                 pd.to_numeric(df[col], errors='raise')
                 cols_to_keep.append(col)
             except (ValueError, TypeError):
-                # Skip non-numeric columns
-                print(f"Skipping non-numeric column: '{col}'")
+                # Skip non-numeric columns (unless it's the group column which we already handled)
+                if col != group_column:
+                    print(f"Skipping non-numeric column: '{col}'")
                 pass
-    
+
     # Filter to only the columns we want
     df = df[cols_to_keep].copy()
     
@@ -74,8 +80,7 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
         try:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         except:
-            print(f"Warning: Could not convert column '{col}' to numeric, dropping it")
-            df = df.drop(columns=[col])
+            print(f"Warning: Could not convert column '{col}' to numeric, leaving it as is.")
     
     # Check for date column and sort chronologically
     if date_column in df.columns:

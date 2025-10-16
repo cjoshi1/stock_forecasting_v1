@@ -65,7 +65,7 @@ TIMEFRAME_CONFIG = {
 
 
 def filter_market_hours(df: pd.DataFrame, timestamp_col: str = 'timestamp',
-                        country: str = 'US') -> pd.DataFrame:
+                        country: str = 'US', group_column: str = None) -> pd.DataFrame:
     """
     Filter data to regular market hours for specified country.
 
@@ -73,6 +73,7 @@ def filter_market_hours(df: pd.DataFrame, timestamp_col: str = 'timestamp',
         df: DataFrame with timestamp column
         timestamp_col: Name of timestamp column
         country: Country code ('US', 'INDIA', or 'CRYPTO')
+        group_column: Optional column for grouping (e.g., 'symbol' for multi-stock datasets)
 
     Returns:
         Filtered DataFrame with only market hours data
@@ -105,57 +106,68 @@ def filter_market_hours(df: pd.DataFrame, timestamp_col: str = 'timestamp',
     return df_market
 
 
-def resample_ohlcv(df: pd.DataFrame, timeframe: str, timestamp_col: str = 'timestamp', 
-                   country: str = 'US') -> pd.DataFrame:
+def resample_ohlcv(df: pd.DataFrame, timeframe: str, timestamp_col: str = 'timestamp',
+                   country: str = 'US', group_column: str = None) -> pd.DataFrame:
     """
     Resample minute-level OHLCV data to specified timeframe.
-    
+
     Args:
         df: DataFrame with timestamp, open, high, low, close, volume columns
         timeframe: Target timeframe ('1min', '5min', '15min', '1h')
         timestamp_col: Name of timestamp column
-        
+        group_column: Optional column for grouping (e.g., 'symbol' for multi-stock datasets)
+
     Returns:
         Resampled DataFrame
     """
     if timeframe not in TIMEFRAME_CONFIG:
         raise ValueError(f"Unsupported timeframe: {timeframe}. Use: {list(TIMEFRAME_CONFIG.keys())}")
-    
+
     df = df.copy()
-    
-    # Ensure timestamp is datetime and set as index
+
+    # Ensure timestamp is datetime
     if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
         df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-    
-    df.set_index(timestamp_col, inplace=True)
-    df.sort_index(inplace=True)
-    
+
     # Get resampling rule
     rule = TIMEFRAME_CONFIG[timeframe]['resample_rule']
-    
+
     # Define aggregation functions
     agg_funcs = {
         'open': 'first',
-        'high': 'max', 
+        'high': 'max',
         'low': 'min',
         'close': 'last',
         'volume': 'sum'
     }
-    
+
     # Add open_interest if present
     if 'open_interest' in df.columns:
         agg_funcs['open_interest'] = 'last'  # Use last value for OI
-    
-    # Resample data
-    df_resampled = df.resample(rule).agg(agg_funcs)
-    
-    # Drop rows with NaN (periods with no data)
-    df_resampled.dropna(inplace=True)
-    
-    # Reset index to get timestamp as column
-    df_resampled.reset_index(inplace=True)
-    df_resampled.rename(columns={'index': timestamp_col}, inplace=True)
-    
+
+    # Handle group-based resampling (e.g., for multiple symbols)
+    if group_column is not None and group_column in df.columns:
+        # Resample each group separately and concatenate
+        resampled_groups = []
+        for group_value, group_df in df.groupby(group_column):
+            group_df = group_df.set_index(timestamp_col).sort_index()
+            group_resampled = group_df.resample(rule).agg(agg_funcs)
+            group_resampled.dropna(inplace=True)
+            group_resampled.reset_index(inplace=True)
+            group_resampled[group_column] = group_value
+            resampled_groups.append(group_resampled)
+
+        df_resampled = pd.concat(resampled_groups, ignore_index=True)
+        df_resampled = df_resampled.sort_values(timestamp_col).reset_index(drop=True)
+    else:
+        # Standard single-group resampling
+        df.set_index(timestamp_col, inplace=True)
+        df.sort_index(inplace=True)
+        df_resampled = df.resample(rule).agg(agg_funcs)
+        df_resampled.dropna(inplace=True)
+        df_resampled.reset_index(inplace=True)
+        df_resampled.rename(columns={'index': timestamp_col}, inplace=True)
+
     return df_resampled
 
 
@@ -237,30 +249,32 @@ def validate_country(country: str) -> bool:
     return country in MARKET_HOURS_CONFIG
 
 
-def prepare_intraday_data(df: pd.DataFrame, timeframe: str = '5min', 
-                         timestamp_col: str = 'timestamp', country: str = 'US') -> pd.DataFrame:
+def prepare_intraday_data(df: pd.DataFrame, timeframe: str = '5min',
+                         timestamp_col: str = 'timestamp', country: str = 'US',
+                         group_column: str = None) -> pd.DataFrame:
     """
     Complete pipeline to prepare intraday data for training.
-    
+
     Args:
         df: Raw minute-level DataFrame
         timeframe: Target timeframe for resampling
         timestamp_col: Name of timestamp column
         country: Country code ('US' or 'INDIA')
-        
+        group_column: Optional column for grouping (e.g., 'symbol' for multi-stock datasets)
+
     Returns:
         Processed DataFrame ready for feature engineering
     """
     # Step 1: Filter to market hours for specified country
-    df_market = filter_market_hours(df, timestamp_col, country)
-    
+    df_market = filter_market_hours(df, timestamp_col, country, group_column)
+
     # Step 2: Resample to target timeframe (skip if already 1min)
     if timeframe != '1min':
-        df_processed = resample_ohlcv(df_market, timeframe, timestamp_col, country)
+        df_processed = resample_ohlcv(df_market, timeframe, timestamp_col, country, group_column)
     else:
         df_processed = df_market.copy()
-    
+
     # Step 3: Ensure chronological order
     df_processed = df_processed.sort_values(timestamp_col).reset_index(drop=True)
-    
+
     return df_processed

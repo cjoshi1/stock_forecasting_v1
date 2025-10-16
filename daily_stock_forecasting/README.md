@@ -4,6 +4,7 @@ A specialized application for daily stock and cryptocurrency price prediction us
 
 ## 🎯 Features
 
+- **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously (e.g., close + volume) with one unified model
 - **Multi-Asset Support**: Traditional stocks (5-day week) and cryptocurrencies (7-day week, 24/7)
 - **Portfolio Support** ⭐ NEW: Train on multiple stocks with group-based scaling for better accuracy
 - **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
@@ -85,6 +86,71 @@ predictor.fit(
 
 # Predictions automatically use correct scaler per symbol
 predictions = predictor.predict(test_df)
+```
+
+### Multi-Target Prediction ⭐ NEW
+
+```python
+from daily_stock_forecasting import StockPredictor
+import pandas as pd
+
+# Predict multiple targets simultaneously (e.g., price AND volume)
+predictor = StockPredictor(
+    target_column=['close', 'volume'],  # ⭐ List of targets
+    sequence_length=20,
+    prediction_horizon=1,
+    asset_type='stock',
+    d_token=192,
+    n_layers=4,
+    n_heads=8,
+    dropout=0.15
+)
+
+# Train on multiple targets
+predictor.fit(
+    df=train_df,
+    val_df=val_df,
+    epochs=150,
+    batch_size=64,
+    learning_rate=8e-4
+)
+
+# Predictions returned as dictionary
+predictions = predictor.predict(test_df)
+# predictions = {'close': array([...]), 'volume': array([...])}
+
+# Evaluate per-target metrics
+metrics = predictor.evaluate(test_df)
+# metrics = {'close': {'MAE': ..., 'RMSE': ...}, 'volume': {'MAE': ..., 'RMSE': ...}}
+```
+
+### Multi-Target with Multi-Horizon and Portfolio ⭐ NEW
+
+```python
+# The ultimate configuration: multiple targets, horizons, AND portfolios!
+predictor = StockPredictor(
+    target_column=['close', 'volume'],  # ⭐ Multiple targets
+    sequence_length=20,
+    prediction_horizon=3,               # ⭐ 3 days ahead for each target
+    group_column='symbol',              # ⭐ Portfolio with group-based scaling
+    asset_type='stock',
+    d_token=256,
+    n_layers=5,
+    n_heads=8,
+    dropout=0.2
+)
+
+predictor.fit(train_df, val_df, epochs=200, batch_size=64)
+
+# Returns dict with arrays of shape (n_samples, 3) for each target
+predictions = predictor.predict(test_df)
+# predictions = {
+#   'close': array([[...], [...], [...]]),  # shape: (n_samples, 3)
+#   'volume': array([[...], [...], [...]])   # shape: (n_samples, 3)
+# }
+
+# Per-group, per-target, per-horizon metrics
+metrics = predictor.evaluate(test_df, per_group=True)
 ```
 
 ### Command Line Interface

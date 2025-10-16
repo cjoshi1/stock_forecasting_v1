@@ -252,6 +252,7 @@ def create_comprehensive_plots(
 
     For single-horizon: generates 1 comprehensive plot
     For multi-horizon: generates separate plots for each horizon + comparison plot
+    For multi-target: generates separate plots for each target
 
     Args:
         model: Trained StockPredictor model
@@ -269,81 +270,113 @@ def create_comprehensive_plots(
     train_predictions = model.predict(train_df)
     test_predictions = model.predict(test_df)
 
-    # Get corresponding actual values with proper alignment
-    # create_features() does shift(-h) and dropna() which removes last prediction_horizon rows
-    # Then create_sequences() removes first sequence_length rows
-    # So we need: [sequence_length : -prediction_horizon]
-    horizon = model.prediction_horizon
-    if horizon == 1:
-        train_actual_base = train_df['close'].values[model.sequence_length:-1]
-        test_actual_base = test_df['close'].values[model.sequence_length:-1]
-    else:
-        train_actual_base = train_df['close'].values[model.sequence_length:-horizon]
-        test_actual_base = test_df['close'].values[model.sequence_length:-horizon]
+    # Detect multi-target mode
+    is_multi_target = model.is_multi_target
+    target_columns = model.target_columns if is_multi_target else [model.target_column]
 
     saved_plots = {}
 
-    # Detect if multi-horizon
-    is_multi_horizon = len(train_predictions.shape) > 1 and train_predictions.shape[1] > 1
+    # Generate timestamp for file naming
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
 
-    if not is_multi_horizon:
-        # Single-horizon: create one comprehensive plot (arrays are now properly aligned)
-        train_actual = train_actual_base
-        train_pred = train_predictions
-        test_actual = test_actual_base
-        test_pred = test_predictions
+    # Process each target separately
+    for target_col in target_columns:
+        # Get corresponding actual values with proper alignment
+        # create_features() does shift(-h) and dropna() which removes last prediction_horizon rows
+        # Then create_sequences() removes first sequence_length rows
+        # So we need: [sequence_length : -prediction_horizon]
+        horizon = model.prediction_horizon
+        if horizon == 1:
+            train_actual_base = train_df[target_col].values[model.sequence_length:-1]
+            test_actual_base = test_df[target_col].values[model.sequence_length:-1]
+        else:
+            train_actual_base = train_df[target_col].values[model.sequence_length:-horizon]
+            test_actual_base = test_df[target_col].values[model.sequence_length:-horizon]
 
-        # Create single comprehensive plot
-        predictions_path = output_path / "comprehensive_predictions.png"
-        create_horizon_plot(train_actual, train_pred, test_actual, test_pred, 1, predictions_path)
-        print(f"   ✅ Predictions plot saved to: {predictions_path}")
-        saved_plots['predictions'] = str(predictions_path)
+        # Extract predictions for this target
+        if is_multi_target:
+            train_preds_target = train_predictions[target_col]
+            test_preds_target = test_predictions[target_col]
+        else:
+            train_preds_target = train_predictions
+            test_preds_target = test_predictions
 
-    else:
-        # Multi-horizon: create separate plots for each horizon
-        prediction_horizon = train_predictions.shape[1]
+        # Detect if multi-horizon
+        is_multi_horizon = len(train_preds_target.shape) > 1 and train_preds_target.shape[1] > 1
 
-        for h in range(prediction_horizon):
-            horizon_num = h + 1
+        if not is_multi_horizon:
+            # Single-horizon: create one comprehensive plot (arrays are now properly aligned)
+            train_actual = train_actual_base
+            train_pred = train_preds_target
+            test_actual = test_actual_base
+            test_pred = test_preds_target
 
-            # Get predictions for this horizon
-            train_pred_h = train_predictions[:, h]
-            test_pred_h = test_predictions[:, h]
+            # Create single comprehensive plot
+            if is_multi_target:
+                predictions_path = output_path / f"comprehensive_predictions_{target_col}_{timestamp}.png"
+            else:
+                predictions_path = output_path / "comprehensive_predictions.png"
+            create_horizon_plot(train_actual, train_pred, test_actual, test_pred, 1, predictions_path)
+            print(f"   ✅ Plot saved to: {predictions_path}")
+            saved_plots[f'predictions_{target_col}'] = str(predictions_path)
 
-            # Get actual values h steps ahead
-            # For horizon h (0-indexed), actual values are at position [h:]
-            # Arrays are already properly aligned from the base slicing above
-            train_actual_h = train_actual_base[h:]
-            test_actual_h = test_actual_base[h:]
+        else:
+            # Multi-horizon: create separate plots for each horizon
+            prediction_horizon = train_preds_target.shape[1]
 
-            # Take minimum to handle horizon offsets (still needed for multi-horizon alignment)
-            min_train_len = min(len(train_actual_h), len(train_pred_h))
-            min_test_len = min(len(test_actual_h), len(test_pred_h))
+            for h in range(prediction_horizon):
+                horizon_num = h + 1
 
-            train_actual = train_actual_h[:min_train_len]
-            train_pred = train_pred_h[:min_train_len]
-            test_actual = test_actual_h[:min_test_len]
-            test_pred = test_pred_h[:min_test_len]
+                # Get predictions for this horizon
+                train_pred_h = train_preds_target[:, h]
+                test_pred_h = test_preds_target[:, h]
 
-            # Create horizon-specific plot
-            horizon_plot_path = output_path / f"predictions_horizon_{horizon_num}.png"
-            create_horizon_plot(train_actual, train_pred, test_actual, test_pred, horizon_num, horizon_plot_path)
-            print(f"   ✅ Horizon {horizon_num} plot saved to: {horizon_plot_path}")
-            saved_plots[f'horizon_{horizon_num}'] = str(horizon_plot_path)
+                # Get actual values h steps ahead
+                # For horizon h (0-indexed), actual values are at position [h:]
+                # Arrays are already properly aligned from the base slicing above
+                train_actual_h = train_actual_base[h:]
+                test_actual_h = test_actual_base[h:]
 
-        # Create multi-horizon comparison plot
-        train_metrics = model.evaluate(train_df)
-        test_metrics = model.evaluate(test_df)
+                # Take minimum to handle horizon offsets (still needed for multi-horizon alignment)
+                min_train_len = min(len(train_actual_h), len(train_pred_h))
+                min_test_len = min(len(test_actual_h), len(test_pred_h))
 
-        comparison_plot_path = output_path / "multi_horizon_comparison.png"
-        create_multi_horizon_comparison(
-            train_actual_base, train_predictions,
-            test_actual_base, test_predictions,
-            train_metrics, test_metrics,
-            comparison_plot_path
-        )
-        print(f"   ✅ Multi-horizon comparison plot saved to: {comparison_plot_path}")
-        saved_plots['comparison'] = str(comparison_plot_path)
+                train_actual = train_actual_h[:min_train_len]
+                train_pred = train_pred_h[:min_train_len]
+                test_actual = test_actual_h[:min_test_len]
+                test_pred = test_pred_h[:min_test_len]
+
+                # Create horizon-specific plot
+                if is_multi_target:
+                    horizon_plot_path = output_path / f"predictions_{target_col}_horizon_{horizon_num}_{timestamp}.png"
+                else:
+                    horizon_plot_path = output_path / f"predictions_horizon_{horizon_num}.png"
+                create_horizon_plot(train_actual, train_pred, test_actual, test_pred, horizon_num, horizon_plot_path)
+                print(f"   ✅ {target_col} Horizon {horizon_num} plot saved to: {horizon_plot_path}")
+                saved_plots[f'{target_col}_horizon_{horizon_num}'] = str(horizon_plot_path)
+
+            # Create multi-horizon comparison plot for this target
+            # Get metrics for this target
+            train_metrics_all = model.evaluate(train_df)
+            test_metrics_all = model.evaluate(test_df)
+
+            if is_multi_target:
+                train_metrics = train_metrics_all[target_col]
+                test_metrics = test_metrics_all[target_col]
+                comparison_plot_path = output_path / f"multi_horizon_comparison_{target_col}_{timestamp}.png"
+            else:
+                train_metrics = train_metrics_all
+                test_metrics = test_metrics_all
+                comparison_plot_path = output_path / "multi_horizon_comparison.png"
+
+            create_multi_horizon_comparison(
+                train_actual_base, train_preds_target,
+                test_actual_base, test_preds_target,
+                train_metrics, test_metrics,
+                comparison_plot_path
+            )
+            print(f"   ✅ {target_col} Multi-horizon comparison plot saved to: {comparison_plot_path}")
+            saved_plots[f'{target_col}_comparison'] = str(comparison_plot_path)
 
     # Training Progress Plot (for both single and multi-horizon)
     plt.figure(figsize=(12, 6))
@@ -389,7 +422,7 @@ def export_predictions_csv(
 ) -> str:
     """
     Export predictions to CSV file with date, actual, and predicted values.
-    Supports group-based (multi-symbol) and multi-horizon predictions.
+    Supports group-based (multi-symbol), multi-horizon, and multi-target predictions.
 
     Args:
         model: Trained StockPredictor model
@@ -416,50 +449,97 @@ def export_predictions_csv(
         train_groups = None
         test_groups = None
 
-    # Get actual values and dates (aligned with predictions)
-    train_actual_base = train_df['close'].values[model.sequence_length:]
-    train_dates = train_df['date'].values[model.sequence_length:]
+    # Detect multi-target mode
+    is_multi_target = model.is_multi_target
+    target_columns = model.target_columns if is_multi_target else [model.target_column]
 
-    test_actual_base = test_df['close'].values[model.sequence_length:]
+    # Get actual values and dates (aligned with predictions)
+    train_dates = train_df['date'].values[model.sequence_length:]
     test_dates = test_df['date'].values[model.sequence_length:]
 
-    # Detect if multi-horizon
-    is_multi_horizon = len(train_predictions.shape) > 1 and train_predictions.shape[1] > 1
+    # Build dictionaries for actual values per target
+    train_actual_dict = {}
+    test_actual_dict = {}
+    for target_col in target_columns:
+        train_actual_dict[target_col] = train_df[target_col].values[model.sequence_length:]
+        test_actual_dict[target_col] = test_df[target_col].values[model.sequence_length:]
+
+    # Detect if multi-horizon (check the first target's predictions)
+    if is_multi_target:
+        first_target = target_columns[0]
+        sample_preds = train_predictions[first_target]
+    else:
+        sample_preds = train_predictions
+    is_multi_horizon = len(sample_preds.shape) > 1 and sample_preds.shape[1] > 1
 
     # Create combined dataset
     results = []
 
     if not is_multi_horizon:
         # Single-horizon: simple format
-        min_train_len = min(len(train_actual_base), len(train_predictions), len(train_dates))
-        min_test_len = min(len(test_actual_base), len(test_predictions), len(test_dates))
+        # Determine min length across all targets
+        min_train_len = len(train_dates)
+        min_test_len = len(test_dates)
+        for target_col in target_columns:
+            if is_multi_target:
+                min_train_len = min(min_train_len, len(train_actual_dict[target_col]), len(train_predictions[target_col]))
+                min_test_len = min(min_test_len, len(test_actual_dict[target_col]), len(test_predictions[target_col]))
+            else:
+                min_train_len = min(min_train_len, len(train_actual_dict[target_col]), len(train_predictions))
+                min_test_len = min(min_test_len, len(test_actual_dict[target_col]), len(test_predictions))
 
         # Training data
         for i in range(min_train_len):
             row_data = {
                 'date': train_dates[i],
-                'actual': train_actual_base[i],
-                'predicted': train_predictions[i],
-                'dataset': 'train',
-                'error_abs': abs(train_actual_base[i] - train_predictions[i]),
-                'error_pct': abs(train_actual_base[i] - train_predictions[i]) / train_actual_base[i] * 100
+                'dataset': 'train'
             }
             if has_groups:
                 row_data[model.group_column] = train_groups[i]
+
+            # Add actual and predicted for each target
+            for target_col in target_columns:
+                actual_val = train_actual_dict[target_col][i]
+                if is_multi_target:
+                    predicted_val = train_predictions[target_col][i]
+                else:
+                    predicted_val = train_predictions[i]
+
+                row_data[f'actual_{target_col}'] = actual_val
+                row_data[f'predicted_{target_col}'] = predicted_val
+                row_data[f'error_{target_col}'] = abs(actual_val - predicted_val)
+                if actual_val != 0:
+                    row_data[f'error_pct_{target_col}'] = abs(actual_val - predicted_val) / actual_val * 100
+                else:
+                    row_data[f'error_pct_{target_col}'] = float('nan')
+
             results.append(row_data)
 
         # Test data
         for i in range(min_test_len):
             row_data = {
                 'date': test_dates[i],
-                'actual': test_actual_base[i],
-                'predicted': test_predictions[i],
-                'dataset': 'test',
-                'error_abs': abs(test_actual_base[i] - test_predictions[i]),
-                'error_pct': abs(test_actual_base[i] - test_predictions[i]) / test_actual_base[i] * 100
+                'dataset': 'test'
             }
             if has_groups:
                 row_data[model.group_column] = test_groups[i]
+
+            # Add actual and predicted for each target
+            for target_col in target_columns:
+                actual_val = test_actual_dict[target_col][i]
+                if is_multi_target:
+                    predicted_val = test_predictions[target_col][i]
+                else:
+                    predicted_val = test_predictions[i]
+
+                row_data[f'actual_{target_col}'] = actual_val
+                row_data[f'predicted_{target_col}'] = predicted_val
+                row_data[f'error_{target_col}'] = abs(actual_val - predicted_val)
+                if actual_val != 0:
+                    row_data[f'error_pct_{target_col}'] = abs(actual_val - predicted_val) / actual_val * 100
+                else:
+                    row_data[f'error_pct_{target_col}'] = float('nan')
+
             results.append(row_data)
 
         print(f"   Debug alignment check:")
@@ -468,16 +548,27 @@ def export_predictions_csv(
 
     else:
         # Multi-horizon: include all horizons
-        prediction_horizon = train_predictions.shape[1]
+        if is_multi_target:
+            first_target = target_columns[0]
+            prediction_horizon = train_predictions[first_target].shape[1]
+        else:
+            prediction_horizon = train_predictions.shape[1]
 
-        min_train_len = min(len(train_actual_base), train_predictions.shape[0], len(train_dates))
-        min_test_len = min(len(test_actual_base), test_predictions.shape[0], len(test_dates))
+        # Determine min length
+        min_train_len = len(train_dates)
+        min_test_len = len(test_dates)
+        for target_col in target_columns:
+            if is_multi_target:
+                min_train_len = min(min_train_len, len(train_actual_dict[target_col]), train_predictions[target_col].shape[0])
+                min_test_len = min(min_test_len, len(test_actual_dict[target_col]), test_predictions[target_col].shape[0])
+            else:
+                min_train_len = min(min_train_len, len(train_actual_dict[target_col]), train_predictions.shape[0])
+                min_test_len = min(min_test_len, len(test_actual_dict[target_col]), test_predictions.shape[0])
 
         # Training data
         for i in range(min_train_len):
             row_data = {
                 'date': train_dates[i],
-                'actual': train_actual_base[i],
                 'dataset': 'train'
             }
 
@@ -485,21 +576,31 @@ def export_predictions_csv(
             if has_groups:
                 row_data[model.group_column] = train_groups[i]
 
-            # Add predictions for each horizon
-            for h in range(prediction_horizon):
-                horizon_num = h + 1
-                row_data[f'pred_h{horizon_num}'] = train_predictions[i, h]
+            # Add actual values for each target
+            for target_col in target_columns:
+                row_data[f'actual_{target_col}'] = train_actual_dict[target_col][i]
 
-                # Calculate errors for each horizon (against actual value h steps ahead)
-                if i + h < len(train_actual_base):
-                    actual_h_ahead = train_actual_base[i + h]
-                    error_abs = abs(actual_h_ahead - train_predictions[i, h])
-                    error_pct = (error_abs / actual_h_ahead * 100) if actual_h_ahead != 0 else float('nan')
-                    row_data[f'error_h{horizon_num}'] = error_abs
-                    row_data[f'mape_h{horizon_num}'] = error_pct
+            # Add predictions for each target and horizon
+            for target_col in target_columns:
+                if is_multi_target:
+                    target_preds = train_predictions[target_col]
                 else:
-                    row_data[f'error_h{horizon_num}'] = float('nan')
-                    row_data[f'mape_h{horizon_num}'] = float('nan')
+                    target_preds = train_predictions
+
+                for h in range(prediction_horizon):
+                    horizon_num = h + 1
+                    row_data[f'pred_{target_col}_h{horizon_num}'] = target_preds[i, h]
+
+                    # Calculate errors for each horizon (against actual value h steps ahead)
+                    if i + h < len(train_actual_dict[target_col]):
+                        actual_h_ahead = train_actual_dict[target_col][i + h]
+                        error_abs = abs(actual_h_ahead - target_preds[i, h])
+                        error_pct = (error_abs / actual_h_ahead * 100) if actual_h_ahead != 0 else float('nan')
+                        row_data[f'error_{target_col}_h{horizon_num}'] = error_abs
+                        row_data[f'mape_{target_col}_h{horizon_num}'] = error_pct
+                    else:
+                        row_data[f'error_{target_col}_h{horizon_num}'] = float('nan')
+                        row_data[f'mape_{target_col}_h{horizon_num}'] = float('nan')
 
             results.append(row_data)
 
@@ -507,7 +608,6 @@ def export_predictions_csv(
         for i in range(min_test_len):
             row_data = {
                 'date': test_dates[i],
-                'actual': test_actual_base[i],
                 'dataset': 'test'
             }
 
@@ -515,27 +615,37 @@ def export_predictions_csv(
             if has_groups:
                 row_data[model.group_column] = test_groups[i]
 
-            # Add predictions for each horizon
-            for h in range(prediction_horizon):
-                horizon_num = h + 1
-                row_data[f'pred_h{horizon_num}'] = test_predictions[i, h]
+            # Add actual values for each target
+            for target_col in target_columns:
+                row_data[f'actual_{target_col}'] = test_actual_dict[target_col][i]
 
-                # Calculate errors for each horizon
-                if i + h < len(test_actual_base):
-                    actual_h_ahead = test_actual_base[i + h]
-                    error_abs = abs(actual_h_ahead - test_predictions[i, h])
-                    error_pct = (error_abs / actual_h_ahead * 100) if actual_h_ahead != 0 else float('nan')
-                    row_data[f'error_h{horizon_num}'] = error_abs
-                    row_data[f'mape_h{horizon_num}'] = error_pct
+            # Add predictions for each target and horizon
+            for target_col in target_columns:
+                if is_multi_target:
+                    target_preds = test_predictions[target_col]
                 else:
-                    row_data[f'error_h{horizon_num}'] = float('nan')
-                    row_data[f'mape_h{horizon_num}'] = float('nan')
+                    target_preds = test_predictions
+
+                for h in range(prediction_horizon):
+                    horizon_num = h + 1
+                    row_data[f'pred_{target_col}_h{horizon_num}'] = target_preds[i, h]
+
+                    # Calculate errors for each horizon
+                    if i + h < len(test_actual_dict[target_col]):
+                        actual_h_ahead = test_actual_dict[target_col][i + h]
+                        error_abs = abs(actual_h_ahead - target_preds[i, h])
+                        error_pct = (error_abs / actual_h_ahead * 100) if actual_h_ahead != 0 else float('nan')
+                        row_data[f'error_{target_col}_h{horizon_num}'] = error_abs
+                        row_data[f'mape_{target_col}_h{horizon_num}'] = error_pct
+                    else:
+                        row_data[f'error_{target_col}_h{horizon_num}'] = float('nan')
+                        row_data[f'mape_{target_col}_h{horizon_num}'] = float('nan')
 
             results.append(row_data)
 
         print(f"   Debug alignment check:")
-        print(f"   Train: {min_train_len} samples × {prediction_horizon} horizons")
-        print(f"   Test: {min_test_len} samples × {prediction_horizon} horizons")
+        print(f"   Train: {min_train_len} samples × {prediction_horizon} horizons × {len(target_columns)} targets")
+        print(f"   Test: {min_test_len} samples × {prediction_horizon} horizons × {len(target_columns)} targets")
     
     # Create DataFrame and sort by date
     results_df = pd.DataFrame(results)
@@ -721,28 +831,107 @@ def print_performance_summary(
     """
     Print comprehensive performance summary.
 
-    Handles single-horizon, multi-horizon, and per-group metrics.
+    Handles single-horizon, multi-horizon, multi-target, and per-group metrics.
 
     Args:
         model: Trained model
-        train_metrics: Training metrics dict (simple, nested, or per-group)
-        test_metrics: Test metrics dict (simple, nested, or per-group)
+        train_metrics: Training metrics dict (simple, nested, per-target, or per-group)
+        test_metrics: Test metrics dict (simple, nested, per-target, or per-group)
         saved_plots: Dict of saved plot paths
     """
     print(f"\n🎯 Final Performance Summary:")
 
-    # Check if per-group metrics (has non-'overall' string keys that aren't 'horizon_X')
+    # Check if multi-target (has target column names as keys)
+    is_multi_target = model.is_multi_target if hasattr(model, 'is_multi_target') else False
+    target_columns = model.target_columns if is_multi_target else [model.target_column]
+
+    # Check if per-group metrics (has non-'overall' string keys that aren't 'horizon_X' or target names)
     has_group_metrics = any(
-        isinstance(k, str) and k != 'overall' and not k.startswith('horizon_')
+        isinstance(k, str) and k != 'overall' and not k.startswith('horizon_') and k not in target_columns
         for k in train_metrics.keys()
     )
 
     # Check if multi-horizon ('overall' key with nested dict OR 'horizon_X' keys)
-    is_multi_horizon = 'overall' in train_metrics or any(k.startswith('horizon_') for k in train_metrics.keys())
+    # For multi-target, check inside first target's metrics
+    if is_multi_target:
+        first_target = target_columns[0]
+        first_target_metrics = train_metrics.get(first_target, {})
+        is_multi_horizon = 'overall' in first_target_metrics or any(k.startswith('horizon_') for k in first_target_metrics.keys())
+    else:
+        is_multi_horizon = 'overall' in train_metrics or any(k.startswith('horizon_') for k in train_metrics.keys())
 
     if has_group_metrics:
         # Per-group metrics display
         _print_per_group_metrics(train_metrics, test_metrics, model)
+    elif is_multi_target:
+        # Multi-target: display metrics for each target
+        for target_col in target_columns:
+            print(f"\n   📊 Metrics for '{target_col}':")
+            target_train_metrics = train_metrics[target_col]
+            target_test_metrics = test_metrics[target_col]
+
+            if not is_multi_horizon:
+                # Single-horizon, multi-target
+                train_mape = target_train_metrics.get('MAPE', 0)
+                train_mae = target_train_metrics.get('MAE', 0)
+                test_mape = target_test_metrics.get('MAPE', 0)
+                test_mae = target_test_metrics.get('MAE', 0)
+
+                print(f"      📈 Training: MAPE {train_mape:.2f}%, MAE ${train_mae:.2f}")
+                print(f"      📊 Test: MAPE {test_mape:.2f}%, MAE ${test_mae:.2f}")
+            else:
+                # Multi-horizon, multi-target
+                prediction_horizon = len([k for k in target_train_metrics.keys() if k.startswith('horizon_')])
+
+                print(f"\n      📈 Training Metrics:")
+                print(f"      ┌{'─'*12}┬{'─'*11}┬{'─'*12}┬{'─'*11}┬{'─'*10}┐")
+                print(f"      │ {'Horizon':<10} │ {'MAE ($)':<9} │ {'RMSE ($)':<10} │ {'MAPE (%)':<9} │ {'R²':<8} │")
+                print(f"      ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+
+                for h in range(1, prediction_horizon + 1):
+                    metrics = target_train_metrics[f'horizon_{h}']
+                    mae = metrics.get('MAE', 0)
+                    rmse = metrics.get('RMSE', 0)
+                    mape = metrics.get('MAPE', 0)
+                    r2 = metrics.get('R2', 0)
+                    print(f"      │ h{h} (t+{h}){'':<4} │ ${mae:<8.2f} │ ${rmse:<9.2f} │ {mape:<8.2f}% │ {r2:<8.3f} │")
+
+                # Overall
+                if 'overall' in target_train_metrics:
+                    overall = target_train_metrics['overall']
+                    mae_overall = overall.get('MAE', 0)
+                    rmse_overall = overall.get('RMSE', 0)
+                    mape_overall = overall.get('MAPE', 0)
+                    r2_overall = overall.get('R2', 0)
+                    print(f"      ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+                    print(f"      │ {'Overall':<10} │ ${mae_overall:<8.2f} │ ${rmse_overall:<9.2f} │ {mape_overall:<8.2f}% │ {r2_overall:<8.3f} │")
+                print(f"      └{'─'*12}┴{'─'*11}┴{'─'*12}┴{'─'*11}┴{'─'*10}┘")
+
+                # Test metrics
+                print(f"\n      📊 Test Metrics:")
+                print(f"      ┌{'─'*12}┬{'─'*11}┬{'─'*12}┬{'─'*11}┬{'─'*10}┐")
+                print(f"      │ {'Horizon':<10} │ {'MAE ($)':<9} │ {'RMSE ($)':<10} │ {'MAPE (%)':<9} │ {'R²':<8} │")
+                print(f"      ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+
+                for h in range(1, prediction_horizon + 1):
+                    metrics = target_test_metrics[f'horizon_{h}']
+                    mae = metrics.get('MAE', 0)
+                    rmse = metrics.get('RMSE', 0)
+                    mape = metrics.get('MAPE', 0)
+                    r2 = metrics.get('R2', 0)
+                    print(f"      │ h{h} (t+{h}){'':<4} │ ${mae:<8.2f} │ ${rmse:<9.2f} │ {mape:<8.2f}% │ {r2:<8.3f} │")
+
+                # Overall
+                if 'overall' in target_test_metrics:
+                    overall_test = target_test_metrics['overall']
+                    mae_overall_test = overall_test.get('MAE', 0)
+                    rmse_overall_test = overall_test.get('RMSE', 0)
+                    mape_overall_test = overall_test.get('MAPE', 0)
+                    r2_overall_test = overall_test.get('R2', 0)
+                    print(f"      ├{'─'*12}┼{'─'*11}┼{'─'*12}┼{'─'*11}┼{'─'*10}┤")
+                    print(f"      │ {'Overall':<10} │ ${mae_overall_test:<8.2f} │ ${rmse_overall_test:<9.2f} │ {mape_overall_test:<8.2f}% │ {r2_overall_test:<8.3f} │")
+                print(f"      └{'─'*12}┴{'─'*11}┴{'─'*12}┴{'─'*11}┴{'─'*10}┘")
+
     elif not is_multi_horizon:
         # Single-horizon: simple display
         train_mape = train_metrics.get('MAPE', 0)
