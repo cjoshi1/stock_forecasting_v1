@@ -44,7 +44,8 @@ class StockPredictor(TimeSeriesPredictor):
         self.prediction_horizon = prediction_horizon
         self.asset_type = asset_type
 
-        # Initialize logger
+        # Initialize logger with a specific format
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
 
         # Pass target_column as-is to base class
@@ -97,7 +98,7 @@ class StockPredictor(TimeSeriesPredictor):
         """
         try:
             # Get base predictions
-            self.logger.info("Starting prediction for next bars")
+            self.logger.info(f"Starting prediction for next {n_predictions} bars")
             predictions = self.predict(df)
 
             # Generate future dates based on asset type
@@ -162,5 +163,5 @@ class StockPredictor(TimeSeriesPredictor):
             self.logger.info("Prediction completed successfully")
             return result
         except Exception as e:
-            self.logger.error(f"Error during prediction: {e}")
+            self.logger.exception("Exception occurred during prediction")
             raise
