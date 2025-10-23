@@ -1,0 +1,305 @@
+{
+  "1.1.1": {
+    "passed": true,
+    "message": "Data is sorted by symbol then date",
+    "details": {
+      "sorted": true,
+      "shape": [
+        207,
+        18
+      ]
+    }
+  },
+  "1.1.3": {
+    "passed": true,
+    "message": "Temporal order maintained within all groups",
+    "details": {
+      "num_groups": 3
+    }
+  },
+  "1.2.1": {
+    "passed": true,
+    "message": "Predictor configured for group-based sequences: True",
+    "details": {
+      "group_column": "symbol"
+    }
+  },
+  "1.3.2": {
+    "passed": true,
+    "message": "Train/val/test splits maintain temporal order per group",
+    "details": {}
+  },
+  "2.1.1": {
+    "passed": true,
+    "message": "Group-based scalers configured: True",
+    "details": {
+      "num_group_scalers": 3,
+      "group_column": "symbol"
+    }
+  },
+  "2.2.2": {
+    "passed": true,
+    "message": "All feature columns are numeric",
+    "details": {
+      "num_features": 12
+    }
+  },
+  "2.2.3": {
+    "passed": true,
+    "message": "Group column 'symbol' excluded from scaling",
+    "details": {
+      "in_features": false
+    }
+  },
+  "2.2.3b": {
+    "passed": true,
+    "message": "Date columns excluded from scaling",
+    "details": {
+      "date_columns": [
+        "date"
+      ]
+    }
+  },
+  "2.3.1": {
+    "passed": true,
+    "message": "Target variables have separate scalers",
+    "details": {
+      "has_scalers": true
+    }
+  },
+  "2.3.3": {
+    "passed": true,
+    "message": "Same scaler used for all 3 horizons",
+    "details": {
+      "prediction_horizon": 3
+    }
+  },
+  "3.1.2": {
+    "passed": true,
+    "message": "All horizon columns present (3/3)",
+    "details": {
+      "expected": [
+        "close_target_h1",
+        "close_target_h2",
+        "close_target_h3"
+      ],
+      "found": [
+        "close_target_h1",
+        "close_target_h2",
+        "close_target_h3"
+      ]
+    }
+  },
+  "3.1.3": {
+    "passed": "True",
+    "message": "Horizon shifts appear correct: h1\u2260close in 50 rows, h2\u2260close in 50 rows",
+    "details": {
+      "sample_size": 50
+    }
+  },
+  "3.2.1": {
+    "passed": true,
+    "message": "All horizons of same target use same scaler (enforced by design)",
+    "details": {
+      "target_columns": [
+        "close"
+      ],
+      "prediction_horizon": 3
+    }
+  },
+  "4.1.1": {
+    "passed": true,
+    "message": "Groups present in splits: train=3, val=3, test=3",
+    "details": {
+      "train_groups": [
+        "AAPL",
+        "GOOGL",
+        "MSFT"
+      ],
+      "val_groups": [
+        "AAPL",
+        "GOOGL",
+        "MSFT"
+      ],
+      "test_groups": [
+        "AAPL",
+        "GOOGL",
+        "MSFT"
+      ]
+    }
+  },
+  "4.1.4": {
+    "passed": true,
+    "message": "Group presence across splits (expected): train\u2229val=3, val\u2229test=3",
+    "details": {
+      "note": "Groups should appear in all splits, but with different time periods"
+    }
+  },
+  "4.2.1": {
+    "passed": true,
+    "message": "Samples accounted for: 297 <= 300",
+    "details": {
+      "train": 207,
+      "val": 44,
+      "test": 46,
+      "original": 300
+    }
+  },
+  "4.2.3": {
+    "passed": true,
+    "message": "Group assignment maintained in all splits",
+    "details": {
+      "num_groups": 3
+    }
+  },
+  "5.1.1": {
+    "passed": true,
+    "message": "Rolling features present: 0 features",
+    "details": {
+      "rolling_features": []
+    }
+  },
+  "5.1.2": {
+    "passed": true,
+    "message": "Lag features present: 0 features",
+    "details": {
+      "lag_features": []
+    }
+  },
+  "5.2.1": {
+    "passed": true,
+    "message": "VWAP column not present in data (skipped)",
+    "details": {
+      "skipped": true
+    }
+  },
+  "5.2.2": {
+    "passed": true,
+    "message": "Cyclical features present: 4",
+    "details": {
+      "cyclical_features": [
+        "month_sin",
+        "month_cos",
+        "dayofweek_sin",
+        "dayofweek_cos"
+      ]
+    }
+  },
+  "5.2.3": {
+    "passed": true,
+    "message": "Date features present: 6",
+    "details": {
+      "date_features": [
+        "month",
+        "dayofweek",
+        "month_sin",
+        "month_cos",
+        "dayofweek_sin",
+        "dayofweek_cos"
+      ]
+    }
+  },
+  "5.3.1": {
+    "passed": true,
+    "message": "Feature consistency across splits: True",
+    "details": {
+      "train_features": 18,
+      "val_features": 18,
+      "test_features": 18,
+      "missing_in_val": [],
+      "missing_in_test": []
+    }
+  },
+  "6.1.3": {
+    "passed": true,
+    "message": "Scalers are fit only on training data (procedural check)",
+    "details": {
+      "note": "Must verify in training code that fit_scaler=True only for train"
+    }
+  },
+  "6.2.2": {
+    "passed": true,
+    "message": "Group-specific scaling active: 3 groups",
+    "details": {
+      "groups": [
+        "AAPL",
+        "GOOGL",
+        "MSFT"
+      ]
+    }
+  },
+  "7.1.2": {
+    "passed": true,
+    "message": "Sequence length configured: 5",
+    "details": {
+      "sequence_length": 5
+    }
+  },
+  "11.1.3": {
+    "passed": true,
+    "message": "All horizons of same target use same scaler (enforced by design)",
+    "details": {
+      "num_targets": 1,
+      "prediction_horizon": 3
+    }
+  },
+  "12.1.1": {
+    "passed": true,
+    "message": "Missing values present: False",
+    "details": {
+      "total_missing": 0,
+      "columns_with_missing": {}
+    }
+  },
+  "12.1.2": {
+    "passed": true,
+    "message": "Outlier check: 99th/1st percentile ratio = 2.672686259987599",
+    "details": {
+      "q01": 123.56484513702397,
+      "q99": 330.25006381521945,
+      "has_significant_outliers": "False"
+    }
+  },
+  "12.2.1": {
+    "passed": true,
+    "message": "Groups with insufficient data: 0",
+    "details": {
+      "insufficient_groups": {},
+      "min_required": 5
+    }
+  },
+  "12.3.3": {
+    "passed": true,
+    "message": "No Inf values detected: True, NaN present: False",
+    "details": {
+      "has_inf": false,
+      "has_nan": false,
+      "num_numeric_cols": 16
+    }
+  },
+  "14.1.1": {
+    "passed": true,
+    "message": "CRITICAL: Temporal order maintained within each group throughout pipeline",
+    "details": {
+      "num_groups_checked": 3
+    }
+  },
+  "14.1.2": {
+    "passed": true,
+    "message": "CRITICAL: Per-group scaling - Input: True, Output: True",
+    "details": {
+      "input_scalers": 3,
+      "output_scalers": 3
+    }
+  },
+  "14.1.3": {
+    "passed": true,
+    "message": "CRITICAL: Same scaler used for all horizons of same variable (enforced by design)",
+    "details": {
+      "targets": [
+        "close"
+      ],
+      "horizons": 3
+    }
+  }
+}
