@@ -200,7 +200,8 @@ def load_time_series_data(file_path: str, date_column: str = 'date') -> pd.DataF
 
 
 def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = None,
-                      group_column: str = None, time_column: str = None) -> tuple:
+                      group_column: str = None, time_column: str = None,
+                      sequence_length: int = 1) -> tuple:
     """
     Split time series data maintaining temporal order.
 
@@ -214,6 +215,7 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
         val_size: Number of samples for validation set (per group if group_column specified)
         group_column: Optional column name to split by groups (e.g., 'symbol' for stocks)
         time_column: Time column for sorting within groups. Auto-detected if None.
+        sequence_length: Required sequence length for model (used to calculate minimum samples needed)
 
     Returns:
         train_df, val_df, test_df (val_df is None if val_size is None)
@@ -271,9 +273,12 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
             group_df = df_sorted[group_mask].copy()
 
             # Check if group has enough data
-            min_required = test_size + (val_size if val_size else 0) + 10  # At least 10 for training
+            # Need: test_size + val_size + (sequence_length + 1) for at least 1 training sequence
+            # Plus some buffer for target shifting (add sequence_length again to be safe)
+            min_train_samples = sequence_length * 2 + 10  # Need at least this many for meaningful training
+            min_required = test_size + (val_size if val_size else 0) + min_train_samples
             if len(group_df) < min_required:
-                print(f"Warning: Group '{group_value}' has only {len(group_df)} samples, skipping (needs {min_required})")
+                print(f"Warning: Group '{group_value}' has only {len(group_df)} samples, skipping (needs >= {min_required} with sequence_length={sequence_length})")
                 continue
 
             # Split this group: most recent data goes to test, earliest to train
@@ -296,8 +301,22 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
 
         # Combine all groups
         if len(train_dfs) == 0:
-            print(f"Warning: No groups had sufficient data for splitting")
-            return df, None, None
+            error_msg = (
+                f"ERROR: No groups had sufficient data for splitting!\n"
+                f"  Total groups: {len(unique_groups)}\n"
+                f"  Required samples per group: {min_required}\n"
+                f"    = {test_size} (test) + {val_size if val_size else 0} (val) + {min_train_samples} (train)\n"
+                f"    with sequence_length={sequence_length}\n"
+                f"  Group sizes: {dict(df_sorted[group_column].value_counts().items())}\n"
+                f"\n"
+                f"Suggestions:\n"
+                f"  1. Reduce test_size (currently {test_size})\n"
+                f"  2. Reduce val_size (currently {val_size})\n"
+                f"  3. Reduce sequence_length (currently {sequence_length})\n"
+                f"  4. Use more data per group\n"
+                f"  5. Remove groups with insufficient data before splitting"
+            )
+            raise ValueError(error_msg)
 
         train_df = pd.concat(train_dfs, ignore_index=True)
         val_df = pd.concat(val_dfs, ignore_index=True) if val_dfs else None

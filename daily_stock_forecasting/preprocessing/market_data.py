@@ -83,8 +83,12 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
             except:
                 raise ValueError(f"Column '{col}' contains non-numeric values")
     
-    # Handle other numeric columns
-    numeric_cols = [col for col in df.columns if col not in expected_cols + [date_column]]
+    # Handle other numeric columns (exclude group_column to preserve its dtype)
+    exclude_cols = expected_cols + [date_column]
+    if group_column is not None:
+        exclude_cols.append(group_column)
+
+    numeric_cols = [col for col in df.columns if col not in exclude_cols]
     for col in numeric_cols:
         try:
             df[col] = pd.to_numeric(df[col], errors='coerce')

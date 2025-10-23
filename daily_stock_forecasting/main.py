@@ -180,7 +180,8 @@ def main():
         test_size=args.test_size,
         val_size=args.val_size if len(df) > args.test_size + args.val_size + 50 else None,
         group_column=args.group_column,
-        time_column='date'
+        time_column='date',
+        sequence_length=args.sequence_length
     )
     
     if train_df is None:

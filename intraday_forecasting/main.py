@@ -513,12 +513,15 @@ def main():
     
     # 3. Split Data
     print(f"\n🔄 Splitting data...")
+    # Use timeframe-specific sequence length for split validation
+    split_sequence_length = args.sequence_length or timeframe_config['sequence_length']
     train_df, val_df, test_df = split_time_series(
         df_processed,
         test_size=args.test_size,
         val_size=args.val_size if len(df_processed) > args.test_size + args.val_size + 100 else None,
         group_column=args.group_column,
-        time_column='timestamp'
+        time_column='timestamp',
+        sequence_length=split_sequence_length
     )
     
     if train_df is None:
