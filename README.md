@@ -37,16 +37,16 @@ python run_btc_forecasting.py --csv_path /path/to/your/BTC-USD_data.csv --timefr
 cd daily_stock_forecasting/
 
 # Train with sample data - single step prediction (default)
-python main.py --use_sample_data --target close --epochs 50
+python main.py --use_sample_data --target close --asset_type stock --epochs 50
 
 # Multi-horizon prediction - predict 3 steps ahead simultaneously
-python main.py --use_sample_data --target close --prediction_horizon 3 --epochs 50
+python main.py --use_sample_data --target close --asset_type stock --prediction_horizon 3 --epochs 50
 
 # Train with your data
-python main.py --data_path data/raw/AAPL.csv --target close --epochs 100
+python main.py --data_path data/raw/AAPL.csv --target close --asset_type stock --epochs 100
 
-# Fast training with essential features
-python main.py --data_path data/raw/AAPL.csv --target close --use_essential_only --epochs 50
+# Multi-target prediction - predict multiple variables simultaneously
+python main.py --use_sample_data --target "close,volume" --asset_type stock --epochs 50
 ```
 
 ### For Custom Time Series (Generic Library)
@@ -118,7 +118,7 @@ Datetime,Open,High,Low,Close,Volume,Dividends,Stock Splits
 ### 📈 Daily Stock Forecasting Application (`daily_stock_forecasting/`)
 - **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously (e.g., close + volume).
 - **Multi-Horizon Prediction**: Predict 1, 2, 3+ steps ahead simultaneously.
-- **Essential vs Full Features**: Fast training with 7 essential features or comprehensive 30+ indicators.
+- **Rich Feature Engineering**: Volume, VWAP (typical price), and cyclical time encodings.
 - **Multiple Targets**: Price prediction, returns, percentage changes, volatility.
 - **Portfolio Support** ⭐ NEW: Train on multiple stocks with group-based scaling for better accuracy.
 - **Complete Workflow**: Data loading, validation, training, visualization.
@@ -148,7 +148,7 @@ model = StockPredictor(
     target_column='close',         # or 'pct_change_1d', 'returns', etc.
     sequence_length=10,            # days of history
     prediction_horizon=1,          # steps ahead to predict (1=single, >1=multi-horizon)
-    use_essential_only=False,      # False=30+ features, True=7 essential features
+    asset_type='stock',            # 'stock' or 'crypto'
     d_token=128,                   # embedding dimension
     n_layers=3,                    # transformer layers
     n_heads=8,                     # attention heads
@@ -173,6 +173,7 @@ model = StockPredictor(
     sequence_length=20,
     group_column='symbol',        # ⭐ Enable group-based scaling
     prediction_horizon=1,
+    asset_type='stock',           # or 'crypto'
     d_token=192,
     n_layers=4,
     n_heads=8,

@@ -20,7 +20,6 @@ class StockPredictor(TimeSeriesPredictor):
         self,
         target_column: Union[str, list] = 'close',
         sequence_length: int = 5,  # Number of historical days to use
-        use_essential_only: bool = False,  # Use only essential features
         prediction_horizon: int = 1,  # Number of steps ahead to predict
         asset_type: str = 'stock',  # 'stock' or 'crypto'
         group_column: Optional[str] = None,  # Column for group-based scaling
@@ -32,7 +31,6 @@ class StockPredictor(TimeSeriesPredictor):
                           - str: Single target (e.g., 'close')
                           - List[str]: Multiple targets (e.g., ['close', 'volume'])
             sequence_length: Number of historical days to use for prediction
-            use_essential_only: If True, only use essential features (volume, typical_price, seasonal)
             prediction_horizon: Number of steps ahead to predict (1 = next step)
             asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
             group_column: Optional column for group-based scaling (e.g., 'symbol' for multi-stock datasets)
@@ -40,7 +38,6 @@ class StockPredictor(TimeSeriesPredictor):
         """
         # Store original target info before any transformation
         self.original_target_column = target_column
-        self.use_essential_only = use_essential_only
         self.prediction_horizon = prediction_horizon
         self.asset_type = asset_type
 

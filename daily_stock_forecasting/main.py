@@ -55,8 +55,6 @@ def main():
                        help='Number of historical days to use for prediction')
     parser.add_argument('--prediction_horizon', type=int, default=1,
                        help='Number of steps ahead to predict (1=next step, 2=two steps ahead, etc.)')
-    parser.add_argument('--use_essential_only', action='store_true',
-                       help='Use only essential features (volume, typical_price, seasonal)')
     parser.add_argument('--d_token', type=int, default=128,
                        help='Token embedding dimension')
     parser.add_argument('--n_layers', type=int, default=3,
@@ -208,7 +206,6 @@ def main():
         target_column=target_columns,  # Can be str or list
         sequence_length=args.sequence_length,
         prediction_horizon=args.prediction_horizon,
-        use_essential_only=args.use_essential_only,
         asset_type=args.asset_type,
         group_column=args.group_column,
         d_token=args.d_token,
@@ -225,7 +222,6 @@ def main():
         print(f"   - Target: {target_columns}")
     print(f"   - Sequence length: {args.sequence_length}")
     print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
-    print(f"   - Essential features only: {args.use_essential_only}")
     print(f"   - Token dimension: {args.d_token}")
     print(f"   - Layers: {args.n_layers}")
     print(f"   - Attention heads: {args.n_heads}")

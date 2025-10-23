@@ -1,5 +1,48 @@
 # Complete Command Reference
 
+## Quick Start Examples
+
+### Daily Stock Forecasting - Quick Examples
+
+```bash
+# Basic single-target prediction with sample data
+python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 50
+
+# Multi-target prediction (predict close AND volume together)
+python daily_stock_forecasting/main.py --use_sample_data --target "close,volume" --asset_type stock --epochs 50
+
+# Multi-horizon prediction (predict 3 days ahead)
+python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type stock --prediction_horizon 3 --epochs 50
+
+# Portfolio with group-based scaling (multiple stocks)
+python daily_stock_forecasting/main.py --data_path portfolio.csv --target close --asset_type stock --group_column symbol --epochs 100
+
+# Crypto prediction (7-day week, includes weekends)
+python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
+```
+
+### Intraday Forecasting - Quick Examples
+
+```bash
+# Basic US market 5-minute prediction
+python intraday_forecasting/main.py --use_sample_data --timeframe 5min --country US --epochs 30
+
+# Multi-target intraday (predict close AND volume)
+python intraday_forecasting/main.py --use_sample_data --target "close,volume" --timeframe 5min --country US --epochs 30
+
+# Multi-symbol portfolio with group scaling
+python intraday_forecasting/main.py --data_path multi_symbol.csv --timeframe 5min --country US --group_column symbol --epochs 50
+
+# Indian market prediction
+python intraday_forecasting/main.py --use_sample_data --timeframe 5min --country INDIA --epochs 30
+
+# Crypto 24/7 trading
+python intraday_forecasting/main.py --use_sample_data --timeframe 1h --country CRYPTO --epochs 30
+
+# 1-minute scalping with future predictions
+python intraday_forecasting/main.py --use_sample_data --timeframe 1min --country US --future_predictions 10 --epochs 30
+```
+
 ## Comprehensive Commands
 
 This section provides a complete command example for both intraday and daily forecasting, including every possible parameter. Explanations for each parameter are provided in the tables below.
@@ -13,8 +56,6 @@ python intraday_forecasting/main.py \
   --timeframe 5min \
   --model_type ft \
   --country US \
-  --use_sample_data \
-  --sample_days 10 \
   --group_column symbol \
   --sequence_length 60 \
   --prediction_horizon 5 \
@@ -32,8 +73,16 @@ python intraday_forecasting/main.py \
   --future_predictions 10 \
   --model_path outputs/models/intraday_model.pt \
   --no_plots \
-  --verbose \
-  --quiet
+  --verbose
+
+# Use sample data instead of real data
+python intraday_forecasting/main.py \
+  --use_sample_data \
+  --sample_days 10 \
+  --target close \
+  --timeframe 5min \
+  --country US \
+  --epochs 30
 ```
 
 ### Daily Stock Forecasting - Full Command Example
@@ -42,12 +91,10 @@ python intraday_forecasting/main.py \
 python daily_stock_forecasting/main.py \
   --data_path /path/to/stock_data.csv \
   --target "close,volume" \
-  --use_sample_data \
   --asset_type stock \
   --group_column symbol \
   --sequence_length 10 \
   --prediction_horizon 3 \
-  --use_essential_only \
   --d_token 128 \
   --n_layers 3 \
   --n_heads 8 \
@@ -61,6 +108,13 @@ python daily_stock_forecasting/main.py \
   --val_size 20 \
   --model_path outputs/models/stock_model.pt \
   --no_plots
+
+# Use sample data instead of real data
+python daily_stock_forecasting/main.py \
+  --use_sample_data \
+  --target close \
+  --asset_type stock \
+  --epochs 50
 ```
 
 --- 
@@ -72,7 +126,7 @@ python daily_stock_forecasting/main.py \
 | Parameter | Type | Description | Default | Notes |
 |-----------|------|-------------|---------|-------|
 | `--data_path` | string | Path to CSV file with OHLCV data | None | Required unless using `--use_sample_data` |
-| `--target` | string | Column(s) to predict | close | Single: `close` or Multi: `close,volume` (comma-separated) |
+| `--target` | string | Column(s) to predict | close | Single: `close` or Multi: `"close,volume"` (comma-separated, use quotes) |
 | `--group_column` | string | Column for group-based scaling | None | Use 'symbol' for multi-asset datasets |
 | `--use_sample_data` | flag | Use synthetic sample data | False | For testing without real data |
 | `--per_group_metrics` | flag | Show per-group evaluation metrics | False | Only with `--group_column` |
@@ -92,7 +146,6 @@ python daily_stock_forecasting/main.py \
 | Parameter | Type | Description | Default | Options |
 |-----------|------|-------------|---------|---------|
 | `--asset_type` | string | Asset type | stock | stock (5-day week), crypto (7-day week) |
-| `--use_essential_only` | flag | Use minimal features | False | True=7 features, False=30+ features |
 
 ### Model Architecture Parameters
 

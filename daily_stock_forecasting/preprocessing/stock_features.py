@@ -1,7 +1,7 @@
 """
 Stock-specific feature engineering for OHLCV data.
 
-Creates essential features: volume, vwap (typical_price), and cyclical time encodings.
+Creates features: volume, vwap (typical_price), and cyclical time encodings.
 """
 
 import pandas as pd
@@ -65,7 +65,13 @@ def create_stock_features(df: pd.DataFrame, target_column, verbose: bool = False
     df_processed = _create_shifted_target(df_processed, target_columns_list, prediction_horizon, verbose)
 
     if verbose:
-        num_features = len([f for f in available_features if f not in target_columns_list and f != group_column])
+        # Count all feature columns (excluding target columns, group column, and shifted target columns)
+        feature_cols = [f for f in df_processed.columns
+                       if f not in target_columns_list
+                       and f != group_column
+                       and not f.endswith('_target_h1')
+                       and '_target_h' not in f]
+        num_features = len(feature_cols)
         print(f"   Created {num_features} features")
 
     return df_processed

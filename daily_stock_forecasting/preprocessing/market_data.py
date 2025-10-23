@@ -2,6 +2,7 @@
 Stock market data loading and validation utilities.
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from tf_predictor.core.utils import load_time_series_data
@@ -25,6 +26,12 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
     except FileNotFoundError as e:
         logging.error(f"Data file not found: {file_path}", exc_info=True)
         raise e
+
+    # Standardize column names to lowercase for consistency
+    df.columns = df.columns.str.lower()
+    date_column = date_column.lower()
+    if group_column is not None:
+        group_column = group_column.lower()
 
     # Remove any non-numeric columns that we don't need (except group column)
     # Keep only OHLCV + date + group column + any other useful columns

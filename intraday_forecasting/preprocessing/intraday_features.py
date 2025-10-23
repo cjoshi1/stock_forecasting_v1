@@ -1,7 +1,7 @@
 """
 Intraday-specific feature engineering for high-frequency trading data.
 
-Creates essential features for intraday patterns: volume, vwap, and cyclical time encodings.
+Creates features for intraday patterns: volume, vwap, and cyclical time encodings.
 """
 
 import pandas as pd
@@ -46,7 +46,7 @@ def create_intraday_features(df: pd.DataFrame, target_column = 'close',
     if verbose:
         horizon_text = f"{prediction_horizon}-step" if prediction_horizon > 1 else "single-step"
         targets_text = ', '.join(target_columns_list)
-        print(f"Creating essential intraday features for {len(df)} samples ({country} market, {horizon_text})...")
+        print(f"Creating intraday features for {len(df)} samples ({country} market, {horizon_text})...")
         print(f"  Target variable(s): {targets_text}")
 
     df_processed = df.copy()
@@ -113,8 +113,13 @@ def create_intraday_features(df: pd.DataFrame, target_column = 'close',
     df_processed = df_processed.bfill().fillna(0)
 
     if verbose:
-        total_features = len(features)
-        print(f"  ✓ Creating essential features (volume + vwap + cyclical time)...")
-        print(f"  ✓ Created {total_features} total features")
+        # Count feature columns (exclude timestamp, group column, and target columns)
+        exclude_cols = [timestamp_col] + all_shifted_targets
+        if group_column and group_column in df_processed.columns:
+            exclude_cols.append(group_column)
+        feature_cols = [col for col in df_processed.columns if col not in exclude_cols]
+        total_features = len(feature_cols)
+        print(f"  ✓ Created features (volume + vwap + cyclical time)...")
+        print(f"  ✓ Total features: {total_features}")
 
     return df_processed

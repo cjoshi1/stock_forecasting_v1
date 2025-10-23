@@ -42,7 +42,6 @@ df_features = create_intraday_features(
     timeframe='1min',
     prediction_horizon=1,
     verbose=False,
-    use_essential_only=True,
     group_column='symbol'  # This should preserve the symbol column
 )
 
@@ -68,7 +67,6 @@ df_features_no_group = create_intraday_features(
     timeframe='1min',
     prediction_horizon=1,
     verbose=False,
-    use_essential_only=True,
     group_column=None
 )
 

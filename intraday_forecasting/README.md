@@ -4,6 +4,7 @@ A specialized high-frequency trading forecasting system using the TF Predictor (
 
 ## 🎯 Features
 
+- **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously (e.g., close + volume)
 - **Multi-Horizon Prediction**: Predict 1, 2, 3+ time periods ahead simultaneously
 - **Multi-Symbol Support** ⭐ NEW: Train on multiple symbols with group-based scaling for better accuracy
 - **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
@@ -11,8 +12,7 @@ A specialized high-frequency trading forecasting system using the TF Predictor (
 - **Multiple Timeframes**: 1min, 5min, 15min, 1h trading frequencies
 - **Market Hours Filtering**: Automatic filtering for each country's trading hours
 - **Intraday Pattern Recognition**: Country-specific time-of-day effects, market session analysis
-- **Comprehensive Feature Engineering**: 50+ intraday-specific features per market
-- **Volume Microstructure**: Order flow proxies, bid-ask spread modeling
+- **Rich Feature Engineering**: Volume, VWAP, and cyclical time encodings
 - **Real-time Ready**: Built for live trading applications
 - **Production Ready**: Complete CLI, testing, and model persistence
 
@@ -232,30 +232,12 @@ PYTHONPATH=. venv/bin/python intraday_forecasting/main.py \
 
 ## 📈 Intraday Features
 
-### Time-Based Features (18+)
-- **Market Sessions**: Opening hour, lunch period, power hour indicators
-- **Time Components**: Hour, minute, day-of-week with cyclical encoding
-- **Market Timing**: Minutes since open, minutes until close
-- **Session Indicators**: Pre-market, regular hours, after-hours flags
-
-### Price Features (15+)
-- **Returns**: Simple and log returns with multiple periods
-- **Volatility**: Rolling volatility (5, 15, 30-period windows)  
-- **Momentum**: Short-term momentum indicators (5, 15 periods)
-- **Price Ratios**: High/low, close/open, range percentages
-- **Moving Averages**: Short-term SMAs with ratio indicators
-
-### Volume Features (12+)
-- **Volume Patterns**: Rolling averages, momentum, percentiles
-- **Microstructure**: Price-volume relationship, volume rate
-- **Order Flow**: Buy/sell volume proxies, market making indicators
-- **Volume Profile**: Intraday volume distribution patterns
-
-### Advanced Features (10+)
-- **Lag Features**: Multiple period lags for price, volume, returns
-- **Rolling Statistics**: Mean, std, min, max over various windows
-- **Technical Indicators**: Short-term RSI, MACD adaptations
-- **Market Microstructure**: Spread proxies, tick intensity
+### Core Features
+- **Volume**: Trading volume
+- **VWAP**: Volume-weighted average price (typical price)
+- **Cyclical Time Encodings**: Hour and minute cyclical encodings (sin/cos)
+- **Day of Week**: Cyclical day-of-week encoding
+- **Market-specific**: Country-specific market session features
 
 ## 🛠️ Configuration Options
 
@@ -435,19 +417,21 @@ timestamp,open,high,low,close,volume
 ### For Better Accuracy
 - Use longer sequences for complex patterns (48+ periods for 5min)
 - Increase model complexity for large datasets (d_token=256, n_layers=4)
-- Include volume microstructure features
 - Train longer with early stopping (epochs=200, patience=20)
+- Use group-based scaling for multi-symbol datasets
 
 ### For Faster Training
 - Use smaller models (d_token=64, n_layers=2) for experiments
 - Increase batch size if memory allows (batch_size=64)
 - Use shorter sequences for simple patterns
+- Start with fewer epochs for initial testing
 
 ### For Production
 - Always use validation sets
 - Monitor directional accuracy for trading signals
 - Implement real-time feature calculation
-- Use percentage change targets for normalized predictions
+- Use multi-target prediction for correlated variables
+- Enable group-based scaling for portfolio trading
 
 ## 🚨 Troubleshooting
 

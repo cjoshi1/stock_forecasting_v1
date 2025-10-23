@@ -9,10 +9,9 @@ A specialized application for daily stock and cryptocurrency price prediction us
 - **Portfolio Support** ⭐ NEW: Train on multiple stocks with group-based scaling for better accuracy
 - **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
 - **Multi-Horizon Predictions**: Predict 1, 2, 3+ steps ahead with `prediction_horizon`
-- **Essential vs Full Features**: Choose between minimal essential features or comprehensive technical indicators
 - **Flexible Target Variables**: Any input feature can be the prediction target (volume, typical_price, close, etc.)
 - **Market-Specific Predictions**: Price forecasting, return prediction, volatility modeling
-- **Rich Feature Engineering**: 30+ technical indicators and market features OR 7-8 essential features
+- **Rich Feature Engineering**: Volume, VWAP (typical price), and cyclical time encodings
 - **Production Ready**: Complete CLI application with visualization and model persistence
 - **Real Data Support**: Load and validate actual stock/crypto market data (OHLCV format)
 
@@ -31,7 +30,6 @@ predictor = StockPredictor(
     target_column='close',           # Predict closing prices
     sequence_length=10,              # Use 10 days of history
     prediction_horizon=1,            # Predict 1 step ahead
-    use_essential_only=False,        # Use all features (30+)
     d_token=128,                     # Model complexity
     n_layers=3,                      # Transformer layers
     n_heads=8                        # Attention heads
@@ -164,9 +162,6 @@ python daily_stock_forecasting/main.py --use_sample_data --target close --asset_
 # Crypto daily prediction with sample data
 python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
 
-# Use your own stock data with essential features (fast training)
-python daily_stock_forecasting/main.py --data_path data/MSFT_historical_price_cleaned.csv --target volume --asset_type stock --use_essential_only --prediction_horizon 2 --epochs 50
-
 # Crypto (BTC, ETH, etc.) daily prediction
 python daily_stock_forecasting/main.py --data_path data/BTC-USD-daily.csv --target close --asset_type crypto --epochs 100
 
@@ -212,7 +207,6 @@ PYTHONPATH=. venv/bin/python daily_stock_forecasting/main.py \
   --asset_type stock \
   --sequence_length 5 \
   --prediction_horizon 1 \
-  --use_essential_only \
   --d_token 128 \
   --n_layers 3 \
   --n_heads 8 \
@@ -241,7 +235,6 @@ PYTHONPATH=. venv/bin/python daily_stock_forecasting/main.py \
 **Model Architecture:**
 - `--sequence_length N`: Historical days to use for prediction (default: 5)
 - `--prediction_horizon N`: Steps ahead to predict - 1=next day, 2=two days ahead, etc. (default: 1)
-- `--use_essential_only`: Use only essential features (volume, typical_price, seasonal) - 7 features for stock, 8 for crypto (adds is_weekend) instead of 30+
 - `--d_token N`: Token embedding dimension (default: 128)
 - `--n_layers N`: Number of transformer layers (default: 3)
 - `--n_heads N`: Number of attention heads (default: 8)
@@ -310,10 +303,6 @@ date,open,high,low,close,volume
 
 **Key Innovation**: Any feature can be a target! The system automatically creates shifted target variables for proper time series forecasting.
 
-### Essential Features (Available as Targets)
-- `volume` - Trading volume
-- `typical_price` - (high + low + close) / 3 (automatically created)
-
 ### Price Targets
 - `open`, `high`, `low`, `close` - Direct price prediction
 - `vwap` - Volume weighted average price (if available)
@@ -357,16 +346,6 @@ date,open,high,low,close,volume
 
 ## 📈 Feature Engineering
 
-### Essential Features Mode (`use_essential_only=True`)
-**7-8 Features Total** - Minimal, fast training with core market features:
-- `volume` - Trading volume
-- `typical_price` - (high + low + close) / 3
-- `month_sin`, `month_cos` - Cyclical month encoding
-- `dayofweek_sin`, `dayofweek_cos` - Cyclical day-of-week encoding (0-6 for crypto, 0-4 for stocks)
-- `year` - Raw year value (trend)
-- `is_weekend` - Weekend indicator (crypto only, 0=weekday, 1=weekend)
-
-### Full Features Mode (`use_essential_only=False`)
 **30+ Features** - Comprehensive technical analysis:
 
 #### Date Features (8)
@@ -418,36 +397,13 @@ daily_stock_forecasting/
 
 ## 💻 Examples
 
-### 1. Essential Features - Fast Training
+### 1. Multi-Step Prediction
 ```python
-from daily_stock_forecasting import StockPredictor, create_sample_stock_data
-from tf_predictor.core.utils import split_time_series
-
-# Create or load data
-df = create_sample_stock_data(n_samples=500)  # Or use load_stock_data()
-train_df, val_df, test_df = split_time_series(df, test_size=60, val_size=30)
-
-# Train with essential features only - 7 features, fast training
-predictor = StockPredictor(
-    target_column='volume',          # Predict trading volume
-    prediction_horizon=2,            # 2 steps ahead
-    use_essential_only=True,         # Only 7 essential features
-    sequence_length=5
-)
-predictor.fit(train_df, val_df, epochs=50, verbose=True)
-
-# Evaluate
-metrics = predictor.evaluate(test_df)
-print(f"MAPE: {metrics['MAPE']:.2f}%")
-```
-
-### 2. Multi-Step Prediction with Full Features
-```python
-# Predict 3 steps ahead using all 30+ features
+# Predict 3 steps ahead
 predictor = StockPredictor(
     target_column='close',
     prediction_horizon=3,            # 3 steps ahead
-    use_essential_only=False,        # Use all features
+    asset_type='stock',              # 'stock' or 'crypto'
     sequence_length=10,
     d_token=128
 )
@@ -456,13 +412,13 @@ predictor.fit(train_df, val_df, epochs=50)
 predictions = predictor.predict(test_df)
 ```
 
-### 3. Advanced Configuration
+### 2. Advanced Configuration
 ```python
 predictor = StockPredictor(
-    target_column='typical_price',   # Predict engineered feature
+    target_column='close',           # Predict closing price
     sequence_length=15,              # Use 3 weeks of history
     prediction_horizon=5,            # Predict 5 days ahead
-    use_essential_only=True,         # Fast essential features
+    asset_type='stock',              # 'stock' or 'crypto'
     d_token=256,                     # Larger model
     n_layers=4,                      # Deeper network
     n_heads=16,                      # More attention heads
@@ -527,17 +483,17 @@ predictions = new_predictor.predict(new_data)
 - Try different prediction horizons (1, 2, 3 steps ahead)
 
 ### For Faster Training:
-- **Use essential features** (`use_essential_only=True`) - 7 vs 30+ features
 - Use smaller models (`d_token=64`, `n_layers=2`) for quick experiments
 - Increase batch size (`batch_size=64`) if memory allows
 - Use fewer epochs for initial testing
+- Use shorter sequence lengths for faster training
 
 ### For Production:
-- Start with essential features for prototyping, add full features if needed
 - Always use validation sets
 - Monitor both training and validation metrics
 - Save models regularly during training
 - Test different targets (volume often easier than price prediction)
+- Use group-based scaling for multi-asset portfolios
 
 ## 🚨 Troubleshooting
 
@@ -598,33 +554,14 @@ print('✅ Basic tests passed')
 "
 ```
 
-## 🧪 Verified Test Results
-
-Successfully tested on real MSFT data (`data/MSFT_historical_price_cleaned.csv`, 1253 samples):
-
-**Volume Prediction (Essential Features)**
-```bash
-python -m daily_stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.csv --target volume --prediction_horizon 2 --use_essential_only --epochs 20
-```
-- **Test MAPE: 16.25%** (predicting trading volume 2 steps ahead)
-- **Features: 7** (volume, typical_price, seasonal cyclical)
-- **Training: Fast** (7 features vs 30+)
-
-**Close Price Prediction (Essential Features)**
-```bash
-python -m daily_stock_forecasting.main --data_path data/MSFT_historical_price_cleaned.csv --target close --prediction_horizon 1 --use_essential_only --epochs 20
-```
-- **Test MAPE: 7.44%** (predicting close price 1 step ahead)
-- **Features: 8** (7 essential + close as feature)
-- **R² Score: 0.99** (excellent fit on training data)
-
 ## 📚 Next Steps
 
-1. **Try the tested commands**: Use the verified examples above with your data
-2. **Start with essential features**: Fast prototyping with `--use_essential_only`
+1. **Try the examples**: Use the command examples with your data
+2. **Start with sample data**: Test with `--use_sample_data` flag
 3. **Experiment with prediction horizons**: Try `--prediction_horizon 1,2,3,5`
 4. **Test different targets**: Volume prediction often works well
-5. **Scale up**: Add full features for production after prototyping
+5. **Multi-target prediction**: Try predicting multiple variables with `--target "close,volume"`
+6. **Portfolio training**: Use `--group_column symbol` for multi-asset datasets
 
 ## 🔄 Updates
 
