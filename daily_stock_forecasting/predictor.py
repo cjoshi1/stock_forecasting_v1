@@ -22,6 +22,7 @@ class StockPredictor(TimeSeriesPredictor):
         sequence_length: int = 5,  # Number of historical days to use
         prediction_horizon: int = 1,  # Number of steps ahead to predict
         asset_type: str = 'stock',  # 'stock' or 'crypto'
+        model_type: str = 'ft',  # 'ft' or 'csn'
         group_column: Optional[str] = None,  # Column for group-based scaling
         **ft_kwargs
     ):
@@ -33,26 +34,46 @@ class StockPredictor(TimeSeriesPredictor):
             sequence_length: Number of historical days to use for prediction
             prediction_horizon: Number of steps ahead to predict (1 = next step)
             asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
+            model_type: Model architecture ('ft' for FT-Transformer, 'csn' for CSNTransformer)
             group_column: Optional column for group-based scaling (e.g., 'symbol' for multi-stock datasets)
-            **ft_kwargs: FT-Transformer hyperparameters
+            **ft_kwargs: Model hyperparameters (architecture-specific)
         """
+        # Validate model type
+        if model_type not in ['ft', 'csn']:
+            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft' or 'csn'")
+
         # Store original target info before any transformation
         self.original_target_column = target_column
         self.prediction_horizon = prediction_horizon
         self.asset_type = asset_type
+        self.model_type = model_type
 
         # Initialize logger with a specific format
         self.logger = self._initialize_logger()
 
-        # Pass target_column as-is to base class
-        # The base TimeSeriesPredictor will handle normalization
-        super().__init__(
-            target_column=target_column,
-            sequence_length=sequence_length,
-            prediction_horizon=prediction_horizon,
-            group_column=group_column,
-            **ft_kwargs
-        )
+        # Initialize base predictor based on model_type
+        if model_type == 'csn':
+            from tf_predictor.core.csn_predictor import CSNPredictor
+            # Initialize CSNPredictor directly
+            CSNPredictor.__init__(
+                self,
+                target_column=target_column,
+                sequence_length=sequence_length,
+                prediction_horizon=prediction_horizon,
+                group_column=group_column,
+                **ft_kwargs
+            )
+        else:
+            # Default to FT-Transformer
+            # Pass target_column as-is to base class
+            # The base TimeSeriesPredictor will handle normalization
+            super().__init__(
+                target_column=target_column,
+                sequence_length=sequence_length,
+                prediction_horizon=prediction_horizon,
+                group_column=group_column,
+                **ft_kwargs
+            )
     
     def _initialize_logger(self):
         """Initialize and return a logger with a specific format."""
