@@ -1394,6 +1394,10 @@ class TimeSeriesPredictor:
         self._feature_cache.clear()
         gc.collect()  # Force garbage collection to free memory
 
+        # Store processed dataframe for evaluation alignment
+        # This ensures actuals are extracted from the same processed data used for predictions
+        self._last_processed_df = self.prepare_features(df.copy(), fit_scaler=False)
+
         X, _ = self.prepare_data(df, fit_scaler=False)
 
         self.model.eval()
@@ -1651,10 +1655,16 @@ class TimeSeriesPredictor:
 
         # Check if we should do per-group evaluation
         if per_group and self.group_columns:
-            return self._evaluate_per_group(df)
+            result = self._evaluate_per_group(df)
         else:
             # Standard evaluation - predict() handles all preprocessing
-            return self._evaluate_standard(df)
+            result = self._evaluate_standard(df)
+
+        # Clear cached processed dataframe to free memory
+        if hasattr(self, '_last_processed_df'):
+            del self._last_processed_df
+
+        return result
 
     def _evaluate_standard(self, df: pd.DataFrame) -> Dict:
         """Standard evaluation without per-group breakdown."""
@@ -1796,14 +1806,25 @@ class TimeSeriesPredictor:
                     # Get the original group name
                     group_name = group_value_to_name[group_value]
 
-                    # Filter DataFrame by this group to get actual values
-                    group_df = df[df[group_col_name] == group_name].copy()
+                    # Use processed dataframe to ensure alignment with predictions
+                    # This fixes the bug where raw df rows don't match processed df rows
+                    if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
+                        raise RuntimeError(
+                            "Processed dataframe not available for evaluation. "
+                            "This is a bug - predict() should have set _last_processed_df. "
+                            "Please report this issue."
+                        )
 
-                    # Extract actual values for this group with sequence_length offset
+                    # Get processed data for this group
+                    group_df_processed = self._last_processed_df[
+                        self._last_processed_df[group_col_name] == group_name
+                    ].copy()
+
+                    # Extract actual values with sequence_length offset
                     if self.sequence_length > 1:
-                        group_actual_full = group_df[target_col].values[self.sequence_length:]
+                        group_actual_full = group_df_processed[target_col].values[self.sequence_length:]
                     else:
-                        group_actual_full = group_df[target_col].values
+                        group_actual_full = group_df_processed[target_col].values
 
                     # Get predictions for this group
                     group_mask = np.array([g == group_value for g in group_indices])
@@ -1852,11 +1873,18 @@ class TimeSeriesPredictor:
                     all_metrics[group_key][target_col] = group_metrics
 
                 # Calculate overall metrics for this target (using all groups combined)
-                # Get all actual values across all groups
+                # Use processed dataframe for alignment
+                if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
+                    raise RuntimeError(
+                        "Processed dataframe not available for evaluation. "
+                        "This is a bug - predict() should have set _last_processed_df. "
+                        "Please report this issue."
+                    )
+
                 if self.sequence_length > 1:
-                    all_actual = df[target_col].values[self.sequence_length:]
+                    all_actual = self._last_processed_df[target_col].values[self.sequence_length:]
                 else:
-                    all_actual = df[target_col].values
+                    all_actual = self._last_processed_df[target_col].values
 
                 if self.prediction_horizon == 1:
                     min_len = min(len(all_actual), len(target_predictions))
@@ -1901,14 +1929,24 @@ class TimeSeriesPredictor:
                 # Get the original group name
                 group_name = group_value_to_name[group_value]
 
-                # Filter DataFrame by this group to get actual values
-                group_df = df[df[group_col_name] == group_name].copy()
+                # Use processed dataframe to ensure alignment with predictions
+                if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
+                    raise RuntimeError(
+                        "Processed dataframe not available for evaluation. "
+                        "This is a bug - predict() should have set _last_processed_df. "
+                        "Please report this issue."
+                    )
 
-                # Extract actual values for this group with sequence_length offset
+                # Get processed data for this group
+                group_df_processed = self._last_processed_df[
+                    self._last_processed_df[group_col_name] == group_name
+                ].copy()
+
+                # Extract actual values with sequence_length offset
                 if self.sequence_length > 1:
-                    group_actual_full = group_df[target_col].values[self.sequence_length:]
+                    group_actual_full = group_df_processed[target_col].values[self.sequence_length:]
                 else:
-                    group_actual_full = group_df[target_col].values
+                    group_actual_full = group_df_processed[target_col].values
 
                 # Get predictions for this group
                 group_mask = np.array([g == group_value for g in group_indices])
@@ -1945,10 +1983,18 @@ class TimeSeriesPredictor:
                         all_metrics[str(group_value)] = group_metrics
 
             # Calculate overall metrics across all groups
+            # Use processed dataframe for alignment
+            if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
+                raise RuntimeError(
+                    "Processed dataframe not available for evaluation. "
+                    "This is a bug - predict() should have set _last_processed_df. "
+                    "Please report this issue."
+                )
+
             if self.sequence_length > 1:
-                all_actual = df[target_col].values[self.sequence_length:]
+                all_actual = self._last_processed_df[target_col].values[self.sequence_length:]
             else:
-                all_actual = df[target_col].values
+                all_actual = self._last_processed_df[target_col].values
 
             if self.prediction_horizon == 1:
                 # Single-horizon overall
