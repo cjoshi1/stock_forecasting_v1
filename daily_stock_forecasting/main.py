@@ -47,8 +47,17 @@ def main():
     parser.add_argument('--asset_type', type=str, default='stock',
                        choices=['stock', 'crypto'],
                        help='Asset type: stock (5-day week) or crypto (7-day week, 24/7 trading)')
-    parser.add_argument('--group_column', type=str, default=None,
-                       help='Column for group-based scaling (e.g., "symbol" for multi-stock datasets). If specified, each group gets separate scalers.')
+    parser.add_argument('--group_columns', type=str, default=None,
+                       help='Column(s) for group-based scaling (e.g., "symbol" for multi-stock datasets). If specified, each group gets separate scalers. Multiple: "symbol,sector"')
+    parser.add_argument('--categorical_columns', type=str, default=None,
+                       help='Column(s) to encode and pass as categorical features (e.g., "symbol,sector"). Multiple: "symbol,sector"')
+    parser.add_argument('--scaler_type', type=str, default='standard',
+                       choices=['standard', 'minmax', 'robust', 'maxabs', 'onlymax'],
+                       help='Type of scaler for normalization (default: standard)')
+    parser.add_argument('--use_lagged_target_features', action='store_true',
+                       help='Include target columns in input sequences for autoregressive modeling')
+    parser.add_argument('--lag_periods', type=str, default=None,
+                       help='Comma-separated lag periods for target features (e.g., "1,2,3,7,14"). Only used if --use_lagged_target_features is set.')
 
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=5,
@@ -58,18 +67,18 @@ def main():
     parser.add_argument('--model_type', type=str, default='ft',
                        choices=['ft', 'csn'],
                        help='Model architecture (ft=FT-Transformer, csn=CSNTransformer)')
-    parser.add_argument('--d_token', type=int, default=128,
-                       help='Token embedding dimension')
-    parser.add_argument('--n_layers', type=int, default=3,
-                       help='Number of transformer layers')
-    parser.add_argument('--n_heads', type=int, default=8,
-                       help='Number of attention heads')
+    parser.add_argument('--d_model', type=int, default=128,
+                       help='Token embedding dimension (formerly d_token)')
+    parser.add_argument('--num_layers', type=int, default=3,
+                       help='Number of transformer layers (formerly n_layers)')
+    parser.add_argument('--num_heads', type=int, default=8,
+                       help='Number of attention heads (formerly n_heads)')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
 
     # Evaluation arguments
     parser.add_argument('--per_group_metrics', action='store_true',
-                       help='Calculate and display per-group metrics (only when --group_column is set)')
+                       help='Calculate and display per-group metrics (only when --group_columns is set)')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=100,
@@ -130,9 +139,16 @@ def main():
                 df = create_sample_stock_data(n_samples=300, asset_type=args.asset_type)
             else:
                 print(f"   Found data file: {args.data_path}")
-                df = load_stock_data(args.data_path, asset_type=args.asset_type, group_column=args.group_column)
+                # Parse group_columns if provided
+                group_cols_parsed = None
+                if args.group_columns:
+                    group_cols_parsed = args.group_columns.split(',')[0].strip() if ',' in args.group_columns else args.group_columns
+                df = load_stock_data(args.data_path, asset_type=args.asset_type, group_column=group_cols_parsed)
         else:
-            df = load_stock_data(args.data_path, asset_type=args.asset_type, group_column=args.group_column)
+            group_cols_parsed = None
+            if args.group_columns:
+                group_cols_parsed = args.group_columns.split(',')[0].strip() if ',' in args.group_columns else args.group_columns
+            df = load_stock_data(args.data_path, asset_type=args.asset_type, group_column=group_cols_parsed)
         
         print(f"   Loaded {len(df)} samples from {args.data_path}")
     
@@ -178,11 +194,15 @@ def main():
     
     # 2. Split Data
     print(f"\n🔄 Splitting data...")
+    # Parse group_columns for split
+    group_col_for_split = None
+    if args.group_columns:
+        group_col_for_split = args.group_columns.split(',')[0].strip() if ',' in args.group_columns else args.group_columns
     train_df, val_df, test_df = split_time_series(
         df,
         test_size=args.test_size,
         val_size=args.val_size if len(df) > args.test_size + args.val_size + 50 else None,
-        group_column=args.group_column,
+        group_column=group_col_for_split,
         time_column='date',
         sequence_length=args.sequence_length
     )
@@ -206,16 +226,41 @@ def main():
     else:
         target_columns = args.target
 
+    # Parse group_columns
+    group_cols_for_model = None
+    if args.group_columns:
+        if ',' in args.group_columns:
+            group_cols_for_model = [g.strip() for g in args.group_columns.split(',')]
+        else:
+            group_cols_for_model = args.group_columns
+
+    # Parse categorical_columns
+    cat_cols_for_model = None
+    if args.categorical_columns:
+        if ',' in args.categorical_columns:
+            cat_cols_for_model = [c.strip() for c in args.categorical_columns.split(',')]
+        else:
+            cat_cols_for_model = args.categorical_columns
+
+    # Parse lag_periods
+    lag_periods_parsed = None
+    if args.lag_periods:
+        lag_periods_parsed = [int(p.strip()) for p in args.lag_periods.split(',')]
+
     model = StockPredictor(
         target_column=target_columns,  # Can be str or list
         sequence_length=args.sequence_length,
         prediction_horizon=args.prediction_horizon,
         asset_type=args.asset_type,
         model_type=args.model_type,
-        group_column=args.group_column,
-        d_token=args.d_token,
-        n_layers=args.n_layers,
-        n_heads=args.n_heads,
+        group_columns=group_cols_for_model,
+        categorical_columns=cat_cols_for_model,
+        scaler_type=args.scaler_type,
+        use_lagged_target_features=args.use_lagged_target_features,
+        lag_periods=lag_periods_parsed,
+        d_model=args.d_model,
+        num_layers=args.num_layers,
+        num_heads=args.num_heads,
         dropout=args.dropout
     )
 
@@ -229,14 +274,20 @@ def main():
         print(f"   - Target: {target_columns}")
     print(f"   - Sequence length: {args.sequence_length}")
     print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
-    print(f"   - Token dimension: {args.d_token}")
-    print(f"   - Layers: {args.n_layers}")
-    print(f"   - Attention heads: {args.n_heads}")
+    print(f"   - Token dimension: {args.d_model}")
+    print(f"   - Layers: {args.num_layers}")
+    print(f"   - Attention heads: {args.num_heads}")
     print(f"   - Dropout: {args.dropout}")
-    if args.group_column:
-        print(f"   - Group-based scaling: enabled (group_column='{args.group_column}')")
+    print(f"   - Scaler type: {args.scaler_type}")
+    if args.use_lagged_target_features:
+        lag_info = f"{lag_periods_parsed}" if lag_periods_parsed else "auto"
+        print(f"   - Lagged target features: enabled (lags={lag_info})")
+    if group_cols_for_model:
+        print(f"   - Group-based scaling: enabled (group_columns='{args.group_columns}')")
     else:
         print(f"   - Scaling: single-group (global)")
+    if cat_cols_for_model:
+        print(f"   - Categorical features: {args.categorical_columns}")
 
     # 4. Train Model
     print(f"\n🏋️ Training model...")
@@ -279,7 +330,7 @@ def main():
                         print(f"{indent_str}- {key}: {value:.4f}")
 
     # Determine if we should use per-group evaluation
-    use_per_group = args.per_group_metrics and args.group_column is not None
+    use_per_group = args.per_group_metrics and args.group_columns is not None
 
     # Train metrics
     if use_per_group:

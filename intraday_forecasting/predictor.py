@@ -29,8 +29,12 @@ class IntradayPredictor(TimeSeriesPredictor):
     
     def __init__(self, target_column: Union[str, list] = 'close', timeframe: str = '5min', model_type: str = 'ft',
                  timestamp_col: str = 'timestamp', country: str = 'US',
-                 prediction_horizon: int = 1, group_column: Optional[str] = None,
-                 d_token: int = 128, n_layers: int = 3, n_heads: int = 8,
+                 prediction_horizon: int = 1, group_columns: Optional[Union[str, list]] = None,
+                 categorical_columns: Optional[Union[str, list]] = None,
+                 scaler_type: str = 'standard',
+                 use_lagged_target_features: bool = False,
+                 lag_periods: list = None,
+                 d_model: int = 128, num_heads: int = 8, num_layers: int = 3,
                  dropout: float = 0.1, verbose: bool = False, **kwargs):
         """
         Initialize IntradayPredictor.
@@ -44,10 +48,14 @@ class IntradayPredictor(TimeSeriesPredictor):
             timestamp_col: Name of timestamp column
             country: Country code ('US' or 'INDIA')
             prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
-            group_column: Optional column for group-based scaling (e.g., 'symbol' for multi-stock datasets)
-            d_token: Token embedding dimension
-            n_layers: Number of transformer layers
-            n_heads: Number of attention heads
+            group_columns: Optional column(s) for group-based scaling (e.g., 'symbol' for multi-stock datasets)
+            categorical_columns: Optional column(s) to encode and pass as categorical features
+            scaler_type: Type of scaler ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
+            use_lagged_target_features: Whether to include target columns in input sequences
+            lag_periods: List of lag periods for target features (e.g., [1, 2, 3, 5, 10])
+            d_model: Token embedding dimension
+            num_heads: Number of attention heads
+            num_layers: Number of transformer layers
             dropout: Dropout rate
             verbose: Whether to print detailed logs
             **kwargs: Additional arguments passed to base predictor
@@ -97,11 +105,15 @@ class IntradayPredictor(TimeSeriesPredictor):
             target_column=shifted_target_name,
             sequence_length=sequence_length,
             prediction_horizon=prediction_horizon,
-            group_column=group_column,
+            group_columns=group_columns,
+            categorical_columns=categorical_columns,
             model_type=factory_model_type,
-            d_model=d_token,
-            num_heads=n_heads,
-            num_layers=n_layers,
+            scaler_type=scaler_type,
+            use_lagged_target_features=use_lagged_target_features,
+            lag_periods=lag_periods,
+            d_model=d_model,
+            num_heads=num_heads,
+            num_layers=num_layers,
             dropout=dropout,
             verbose=verbose,
             **kwargs
@@ -122,7 +134,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             print(f"  - Country: {country} ({market_config['description']})")
             print(f"  - Market Hours: {market_config['open']} - {market_config['close']}")
             print(f"  - Sequence length: {sequence_length} {timeframe} bars")
-            print(f"  - Model: {d_token}d x {n_layers}L x {n_heads}H")
+            print(f"  - Model: {d_model}d x {num_layers}L x {num_heads}H")
 
     def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
@@ -136,6 +148,12 @@ class IntradayPredictor(TimeSeriesPredictor):
             DataFrame with engineered features
         """
         # First create intraday-specific features (microstructure, time-of-day effects, etc.)
+        # Note: group_columns could be a list, but create_intraday_features expects single column or None
+        # Pass first group column if available, otherwise None
+        group_col_for_features = None
+        if self.group_columns:
+            group_col_for_features = self.group_columns[0] if isinstance(self.group_columns, list) else self.group_columns
+
         df_with_intraday_features = create_intraday_features(
             df=df,
             target_column=self.original_target_column,  # Use original, not shifted
@@ -144,7 +162,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             timeframe=self.timeframe,
             prediction_horizon=self.prediction_horizon,
             verbose=self.verbose,
-            group_column=self.group_column  # Pass group_column to preserve it
+            group_column=group_col_for_features  # Pass group_column to preserve it
         )
 
         # Then call parent's prepare_features to add time-series features

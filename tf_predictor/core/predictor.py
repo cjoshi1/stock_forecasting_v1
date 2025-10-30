@@ -1946,8 +1946,7 @@ class TimeSeriesPredictor:
             'num_targets': self.num_targets,  # Save count
             'sequence_length': self.sequence_length,
             'prediction_horizon': self.prediction_horizon,  # Explicitly save
-            'ft_kwargs': self.ft_kwargs,
-            'model_kwargs': self.model_kwargs,  # Save new model kwargs
+            'model_kwargs': self.model_kwargs,  # Save model kwargs
             'model_type': self.model_type,  # Save model type
             'use_lagged_target_features': self.use_lagged_target_features,  # Save lagged target feature flag
             'lag_periods': self.lag_periods,  # Save lag periods
@@ -1964,7 +1963,6 @@ class TimeSeriesPredictor:
         if not self.is_multi_target:
             # Single-target scalers
             state['target_scaler'] = self.target_scaler
-            state['target_scalers'] = self.target_scalers
         else:
             # Multi-target scalers dict
             state['target_scalers_dict'] = self.target_scalers_dict

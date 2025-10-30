@@ -397,26 +397,35 @@ def main():
                        help='Use synthetic sample data instead of real data')
     parser.add_argument('--sample_days', type=int, default=5,
                        help='Number of days for sample data generation')
-    parser.add_argument('--group_column', type=str, default=None,
-                       help='Column for group-based scaling (e.g., "symbol" for multi-stock datasets). If specified, each group gets separate scalers.')
+    parser.add_argument('--group_columns', type=str, default=None,
+                       help='Column(s) for group-based scaling (e.g., "symbol" for multi-stock datasets). If specified, each group gets separate scalers. Multiple: "symbol,sector"')
+    parser.add_argument('--categorical_columns', type=str, default=None,
+                       help='Column(s) to encode and pass as categorical features (e.g., "symbol,sector"). Multiple: "symbol,sector"')
+    parser.add_argument('--scaler_type', type=str, default='standard',
+                       choices=['standard', 'minmax', 'robust', 'maxabs', 'onlymax'],
+                       help='Type of scaler for normalization (default: standard)')
+    parser.add_argument('--use_lagged_target_features', action='store_true',
+                       help='Include target columns in input sequences for autoregressive modeling')
+    parser.add_argument('--lag_periods', type=str, default=None,
+                       help='Comma-separated lag periods for target features (e.g., "1,2,3,5,10"). Only used if --use_lagged_target_features is set.')
 
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=None,
                        help='Number of historical periods (auto-selected if not specified)')
     parser.add_argument('--prediction_horizon', type=int, default=1,
                        help='Number of future steps to predict (1=next step, 3=three steps ahead, etc.)')
-    parser.add_argument('--d_token', type=int, default=128,
-                       help='Token embedding dimension')
-    parser.add_argument('--n_layers', type=int, default=3,
-                       help='Number of transformer layers')
-    parser.add_argument('--n_heads', type=int, default=8,
-                       help='Number of attention heads')
+    parser.add_argument('--d_model', type=int, default=128,
+                       help='Token embedding dimension (formerly d_token)')
+    parser.add_argument('--num_layers', type=int, default=3,
+                       help='Number of transformer layers (formerly n_layers)')
+    parser.add_argument('--num_heads', type=int, default=8,
+                       help='Number of attention heads (formerly n_heads)')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
 
     # Evaluation arguments
     parser.add_argument('--per_group_metrics', action='store_true',
-                       help='Calculate and display per-group metrics (only when --group_column is set)')
+                       help='Calculate and display per-group metrics (only when --group_columns is set)')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50,
@@ -483,7 +492,11 @@ def main():
                 args.country = 'CRYPTO'
 
             print(f"   Loading from: {args.data_path}")
-            df = load_intraday_data(args.data_path, group_column=args.group_column)
+            # Parse group_columns if provided (use first one for loading)
+            group_col_parsed = None
+            if args.group_columns:
+                group_col_parsed = args.group_columns.split(',')[0].strip() if ',' in args.group_columns else args.group_columns
+            df = load_intraday_data(args.data_path, group_column=group_col_parsed)
 
         print(f"   Loaded {len(df)} samples")
     
@@ -496,12 +509,17 @@ def main():
     else:
         target_for_prep = args.target
 
+    # Parse group_columns for preparation (use first one)
+    group_col_for_prep = None
+    if args.group_columns:
+        group_col_for_prep = args.group_columns.split(',')[0].strip() if ',' in args.group_columns else args.group_columns
+
     preparation_result = prepare_intraday_for_training(
         df,
         target_column=target_for_prep,
         timeframe=args.timeframe,
         country=args.country,
-        group_column=args.group_column,
+        group_column=group_col_for_prep,
         verbose=args.verbose
     )
     
@@ -515,11 +533,15 @@ def main():
     print(f"\n🔄 Splitting data...")
     # Use timeframe-specific sequence length for split validation
     split_sequence_length = args.sequence_length or timeframe_config['sequence_length']
+    # Parse group_columns for split (use first one)
+    group_col_for_split = None
+    if args.group_columns:
+        group_col_for_split = args.group_columns.split(',')[0].strip() if ',' in args.group_columns else args.group_columns
     train_df, val_df, test_df = split_time_series(
         df_processed,
         test_size=args.test_size,
         val_size=args.val_size if len(df_processed) > args.test_size + args.val_size + 100 else None,
-        group_column=args.group_column,
+        group_column=group_col_for_split,
         time_column='timestamp',
         sequence_length=split_sequence_length
     )
@@ -546,6 +568,27 @@ def main():
     # Use timeframe-specific sequence length if not provided
     sequence_length = args.sequence_length or timeframe_config['sequence_length']
 
+    # Parse group_columns
+    group_cols_for_model = None
+    if args.group_columns:
+        if ',' in args.group_columns:
+            group_cols_for_model = [g.strip() for g in args.group_columns.split(',')]
+        else:
+            group_cols_for_model = args.group_columns
+
+    # Parse categorical_columns
+    cat_cols_for_model = None
+    if args.categorical_columns:
+        if ',' in args.categorical_columns:
+            cat_cols_for_model = [c.strip() for c in args.categorical_columns.split(',')]
+        else:
+            cat_cols_for_model = args.categorical_columns
+
+    # Parse lag_periods
+    lag_periods_parsed = None
+    if args.lag_periods:
+        lag_periods_parsed = [int(p.strip()) for p in args.lag_periods.split(',')]
+
     model = IntradayPredictor(
         target_column=target_columns,  # Can be str or list
         timeframe=args.timeframe,
@@ -553,10 +596,14 @@ def main():
         country=args.country,
         sequence_length=sequence_length,
         prediction_horizon=args.prediction_horizon,
-        group_column=args.group_column,
-        d_token=args.d_token,
-        n_layers=args.n_layers,
-        n_heads=args.n_heads,
+        group_columns=group_cols_for_model,
+        categorical_columns=cat_cols_for_model,
+        scaler_type=args.scaler_type,
+        use_lagged_target_features=args.use_lagged_target_features,
+        lag_periods=lag_periods_parsed,
+        d_model=args.d_model,
+        num_layers=args.num_layers,
+        num_heads=args.num_heads,
         dropout=args.dropout,
         verbose=args.verbose
     )
@@ -570,13 +617,19 @@ def main():
         print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
     else:
         print(f"   - Target: {target_columns}")
-    print(f"   - Token dimension: {args.d_token}")
-    print(f"   - Layers: {args.n_layers}")
-    print(f"   - Attention heads: {args.n_heads}")
-    if args.group_column:
-        print(f"   - Group-based scaling: enabled (group_column='{args.group_column}')")
+    print(f"   - Token dimension: {args.d_model}")
+    print(f"   - Layers: {args.num_layers}")
+    print(f"   - Attention heads: {args.num_heads}")
+    print(f"   - Scaler type: {args.scaler_type}")
+    if args.use_lagged_target_features:
+        lag_info = f"{lag_periods_parsed}" if lag_periods_parsed else "auto"
+        print(f"   - Lagged target features: enabled (lags={lag_info})")
+    if group_cols_for_model:
+        print(f"   - Group-based scaling: enabled (group_columns='{args.group_columns}')")
     else:
         print(f"   - Scaling: single-group (global)")
+    if cat_cols_for_model:
+        print(f"   - Categorical features: {args.categorical_columns}")
 
     # 5. Train Model
     print(f"\n🏋️ Training model...")
@@ -619,7 +672,7 @@ def main():
                         print(f"{indent_str}- {key}: {value:.4f}")
 
     # Determine if we should use per-group evaluation
-    use_per_group = args.per_group_metrics and args.group_column is not None
+    use_per_group = args.per_group_metrics and args.group_columns is not None
 
     # Train metrics
     if use_per_group:
@@ -661,9 +714,9 @@ def main():
         print(f"\n🔮 Predicting next {args.future_predictions} {args.timeframe} periods...")
 
         # Note: predict_next_bars may not work correctly with group-based predictions for future bars
-        # This is a limitation when using group_column since we don't know which group to predict for
-        if args.group_column is not None:
-            print(f"   ⚠️  Future predictions not supported with group-based scaling (--group_column)")
+        # This is a limitation when using group_columns since we don't know which group to predict for
+        if args.group_columns is not None:
+            print(f"   ⚠️  Future predictions not supported with group-based scaling (--group_columns)")
             print(f"   Skipping future predictions...")
         else:
             # Use the full processed dataset for future predictions
