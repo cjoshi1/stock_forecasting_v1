@@ -1,202 +1,225 @@
 """
 CSNTransformer: Categorical-Seasonal-Numerical Transformer for Time Series Prediction.
 
-🧠 CSN-TRANSFORMER (CATEGORICAL-SEASONAL-NUMERICAL) ARCHITECTURE
-===============================================================
+🧠 CSN-TRANSFORMER CLS MODEL (DUAL-PATH ARCHITECTURE)
+======================================================
 
-The CSN-Transformer is an advanced architecture designed specifically for time series data
-with mixed feature types. Unlike the unified FT-Transformer approach, CSN-Transformer
-processes different feature types through specialized pathways before fusing them.
+The CSN-Transformer CLS Model is a dual-path architecture specifically designed for time
+series forecasting with STATIC categorical features and TIME-VARYING numerical sequences.
+Unlike unified approaches, it processes categorical and numerical features through separate
+specialized transformers before late fusion.
 
 📊 ARCHITECTURE OVERVIEW:
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  Categorical Features → Categorical Processor → CLS₁                        │
-│  [cat, seasonal]      → [embeddings]          → [d_model]                   │
-│                                                       ↓                      │
-│                                                    Fusion                    │
-│                                                       ↓                      │
-│  Numerical Features   → Numerical Processor   → CLS₂  → Final Prediction    │
-│  [sequences]          → [sequences + attention] → [d_model]                 │
+│  STATIC Categorical Features → Categorical Transformer → CLS₁               │
+│  [batch, num_categorical]    → [embeddings + attention]  → [batch, d_model] │
+│                                                                    ↓         │
+│                                                               CONCATENATE    │
+│                                                                    ↓         │
+│  TIME-VARYING Numerical Seq  → Numerical Transformer      → CLS₂  → Predict │
+│  [batch, seq_len, num_num]   → [projection + attention]  → [batch, d_model] │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 🔄 DATA FLOW WITH MATRIX DIMENSIONS:
 
 Example Configuration:
 - batch_size = 32
-- categorical_features = {'year': 5, 'quarter': 4, 'month_sin': 24, 'month_cos': 24}
-- num_numerical = 8 (price, volume, ratios, etc.)
-- sequence_length = 5 (temporal context)
+- sequence_length = 10
+- num_numerical = 8 (price, volume, technical indicators, etc.)
+- num_categorical = 2 (symbol, sector)
+- cat_cardinalities = [100, 5] (100 stock symbols, 5 sectors)
 - d_model = 128 (embedding dimension)
+- num_heads = 8
+- num_layers = 3
+- output_dim = 1 (single-step forecast)
 
-🏗️ DUAL PROCESSING ARCHITECTURE:
+🏗️ DUAL-PATH PROCESSING ARCHITECTURE:
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ PATH 1: CATEGORICAL PROCESSOR                                               │
+│ PATH 1: CATEGORICAL PROCESSING (STATIC FEATURES)                            │
 │ ─────────────────────────────────────────────────────────────────────────── │
-│ Input: categorical_inputs = {                                               │
-│   'year': [32],           # batch_size samples                             │
-│   'quarter': [32],        # batch_size samples                             │
-│   'month_sin': [32],      # seasonal feature (sin component)               │
-│   'month_cos': [32]       # seasonal feature (cos component)               │
-│ }                                                                           │
-│                                                                             │
-│ Step 1: Embedding Lookup                                                    │
-│   year_emb = Embedding(5, 128)(year_values)      # [32, 128]               │
-│   quarter_emb = Embedding(4, 128)(quarter_values) # [32, 128]              │
-│   month_sin_emb = Embedding(24, 128)(month_sin)   # [32, 128]              │
-│   month_cos_emb = Embedding(24, 128)(month_cos)   # [32, 128]              │
-│                                                                             │
-│ Step 2: Stack Embeddings                                                    │
-│   feature_embeddings = stack([year_emb, quarter_emb, ...], dim=1)          │
-│   →  [32, 4, 128]  # [batch, num_categorical, d_model]                     │
-│                                                                             │
-│ Step 3: Add CLS Token                                                       │
-│   cls_token: [1, 1, 128] → expanded to [32, 1, 128]                       │
-│   tokens = cat([cls_token, feature_embeddings], dim=1)                     │
-│   →  [32, 5, 128]  # [batch, 1 + num_categorical, d_model]                │
-│                                                                             │
-│ Step 4: Add Positional Encoding                                            │
-│   positions = [0, 1, 2, 3, 4]  # position indices                         │
-│   pos_emb = PositionalEmbedding(positions)  # [32, 5, 128]                │
-│   tokens = tokens + pos_emb                                                │
-│                                                                             │
-│ Step 5: Categorical Transformer                                             │
-│   for layer in categorical_transformer_layers:                             │
-│     tokens = MultiHeadAttention(tokens) + tokens                          │
-│     tokens = FeedForward(LayerNorm(tokens)) + tokens                      │
-│   →  [32, 5, 128]                                                          │
-│                                                                             │
-│ Step 6: Extract CLS₁                                                       │
+│                                                                              │
+│ Step 1: Input Format                                                         │
+│   x_cat: [32, 2]  # [batch_size, num_categorical]                          │
+│   Values are integer indices (label encoded):                               │
+│     - Column 0: symbol indices [0-99]                                       │
+│     - Column 1: sector indices [0-4]                                        │
+│                                                                              │
+│ Step 2: Categorical Embedding with Logarithmic Scaling                      │
+│   FORMULA: emb_dim = int(8 * log2(cardinality + 1))                        │
+│            emb_dim = clamp(emb_dim, d_model/4, d_model)                    │
+│                                                                              │
+│   symbol_emb = Embedding(100, 53)(x_cat[:, 0])  # [32, 53]                │
+│   sector_emb = Embedding(5, 32)(x_cat[:, 1])    # [32, 32]                │
+│                                                                              │
+│ Step 3: Project to d_model                                                  │
+│   symbol_proj = Linear(53, 128)(symbol_emb)     # [32, 128]                │
+│   sector_proj = Linear(32, 128)(sector_emb)     # [32, 128]                │
+│                                                                              │
+│ Step 4: Stack Categorical Tokens                                            │
+│   cat_tokens = stack([symbol_proj, sector_proj], dim=1)                    │
+│   →  [32, 2, 128]  # [batch, num_categorical, d_model]                     │
+│                                                                              │
+│ Step 5: Add CLS₁ Token                                                      │
+│   cls1_token = CLSToken(d_model)                # [1, 1, 128]              │
+│   cls1_expanded = cls1_token.expand(32, -1, -1) # [32, 1, 128]            │
+│   tokens_with_cls = cat([cls1_expanded, cat_tokens], dim=1)               │
+│   →  [32, 3, 128]  # [batch, 1 + num_categorical, d_model]                │
+│                                                                              │
+│ Step 6: Categorical Transformer (3 layers)                                  │
+│   for layer in range(num_layers):                                          │
+│     # Multi-Head Self-Attention (num_heads=8)                              │
+│     Q, K, V = tokens @ W_q, W_k, W_v  # [32, 3, 128]                      │
+│     d_head = 128 / 8 = 16                                                  │
+│     attention = softmax(QK^T / √16) @ V                                    │
+│     tokens = LayerNorm(tokens + attention)                                 │
+│                                                                              │
+│     # Feed-Forward Network                                                  │
+│     ffn = Linear(ReLU(Linear(tokens, 512)), 128)                          │
+│     tokens = LayerNorm(tokens + ffn)                                       │
+│   →  [32, 3, 128]                                                          │
+│                                                                              │
+│ Step 7: Extract CLS₁                                                        │
 │   cls1_output = tokens[:, 0, :]  # [32, 128]                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ PATH 2: NUMERICAL PROCESSOR                                                 │
+│ PATH 2: NUMERICAL SEQUENCE PROCESSING (TIME-VARYING FEATURES)               │
 │ ─────────────────────────────────────────────────────────────────────────── │
-│ Input: numerical_inputs [32, 5, 8]  # [batch, sequence_length, num_features]│
-│                                                                             │
-│ Step 1: Feature Projection                                                  │
-│   projected = Linear(8, 128)(numerical_inputs)                            │
-│   →  [32, 5, 128]  # [batch, sequence_length, d_model]                    │
-│                                                                             │
-│ Step 2: Add CLS Token                                                       │
-│   cls_token: [1, 1, 128] → expanded to [32, 1, 128]                       │
-│   tokens = cat([cls_token, projected], dim=1)                             │
-│   →  [32, 6, 128]  # [batch, 1 + sequence_length, d_model]                │
-│                                                                             │
-│ Step 3: Add Positional Encoding                                            │
-│   positions = [0, 1, 2, 3, 4, 5]  # position indices                      │
-│   pos_emb = PositionalEmbedding(positions)  # [32, 6, 128]                │
-│   tokens = tokens + pos_emb                                                │
-│                                                                             │
-│ Step 4: Numerical Transformer                                              │
-│   for layer in numerical_transformer_layers:                              │
-│     tokens = MultiHeadAttention(tokens) + tokens                          │
-│     tokens = FeedForward(LayerNorm(tokens)) + tokens                      │
-│   →  [32, 6, 128]                                                          │
-│                                                                             │
-│ Step 5: Extract CLS₂                                                       │
+│                                                                              │
+│ Step 1: Input Format                                                         │
+│   x_num: [32, 10, 8]  # [batch_size, sequence_length, num_numerical]      │
+│   Time-varying features across 10 timesteps:                                │
+│     - open, high, low, close, volume                                        │
+│     - technical indicators (RSI, MACD, etc.)                                │
+│                                                                              │
+│ Step 2: Project Numerical Features to d_model                               │
+│   num_proj = Linear(8, 128)(x_num)                                         │
+│   →  [32, 10, 128]  # [batch, sequence_length, d_model]                   │
+│                                                                              │
+│ Step 3: Add CLS₂ Token                                                      │
+│   cls2_token = CLSToken(d_model)                # [1, 1, 128]              │
+│   cls2_expanded = cls2_token.expand(32, -1, -1) # [32, 1, 128]            │
+│   tokens_with_cls = cat([cls2_expanded, num_proj], dim=1)                 │
+│   →  [32, 11, 128]  # [batch, 1 + sequence_length, d_model]               │
+│                                                                              │
+│ Step 4: Add Positional Encoding (Temporal)                                  │
+│   positions = [0, 1, 2, ..., 10]                                           │
+│   pos_encoding = PositionalEncoding(positions)  # [32, 11, 128]           │
+│   tokens = tokens_with_cls + pos_encoding                                  │
+│                                                                              │
+│ Step 5: Numerical Transformer (3 layers)                                    │
+│   for layer in range(num_layers):                                          │
+│     # Multi-Head Self-Attention (num_heads=8)                              │
+│     Q, K, V = tokens @ W_q, W_k, W_v  # [32, 11, 128]                     │
+│     attention = softmax(QK^T / √16) @ V                                    │
+│     tokens = LayerNorm(tokens + attention)                                 │
+│                                                                              │
+│     # Feed-Forward Network                                                  │
+│     ffn = Linear(ReLU(Linear(tokens, 512)), 128)                          │
+│     tokens = LayerNorm(tokens + ffn)                                       │
+│   →  [32, 11, 128]                                                         │
+│                                                                              │
+│ Step 6: Extract CLS₂                                                        │
 │   cls2_output = tokens[:, 0, :]  # [32, 128]                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ PATH 3: FUSION & PREDICTION                                                 │
+│ PATH 3: LATE FUSION & PREDICTION                                            │
 │ ─────────────────────────────────────────────────────────────────────────── │
-│ Step 1: CLS Token Fusion                                                    │
-│   fused_cls = cat([cls1_output, cls2_output], dim=1)                      │
+│                                                                              │
+│ Step 1: Concatenate CLS Tokens                                              │
+│   fused_representation = cat([cls1_output, cls2_output], dim=1)           │
 │   →  [32, 256]  # [batch, 2 * d_model]                                    │
-│                                                                             │
-│ Step 2: Prediction Head                                                     │
-│   Single-horizon (prediction_horizons=1):                                  │
-│     output_size = 1                                                        │
-│     predictions = MLP(fused_cls)  # [32, 256] → [32, 1]                   │
-│                                                                             │
-│   Multi-horizon (prediction_horizons=3):                                   │
-│     output_size = 3                                                        │
-│     raw_output = MLP(fused_cls)  # [32, 256] → [32, 3]                    │
-│     predictions = raw_output.view(32, 3, 1).squeeze(-1)                   │
-│     →  [32, 3]  # Predictions for horizons 1, 2, 3                        │
+│                                                                              │
+│ Step 2: Prediction Head (MultiHorizonHead)                                  │
+│   predictions = Linear(256, output_dim)(fused_representation)              │
+│   →  [32, 1]  # [batch, output_dim]                                       │
+│                                                                              │
+│   For multi-horizon (output_dim=3):                                         │
+│     predictions = Linear(256, 3)(fused_representation)                     │
+│     →  [32, 3]  # Forecasts for t+1, t+2, t+3                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-🎯 KEY MATHEMATICAL OPERATIONS:
+🎯 KEY ARCHITECTURAL FEATURES:
 
-1. Categorical Embeddings:
-   - categorical_token_i = Embedding_i[category_value_i]
-   - Seasonal features: sin/cos values → discretized → embedded
+1. Logarithmic Embedding Scaling for Categorical Features:
+   - emb_dim = int(8 * log2(cardinality + 1))
+   - Bounds: [d_model/4, d_model] = [32, 128]
+   - Information-theoretic capacity matching
 
-2. Numerical Projection:
-   - numerical_tokens = numerical_features @ W_proj + b_proj
-   - W_proj: [num_features, d_model], b_proj: [d_model]
+2. Dual Transformer Processing:
+   - Separate attention mechanisms for categorical and numerical
+   - Categorical: learns feature interactions (symbol-sector relationships)
+   - Numerical: learns temporal patterns (price momentum, trends)
 
-3. Dual Attention:
-   - Categorical: Attention(Q_cat, K_cat, V_cat) = softmax(Q_catK_cat^T/√d_k)V_cat
-   - Numerical: Attention(Q_num, K_num, V_num) = softmax(Q_numK_num^T/√d_k)V_num
+3. CLS Token Strategy:
+   - CLS₁: aggregates categorical feature information
+   - CLS₂: aggregates temporal sequence information
+   - Late fusion preserves both representations
 
-4. CLS Fusion:
-   - fused_representation = Concat(CLS₁, CLS₂)
-   - final_prediction = MLP(fused_representation)
+4. Positional Encoding:
+   - Only applied to numerical path (temporal sequences)
+   - Not needed for categorical (static features have no temporal order)
 
-🧠 MEMORY & COMPUTATIONAL COMPLEXITY:
+🧠 COMPUTATIONAL COMPLEXITY:
 
-Memory Usage (example):
-- Categorical tokens: 32 × 5 × 128 × 4 bytes ≈ 80 KB
-- Numerical tokens: 32 × 6 × 128 × 4 bytes ≈ 96 KB
-- Categorical attention: 32 × 8 × 5² × 4 bytes ≈ 25 KB
-- Numerical attention: 32 × 8 × 6² × 4 bytes ≈ 36 KB
-- Total per layer pair: ~240 KB
+Memory Usage (per forward pass):
+- Categorical tokens: 32 × 3 × 128 × 4 bytes ≈ 49 KB
+- Numerical tokens: 32 × 11 × 128 × 4 bytes ≈ 180 KB
+- Categorical attention: 32 × 8 × 3² × 4 bytes ≈ 9 KB (per layer)
+- Numerical attention: 32 × 8 × 11² × 4 bytes ≈ 124 KB (per layer)
+- Total: ~362 KB + ~399 KB (3 layers) ≈ 761 KB
 
-Computational Complexity:
+Time Complexity:
 - Categorical path: O(L_cat × (T_cat² × d + T_cat × d²))
+  where T_cat = 1 + num_categorical = 3
 - Numerical path: O(L_num × (T_num² × d + T_num × d²))
-- Overall: O(L × (T² × d + T × d²)) where T = max(T_cat, T_num)
+  where T_num = 1 + sequence_length = 11
+- Dominated by numerical path due to longer sequence
 
-🎨 ADVANTAGES OVER UNIFIED APPROACHES:
+🎨 ADVANTAGES OVER UNIFIED ARCHITECTURES:
 
-1. Specialized Processing:
-   - Categorical features use embeddings (discrete space)
-   - Numerical features use projections (continuous space)
-   - Each pathway optimized for its data type
+1. Specialized Feature Processing:
+   - Categorical: embeddings for discrete features
+   - Numerical: projections for continuous sequences
+   - No mixing of different feature types in early layers
 
-2. Seasonal Feature Handling:
-   - Sin/cos pairs automatically detected and embedded
-   - Preserves cyclical relationships in discrete form
-   - Better for seasonal patterns than raw numerical values
+2. Reduced Computational Cost:
+   - Two smaller transformers instead of one large
+   - Categorical attention: O(3²) vs unified O(14²)
+   - Numerical attention: O(11²) vs unified O(14²)
+   - Total: O(9 + 121) = 130 vs O(196) operations
 
-3. Independent Attention:
-   - Categorical features attend to other categorical features
-   - Numerical sequences attend to temporal patterns
-   - Prevents feature type interference
+3. Better Feature Learning:
+   - Categorical features learn inter-feature relationships
+   - Numerical features learn temporal dependencies
+   - No interference between static and time-varying patterns
 
-4. Fusion Flexibility:
-   - Late fusion allows independent feature learning
-   - CLS tokens capture domain-specific information
-   - Concatenation preserves both representations
+4. Flexibility for Missing Modalities:
+   - Can handle numerical-only data (x_cat=None)
+   - Can adapt to varying categorical feature counts
+   - Graceful degradation when features are absent
 
-⚡ IMPLEMENTATION NOTES:
+⚡ USAGE NOTES:
 
-1. Feature Detection:
-   - Automatic separation of categorical vs numerical
-   - Sin/cos pattern detection for seasonal features
-   - Vocabulary size estimation for embeddings
+1. When num_categorical = 0:
+   - Only numerical path is used
+   - cls1_output is omitted from fusion
+   - Behaves like standard sequence transformer
 
-2. Memory Optimization:
-   - Separate smaller transformers vs one large transformer
-   - Reduced attention matrix sizes
-   - Optional gradient checkpointing
+2. Feature Preparation:
+   - Categorical features: integer indices [0, cardinality-1]
+   - Numerical features: normalized/scaled continuous values
+   - Cardinalities must match actual unique values in data
 
 3. Training Considerations:
-   - Balance categorical and numerical learning rates
-   - Separate dropout rates for different pathways
-   - Independent layer normalization
+   - Separate learning rates for categorical and numerical paths
+   - Dropout applied independently to each path
+   - Batch normalization can stabilize categorical embeddings
 
-4. Seasonal Optimization:
-   - Cyclical features treated as high-cardinality categorical
-   - Learnable embeddings for sin/cos discretization
-   - Temporal positional encoding for sequence order
-
-This dual-pathway architecture provides superior performance for time series data
-with mixed categorical/numerical features and strong seasonal patterns, while
-maintaining the flexibility to handle varying feature compositions.
+This dual-path architecture is optimal for financial time series forecasting where
+static entity features (symbol, sector) combine with dynamic market data (OHLCV, indicators).
 """
 
 import torch
@@ -785,124 +808,6 @@ class CSNTransformerPredictor(nn.Module):
 
     def forward(self, categorical_inputs=None, numerical_inputs=None):
         return self.model(categorical_inputs, numerical_inputs)
-
-
-class CSNTransformerTimeSeriesModel(TransformerBasedModel):
-    """
-    CSN-Transformer implementation for time series that implements TimeSeriesModel interface.
-
-    This is the new standard model class that should be used with ModelFactory.
-    It replaces the old CSNTransformerPredictor for new code.
-
-    Key differences from old implementation:
-    1. Implements TimeSeriesModel interface
-    2. Takes (sequence_length, num_features, output_dim) instead of complex categorical setup
-    3. Works directly with sequences (splits numerical/categorical internally)
-    4. Provides standardized API (get_model_config, get_embedding_dim, etc.)
-    """
-
-    def __init__(
-        self,
-        sequence_length: int,
-        num_features: int,
-        output_dim: int,
-        d_model: int = 128,
-        num_heads: int = 8,
-        num_layers: int = 3,
-        dropout: float = 0.1,
-        activation: str = 'relu',
-        categorical_features: Dict[str, int] = None,
-        num_numerical_features: int = None
-    ):
-        """
-        Initialize CSN-Transformer for time series.
-
-        Args:
-            sequence_length: Length of input sequences (lookback window)
-            num_features: Total number of features per time step
-            output_dim: Output dimension (num_targets * prediction_horizon)
-            d_model: Embedding dimension
-            num_heads: Number of attention heads
-            num_layers: Number of transformer layers
-            dropout: Dropout rate
-            activation: Activation function ('relu' or 'gelu')
-            categorical_features: Dict mapping categorical feature names to cardinalities
-            num_numerical_features: Number of numerical features
-        """
-        super().__init__(d_model=d_model, num_heads=num_heads, num_layers=num_layers)
-
-        self.sequence_length = sequence_length
-        self.num_features = num_features
-        self.output_dim = output_dim
-        self.dropout_rate = dropout
-        self.activation_name = activation
-        self.categorical_features = categorical_features or {}
-        self.num_numerical_features = num_numerical_features or num_features
-
-        # Create the actual CSN-Transformer model
-        self.csn_transformer = CSNTransformer(
-            categorical_features=self.categorical_features,
-            num_numerical_features=self.num_numerical_features,
-            sequence_length=sequence_length,
-            d_model=d_model,
-            n_layers=num_layers,
-            n_heads=num_heads,
-            dropout=dropout,
-            output_dim=1,
-            prediction_horizons=output_dim
-        )
-
-        # Store for attention weights (optional)
-        self._last_attention_weights = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the model.
-
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length, num_features)
-               The tensor is expected to have categorical and numerical features
-               concatenated along the feature dimension
-
-        Returns:
-            predictions: Output tensor of shape (batch_size, output_dim)
-        """
-        # For now, assume all features are numerical
-        # In a more sophisticated implementation, we would split x into
-        # categorical and numerical components based on self.categorical_features
-
-        categorical_inputs = None  # TODO: Extract from x if categorical_features defined
-        numerical_inputs = x  # All features treated as numerical for now
-
-        # Forward through CSN-Transformer
-        predictions = self.csn_transformer(categorical_inputs, numerical_inputs)
-
-        return predictions
-
-    def get_model_config(self) -> Dict[str, Any]:
-        """Get the current configuration of the model."""
-        return {
-            'model_type': 'csn_transformer',
-            'd_model': self.d_model,
-            'num_heads': self.num_heads,
-            'num_layers': self.num_layers,
-            'dropout': self.dropout_rate,
-            'activation': self.activation_name,
-            'sequence_length': self.sequence_length,
-            'num_features': self.num_features,
-            'output_dim': self.output_dim,
-            'categorical_features': self.categorical_features,
-            'num_numerical_features': self.num_numerical_features
-        }
-
-    def get_attention_weights(self) -> Optional[torch.Tensor]:
-        """
-        Get attention weights from the last forward pass.
-
-        Returns:
-            Attention weights tensor or None if not available.
-        """
-        return self._last_attention_weights
 
 
 class CSNTransformerCLSModel(TransformerBasedModel):

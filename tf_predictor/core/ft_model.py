@@ -1,190 +1,276 @@
 """
 Core FT-Transformer implementation.
 
-🧠 FT-TRANSFORMER (FEATURE TOKENIZER TRANSFORMER) ARCHITECTURE
-============================================================
+🧠 FT-TRANSFORMER CLS MODEL (UNIFIED TOKEN ARCHITECTURE)
+=========================================================
 
-The FT-Transformer is a state-of-the-art architecture specifically designed for tabular data.
-It converts heterogeneous features (numerical and categorical) into a unified token representation,
-then applies self-attention mechanisms to capture complex feature interactions.
+The FT-Transformer CLS Model is a unified architecture for time series forecasting that
+processes STATIC categorical features and TIME-VARYING numerical sequences together through
+a single transformer. Unlike dual-path approaches, all features are tokenized and attend
+to each other in a shared attention mechanism.
 
 📊 ARCHITECTURE OVERVIEW:
-┌─────────────────────────────────────────────────────────────┐
-│  Raw Features → FeatureTokenizer → Transformer → Prediction │
-│  [num, cat]   → [tokens]        → [attention] → [output]    │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STATIC Categorical + TIME-VARYING Numerical → Unified Tokenization →       │
+│  [batch, num_cat] + [batch, seq, num_num]   → [CLS, num_tokens, cat_tokens]│
+│                                               ↓                              │
+│                                        Shared Transformer                    │
+│                                               ↓                              │
+│                                          CLS Token → Prediction              │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 🔄 DATA FLOW WITH MATRIX DIMENSIONS:
 
 Example Configuration:
 - batch_size = 32
-- num_numerical = 10 (price, volume, etc.)
-- num_categorical = 4 (year, quarter, etc.)
-- cat_cardinalities = [5, 4, 12, 7] (unique values per categorical feature)
-- d_token = 192 (embedding dimension)
+- sequence_length = 10
+- num_numerical = 8 (price, volume, technical indicators, etc.)
+- num_categorical = 2 (symbol, sector)
+- cat_cardinalities = [100, 5] (100 stock symbols, 5 sectors)
+- d_model = 128 (embedding dimension)
+- num_heads = 4
+- num_layers = 3
+- output_dim = 1 (single-step forecast)
 
-Step 1: Feature Tokenization
-┌─────────────────────────────────────────────────────────────┐
-│ Input:                                                      │
-│   x_num: [32, 10]     # Numerical features                 │
-│   x_cat: [32, 4]      # Categorical features               │
-│                                                             │
-│ Numerical Tokenization: f(x) = x * W + b                   │
-│   num_weights: [10, 192]                                   │
-│   num_biases:  [10, 192]                                   │
-│   →  num_tokens: [32, 10, 192]                             │
-│                                                             │
-│ Categorical Tokenization: Embedding Lookup                 │
-│   cat_embeddings[0]: Embedding(5, 192)   # year           │
-│   cat_embeddings[1]: Embedding(4, 192)   # quarter        │
-│   cat_embeddings[2]: Embedding(12, 192)  # month          │
-│   cat_embeddings[3]: Embedding(7, 192)   # weekday        │
-│   →  cat_tokens: [32, 4, 192]                              │
-│                                                             │
-│ Token Combination:                                          │
-│   feature_tokens = cat([num_tokens, cat_tokens], dim=1)    │
-│   →  [32, 14, 192]  # Combined features                    │
-│                                                             │
-│ Add CLS Token:                                              │
-│   cls_token: [1, 1, 192] → expanded to [32, 1, 192]       │
-│   final_tokens = cat([cls_token, feature_tokens], dim=1)   │
-│   →  [32, 15, 192]  # Final tokenized input                │
-└─────────────────────────────────────────────────────────────┘
+🏗️ UNIFIED TOKENIZATION & PROCESSING:
 
-Step 2: Transformer Processing
-┌─────────────────────────────────────────────────────────────┐
-│ Multi-Head Self-Attention:                                 │
-│   n_heads = 8, d_head = 192 // 8 = 24                     │
-│                                                             │
-│   Q = tokens @ W_q  # [32, 15, 192] @ [192, 192]          │
-│   K = tokens @ W_k  # [32, 15, 192] @ [192, 192]          │
-│   V = tokens @ W_v  # [32, 15, 192] @ [192, 192]          │
-│   →  Q, K, V: [32, 15, 192]                               │
-│                                                             │
-│   Reshape for multi-head:                                  │
-│   Q = Q.view(32, 15, 8, 24).transpose(1, 2)               │
-│   →  [32, 8, 15, 24]  # [batch, heads, seq, d_head]       │
-│                                                             │
-│   Attention: Attention(Q,K,V) = softmax(QK^T/√d_k)V       │
-│   scores = Q @ K.transpose(-2, -1)  # [32, 8, 15, 15]     │
-│   attn_weights = softmax(scores / √24)                     │
-│   attn_output = attn_weights @ V    # [32, 8, 15, 24]     │
-│                                                             │
-│   Concatenate heads: [32, 8, 15, 24] → [32, 15, 192]      │
-│                                                             │
-│ Feed-Forward Network:                                       │
-│   d_ffn = 4 * 192 = 768                                   │
-│   ff_output = LayerNorm(tokens + attn_output)             │
-│   ff_intermediate = Linear(ff_output, 768) + GELU()       │
-│   ff_final = Linear(ff_intermediate, 192)                 │
-│   output = LayerNorm(ff_output + ff_final)                │
-│   →  [32, 15, 192]                                         │
-│                                                             │
-│ Repeat for n_layers (typically 3-6 times)                 │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 1: INPUT FORMAT                                                        │
+│ ─────────────────────────────────────────────────────────────────────────── │
+│                                                                              │
+│ Numerical Sequences (Time-Varying):                                         │
+│   x_num: [32, 10, 8]  # [batch_size, sequence_length, num_numerical]      │
+│   Represents historical price data across 10 timesteps:                     │
+│     - open, high, low, close, volume                                        │
+│     - technical indicators (RSI, MACD, SMA)                                 │
+│                                                                              │
+│ Categorical Features (Static):                                              │
+│   x_cat: [32, 2]  # [batch_size, num_categorical]                          │
+│   Values are integer indices (label encoded):                               │
+│     - Column 0: symbol indices [0-99]                                       │
+│     - Column 1: sector indices [0-4]                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-Step 3: Prediction
-┌─────────────────────────────────────────────────────────────┐
-│ CLS Token Extraction:                                       │
-│   cls_output = transformer_output[:, 0, :]                 │
-│   →  [32, 192]  # CLS token representation                 │
-│                                                             │
-│ Prediction Head:                                            │
-│   Single-horizon (prediction_horizons=1):                  │
-│     output_size = 1                                        │
-│     predictions = LinearHead(cls_output)                   │
-│     →  [32, 1]                                             │
-│                                                             │
-│   Multi-horizon (prediction_horizons=3):                   │
-│     output_size = 3                                        │
-│     raw_output = LinearHead(cls_output)                    │
-│     →  [32, 3]                                             │
-│     predictions = raw_output.view(32, 3, 1).squeeze(-1)   │
-│     →  [32, 3]  # Predictions for horizons 1, 2, 3        │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 2: NUMERICAL TOKENIZATION (TIME-VARYING FEATURES)                      │
+│ ─────────────────────────────────────────────────────────────────────────── │
+│                                                                              │
+│ For each timestep t and each numerical feature j:                           │
+│   token_tj = x_num[:, t, j] * W_j + b_j                                    │
+│                                                                              │
+│ NumericalTokenizer: Creates per-feature linear transformations              │
+│   W_j: [1, d_model] for each numerical feature j                           │
+│   b_j: [d_model] for each numerical feature j                              │
+│                                                                              │
+│ Process each timestep:                                                       │
+│   for t in range(10):                                                        │
+│     x_num_t = x_num[:, t, :]  # [32, 8]                                    │
+│     tokens_t = NumericalTokenizer(x_num_t)  # [32, 8, 128]                 │
+│     tokens_t += temporal_pos_encoding[:, t, :]  # Add temporal info        │
+│                                                                              │
+│ Stack all timesteps:                                                         │
+│   num_tokens_list = [tokens_0, tokens_1, ..., tokens_9]                    │
+│   num_tokens = cat(num_tokens_list, dim=1)                                 │
+│   →  [32, 80, 128]  # [batch, seq_len * num_numerical, d_model]           │
+│                      # 10 timesteps × 8 features = 80 tokens               │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-🚀 TEMPORAL FT-TRANSFORMER (SequenceFTTransformer):
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 3: CATEGORICAL TOKENIZATION (STATIC FEATURES)                          │
+│ ─────────────────────────────────────────────────────────────────────────── │
+│                                                                              │
+│ Logarithmic Embedding Dimension Scaling:                                    │
+│   FORMULA: emb_dim = int(8 * log2(cardinality + 1))                        │
+│            emb_dim = clamp(emb_dim, d_model/4, d_model)                    │
+│                                                                              │
+│ For our example:                                                             │
+│   symbol: cardinality=100 → emb_dim = int(8*log2(101)) ≈ 53               │
+│   sector: cardinality=5   → emb_dim = int(8*log2(6)) ≈ 20 → clamped to 32 │
+│                                                                              │
+│ Symbol Processing:                                                           │
+│   symbol_indices = x_cat[:, 0]  # [32]                                     │
+│   symbol_emb = Embedding(100, 53)(symbol_indices)  # [32, 53]              │
+│   symbol_proj = Linear(53, 128)(symbol_emb)        # [32, 128]             │
+│                                                                              │
+│ Sector Processing:                                                           │
+│   sector_indices = x_cat[:, 1]  # [32]                                     │
+│   sector_emb = Embedding(5, 32)(sector_indices)    # [32, 32]              │
+│   sector_proj = Linear(32, 128)(sector_emb)        # [32, 128]             │
+│                                                                              │
+│ Stack categorical tokens:                                                    │
+│   cat_tokens_list = [symbol_proj, sector_proj]                             │
+│   cat_tokens = stack(cat_tokens_list, dim=1)                               │
+│   →  [32, 2, 128]  # [batch, num_categorical, d_model]                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-For time series data with sequences:
-┌─────────────────────────────────────────────────────────────┐
-│ Input: x_seq [32, 5, 14]  # [batch, sequence_len, features]│
-│                                                             │
-│ Process each timestep independently:                       │
-│   for t in range(5):                                       │
-│     x_num_t = x_seq[:, t, :10]   # [32, 10] at timestep t │
-│     x_cat_t = x_seq[:, t, 10:]   # [32, 4] at timestep t  │
-│     tokens_t = tokenize(x_num_t, x_cat_t)  # [32, 14, 192] │
-│     tokens_t += temporal_pos_embedding[t]  # Add time info │
-│                                                             │
-│ Concatenate all timesteps:                                 │
-│   sequence_tokens = cat(all_tokens, dim=1)                │
-│   →  [32, 70, 192]  # 5 timesteps × 14 tokens            │
-│                                                             │
-│ Add CLS token: [32, 71, 192]                              │
-│ Process through transformer: same as above                 │
-│ Extract CLS: [32, 192] → predictions                      │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 4: TOKEN ASSEMBLY WITH CLS                                             │
+│ ─────────────────────────────────────────────────────────────────────────── │
+│                                                                              │
+│ Token Ordering: [CLS, numerical_tokens, categorical_tokens]                 │
+│                                                                              │
+│ 1. CLS Token (learnable aggregation token):                                 │
+│      cls_token = CLSToken(d_model)              # [1, 1, 128]              │
+│      cls_expanded = cls_token.expand(32, -1, -1) # [32, 1, 128]            │
+│                                                                              │
+│ 2. Numerical Tokens (time-varying):                                         │
+│      num_tokens: [32, 80, 128]  # 10 timesteps × 8 features                │
+│                                                                              │
+│ 3. Categorical Tokens (static):                                             │
+│      cat_tokens: [32, 2, 128]  # 2 categorical features                    │
+│                                                                              │
+│ Concatenate all tokens:                                                     │
+│   all_tokens = cat([cls_expanded, num_tokens, cat_tokens], dim=1)         │
+│   →  [32, 83, 128]  # [batch, 1 + 80 + 2, d_model]                        │
+│                      # 1 CLS + 80 numerical + 2 categorical = 83 tokens    │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-🎯 KEY MATHEMATICAL OPERATIONS:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 5: UNIFIED TRANSFORMER PROCESSING                                      │
+│ ─────────────────────────────────────────────────────────────────────────── │
+│                                                                              │
+│ Multi-Head Self-Attention (3 layers, num_heads=4):                          │
+│                                                                              │
+│ Layer configuration:                                                         │
+│   d_model = 128                                                              │
+│   num_heads = 4                                                              │
+│   d_head = 128 / 4 = 32                                                      │
+│   d_ffn = 4 * 128 = 512                                                      │
+│                                                                              │
+│ For each transformer layer:                                                  │
+│                                                                              │
+│   A. Multi-Head Self-Attention:                                              │
+│      Q = all_tokens @ W_q  # [32, 83, 128] @ [128, 128] → [32, 83, 128]   │
+│      K = all_tokens @ W_k  # [32, 83, 128] @ [128, 128] → [32, 83, 128]   │
+│      V = all_tokens @ W_v  # [32, 83, 128] @ [128, 128] → [32, 83, 128]   │
+│                                                                              │
+│      Reshape for multi-head attention:                                       │
+│      Q = Q.view(32, 83, 4, 32).transpose(1, 2)  # [32, 4, 83, 32]          │
+│      K = K.view(32, 83, 4, 32).transpose(1, 2)  # [32, 4, 83, 32]          │
+│      V = V.view(32, 83, 4, 32).transpose(1, 2)  # [32, 4, 83, 32]          │
+│                                                                              │
+│      Attention computation:                                                  │
+│      scores = Q @ K^T  # [32, 4, 83, 32] @ [32, 4, 32, 83] → [32, 4, 83, 83]│
+│      attn_weights = softmax(scores / √32)  # [32, 4, 83, 83]               │
+│      attn_output = attn_weights @ V  # [32, 4, 83, 83] @ [32, 4, 83, 32]  │
+│                                       # → [32, 4, 83, 32]                   │
+│                                                                              │
+│      Concatenate heads:                                                      │
+│      attn_output = attn_output.transpose(1, 2).reshape(32, 83, 128)        │
+│      output = LayerNorm(all_tokens + attn_output)  # [32, 83, 128]         │
+│                                                                              │
+│   B. Feed-Forward Network:                                                   │
+│      ffn_hidden = Linear(128, 512)(output)     # [32, 83, 512]             │
+│      ffn_hidden = ReLU(ffn_hidden)             # [32, 83, 512]             │
+│      ffn_output = Linear(512, 128)(ffn_hidden) # [32, 83, 128]             │
+│      output = LayerNorm(output + ffn_output)   # [32, 83, 128]             │
+│                                                                              │
+│ Final transformer output: [32, 83, 128]                                      │
+│                                                                              │
+│ KEY INSIGHT: All tokens (CLS, numerical at each timestep, categorical)      │
+│              attend to each other, enabling rich cross-feature interactions │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-1. Feature Tokenization:
-   - Numerical: token_ij = x_i * W_ij + b_ij
-   - Categorical: token_i = Embedding[category_value_i]
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 6: CLS EXTRACTION & PREDICTION                                         │
+│ ─────────────────────────────────────────────────────────────────────────── │
+│                                                                              │
+│ Extract CLS token (aggregated representation):                              │
+│   cls_output = transformer_output[:, 0, :]  # [32, 128]                    │
+│                                                                              │
+│ Prediction Head (MultiHorizonHead):                                         │
+│   predictions = Linear(128, output_dim)(cls_output)                         │
+│   →  [32, 1]  # [batch, output_dim]                                        │
+│                                                                              │
+│ For multi-horizon forecasting (output_dim=3):                               │
+│   predictions = Linear(128, 3)(cls_output)                                  │
+│   →  [32, 3]  # Forecasts for t+1, t+2, t+3                                │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-2. Multi-Head Attention:
-   - Attention(Q,K,V) = softmax(QK^T / √d_k)V
-   - MultiHead(Q,K,V) = Concat(head_1, ..., head_h)W^O
+🎯 KEY ARCHITECTURAL FEATURES:
 
-3. Position Encoding (Temporal):
-   - Learnable embeddings: pos_emb_t ∈ ℝ^{d_token}
+1. Unified Tokenization:
+   - All features converted to same d_model dimensional space
+   - Numerical: Linear transformation per feature
+   - Categorical: Embedding + projection to d_model
 
-🧠 MEMORY & COMPUTATIONAL COMPLEXITY:
+2. Temporal Positional Encoding:
+   - Added to numerical tokens to preserve time ordering
+   - Learnable: pos_emb[t] ∈ ℝ^{d_model} for each timestep t
 
-Memory Usage (example):
-- Tokens: 32 × 15 × 192 × 4 bytes ≈ 360 KB
-- Attention: 32 × 8 × 15² × 4 bytes ≈ 225 KB
-- Total per layer: ~600 KB
+3. Single Shared Transformer:
+   - All tokens processed together in unified attention
+   - CLS token attends to all numerical and categorical tokens
+   - Enables cross-modality feature interactions
 
-Computational Complexity:
-- Tokenization: O(num_features × d_token)
-- Self-Attention: O(num_tokens² × d_token)
-- Feed-Forward: O(num_tokens × d_token × d_ffn)
-- Overall: O(L × (T² × d + T × d²)) where L=layers, T=tokens, d=d_token
+4. Logarithmic Embedding Scaling:
+   - emb_dim = int(8 * log2(cardinality + 1))
+   - Bounds: [d_model/4, d_model]
+   - Matches embedding capacity to information content
 
-🎨 ADVANTAGES:
+🧠 COMPUTATIONAL COMPLEXITY:
 
-1. Unified Feature Representation:
-   - Converts all features to same dimensional space
-   - Enables direct comparison between different feature types
+Memory Usage (per forward pass):
+- All tokens: 32 × 83 × 128 × 4 bytes ≈ 1.36 MB
+- Attention matrix: 32 × 4 × 83² × 4 bytes ≈ 3.5 MB (per layer)
+- Total: ~1.36 MB + ~10.5 MB (3 layers) ≈ 11.86 MB
 
-2. Automatic Feature Interaction Discovery:
-   - Self-attention learns complex, non-linear interactions
-   - No manual feature engineering needed
+Time Complexity:
+- Tokenization: O(sequence_length × num_numerical × d_model)
+- Self-Attention: O(num_layers × num_tokens² × d_model)
+  where num_tokens = 1 + (sequence_length × num_numerical) + num_categorical
+  = 1 + (10 × 8) + 2 = 83
+- FFN: O(num_layers × num_tokens × d_model × d_ffn)
+- Dominated by attention: O(L × T² × d) where T=83
 
-3. Scalability:
-   - Handles varying numbers of features gracefully
-   - Attention mechanism scales to large feature sets
+🎨 ADVANTAGES OVER DUAL-PATH ARCHITECTURES:
 
-4. Temporal Modeling:
-   - SequenceFTTransformer naturally handles time series
-   - Positional encodings preserve temporal relationships
+1. Richer Feature Interactions:
+   - Categorical features can directly attend to specific timesteps
+   - Example: "sector" token can learn which historical prices are most relevant
+   - Numerical tokens can attend to categorical context
 
-⚡ IMPLEMENTATION NOTES:
+2. Simpler Architecture:
+   - Single transformer instead of two separate paths
+   - Fewer parameters and simpler training dynamics
+   - No fusion layer needed
 
-1. Memory Optimization:
-   - Use gradient checkpointing for deep models
-   - Mixed precision training with autocast()
+3. Flexible Attention Patterns:
+   - Model learns optimal attention between all feature types
+   - No artificial separation between categorical and numerical
+   - Better for features with complex interdependencies
 
-2. Batch Size Considerations:
-   - Attention memory scales quadratically with sequence length
-   - Reduce batch size for long sequences
+4. Graceful Feature Handling:
+   - Works seamlessly when num_categorical=0 (numerical only)
+   - Simply omits categorical tokens from sequence
+   - No architectural changes needed
 
-3. Feature Scaling:
-   - Numerical features should be normalized
-   - Categorical features use embeddings (no scaling needed)
+⚡ USAGE NOTES:
 
-This implementation provides a robust, scalable foundation for tabular time series
-forecasting with automatic feature interaction discovery and temporal modeling.
+1. When num_categorical = 0:
+   - Only numerical tokens and CLS are used
+   - Token sequence: [CLS, num_tokens]
+   - Total tokens: 1 + (sequence_length × num_numerical) = 81
+
+2. Feature Preparation:
+   - Numerical: normalized/scaled continuous values
+   - Categorical: integer indices [0, cardinality-1]
+   - Ensure cardinalities match actual unique values
+
+3. Training Considerations:
+   - Use learning rate warmup for stable training
+   - Gradient clipping helps with long sequences
+   - Dropout applied uniformly to all tokens
+
+4. Memory vs. Dual-Path:
+   - Unified: O(T²) where T = all tokens = 83
+   - Dual: O(T_cat²) + O(T_num²) where T_cat=3, T_num=11
+   - Unified: 83² = 6,889 vs Dual: 3² + 11² = 9 + 121 = 130
+   - Unified has higher memory cost but richer interactions
+
+This unified architecture is optimal for scenarios where cross-modal feature interactions
+are important, such as learning how specific stock symbols respond differently to the
+same market conditions, or how sector membership influences price pattern interpretation.
 """
 
 import torch
@@ -559,129 +645,6 @@ class SequenceFTTransformerPredictor(nn.Module):
         cls_output = self.sequence_ft_transformer(x_seq)
         # MultiHorizonHead handles reshaping automatically
         return self.head(cls_output)
-
-
-class FTTransformerTimeSeriesModel(TransformerBasedModel):
-    """
-    FT-Transformer implementation for time series that implements TimeSeriesModel interface.
-
-    This is the new standard model class that should be used with ModelFactory.
-    It replaces the old SequenceFTTransformerPredictor for new code.
-
-    Key differences from old implementation:
-    1. Implements TimeSeriesModel interface
-    2. Takes (sequence_length, num_features, output_dim) instead of complex categorical setup
-    3. Works directly with sequences (no separate numerical/categorical split at this level)
-    4. Provides standardized API (get_model_config, get_embedding_dim, etc.)
-    """
-
-    def __init__(
-        self,
-        sequence_length: int,
-        num_features: int,
-        output_dim: int,
-        d_model: int = 64,
-        num_heads: int = 4,
-        num_layers: int = 3,
-        dropout: float = 0.1,
-        activation: str = 'relu',
-        num_categorical: int = 0,
-        cat_cardinalities: List[int] = None
-    ):
-        """
-        Initialize FT-Transformer for time series.
-
-        Args:
-            sequence_length: Length of input sequences (lookback window)
-            num_features: Number of features per time step
-            output_dim: Output dimension (num_targets * prediction_horizon)
-            d_model: Embedding dimension (d_token in original implementation)
-            num_heads: Number of attention heads
-            num_layers: Number of transformer layers
-            dropout: Dropout rate
-            activation: Activation function ('relu' or 'gelu')
-            num_categorical: Number of categorical features (if any)
-            cat_cardinalities: Cardinalities for categorical features
-        """
-        super().__init__(d_model=d_model, num_heads=num_heads, num_layers=num_layers)
-
-        self.sequence_length = sequence_length
-        self.num_features = num_features
-        self.output_dim = output_dim
-        self.dropout_rate = dropout
-        self.activation_name = activation
-        self.num_categorical = num_categorical
-        self.cat_cardinalities = cat_cardinalities or []
-
-        # Calculate number of numerical features
-        num_numerical = num_features - num_categorical
-
-        # Create the actual FT-Transformer model
-        self.sequence_ft_transformer = SequenceFTTransformer(
-            num_numerical=num_numerical,
-            cat_cardinalities=self.cat_cardinalities,
-            sequence_length=sequence_length,
-            d_token=d_model,
-            n_layers=num_layers,
-            n_heads=num_heads,
-            d_ffn=4 * d_model,
-            dropout=dropout,
-            activation=activation
-        )
-
-        # Prediction head
-        self.head = MultiHorizonHead(
-            d_input=d_model,
-            prediction_horizons=output_dim,
-            hidden_dim=None,
-            dropout=dropout
-        )
-
-        # Store for attention weights (optional)
-        self._last_attention_weights = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the model.
-
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length, num_features)
-
-        Returns:
-            predictions: Output tensor of shape (batch_size, output_dim)
-        """
-        # Get CLS token representation
-        cls_output = self.sequence_ft_transformer(x)  # [batch_size, d_model]
-
-        # Apply prediction head
-        predictions = self.head(cls_output)  # [batch_size, output_dim]
-
-        return predictions
-
-    def get_model_config(self) -> Dict[str, Any]:
-        """Get the current configuration of the model."""
-        return {
-            'model_type': 'ft_transformer',
-            'd_model': self.d_model,
-            'num_heads': self.num_heads,
-            'num_layers': self.num_layers,
-            'dropout': self.dropout_rate,
-            'activation': self.activation_name,
-            'sequence_length': self.sequence_length,
-            'num_features': self.num_features,
-            'output_dim': self.output_dim,
-            'num_categorical': self.num_categorical,
-            'cat_cardinalities': self.cat_cardinalities
-        }
-
-    def get_attention_weights(self) -> Optional[torch.Tensor]:
-        """
-        Get attention weights from the last forward pass.
-
-        Returns:
-            Attention weights tensor or None if not available.
-        """
-        return self._last_attention_weights
 
 
 class FTTransformerCLSModel(TransformerBasedModel):

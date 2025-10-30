@@ -13,15 +13,13 @@ from .model_interface import TimeSeriesModel
 def _register_builtin_models():
     """Register built-in models with the factory."""
     try:
-        from ..ft_model import FTTransformerTimeSeriesModel, FTTransformerCLSModel
-        ModelFactory.register_model('ft_transformer', FTTransformerTimeSeriesModel)
+        from ..ft_model import FTTransformerCLSModel
         ModelFactory.register_model('ft_transformer_cls', FTTransformerCLSModel)
     except ImportError:
         pass  # FT-Transformer not available
 
     try:
-        from ..csn_model import CSNTransformerTimeSeriesModel, CSNTransformerCLSModel
-        ModelFactory.register_model('csn_transformer', CSNTransformerTimeSeriesModel)
+        from ..csn_model import CSNTransformerCLSModel
         ModelFactory.register_model('csn_transformer_cls', CSNTransformerCLSModel)
     except ImportError:
         pass  # CSN-Transformer not available
@@ -251,27 +249,12 @@ def get_default_model_params(model_type: str) -> Dict[str, Any]:
         # Returns: {'d_model': 64, 'num_heads': 4, 'num_layers': 3, ...}
     """
     defaults = {
-        'ft_transformer': {
-            'd_model': 64,
-            'num_heads': 4,
-            'num_layers': 3,
-            'dropout': 0.1,
-            'activation': 'relu'
-        },
         'ft_transformer_cls': {
             'd_model': 128,
             'num_heads': 8,
             'num_layers': 3,
             'dropout': 0.1,
             'activation': 'gelu'
-        },
-        'csn_transformer': {
-            'd_model': 64,
-            'num_heads': 4,
-            'num_layers': 3,
-            'dropout': 0.1,
-            'activation': 'relu',
-            'use_column_split': True
         },
         'csn_transformer_cls': {
             'd_model': 128,
