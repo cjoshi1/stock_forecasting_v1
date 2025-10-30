@@ -33,7 +33,7 @@ class CLSToken(nn.Module):
         self.token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.token, std=0.02)  # Small random initialization
 
-    def expand(self, batch_size: int) -> torch.Tensor:
+    def forward(self, batch_size: int) -> torch.Tensor:
         """
         Expand CLS token for a batch.
 
@@ -44,6 +44,18 @@ class CLSToken(nn.Module):
             Expanded CLS token of shape [batch_size, 1, d_model]
         """
         return self.token.expand(batch_size, -1, -1)
+
+    def expand(self, batch_size: int) -> torch.Tensor:
+        """
+        Expand CLS token for a batch (alias for forward).
+
+        Args:
+            batch_size: Number of samples in batch
+
+        Returns:
+            Expanded CLS token of shape [batch_size, 1, d_model]
+        """
+        return self.forward(batch_size)
 
 
 class NumericalEmbedding(nn.Module):

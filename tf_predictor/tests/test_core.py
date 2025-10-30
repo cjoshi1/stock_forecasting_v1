@@ -10,7 +10,7 @@ import torch
 from tf_predictor.core.predictor import TimeSeriesPredictor
 from tf_predictor.core.utils import calculate_metrics, split_time_series
 from tf_predictor.preprocessing.time_features import (
-    create_date_features, create_sequences, create_lag_features, 
+    create_date_features, create_input_variable_sequence, create_lag_features,
     create_rolling_features
 )
 
@@ -99,25 +99,29 @@ class TestTimeFeatures:
         assert df_with_features['month_sin'].dtype == np.float64
         assert df_with_features['is_weekend'].dtype in [np.int64, np.int32]
     
-    def test_create_sequences(self):
-        """Test sequence creation for time series."""
+    def test_create_input_variable_sequence(self):
+        """Test input variable sequence creation for time series."""
         df = create_sample_timeseries(20)
         df_processed = create_date_features(df, 'date')
-        
+
         sequence_length = 5
-        sequences, targets = create_sequences(df_processed, sequence_length, 'value')
-        
+        # New API: only returns sequences, excludes specified columns
+        sequences = create_input_variable_sequence(
+            df_processed,
+            sequence_length,
+            exclude_columns=['value']
+        )
+
         # Check shapes
         expected_samples = len(df) - sequence_length
         assert sequences.shape[0] == expected_samples
         assert sequences.shape[1] == sequence_length
-        assert targets.shape[0] == expected_samples
-        
+
         # Check that sequences are sequential
-        # First sequence should contain the first 5 rows of features
-        numeric_cols = [col for col in df_processed.columns 
+        # First sequence should contain the first 5 rows of features (excluding 'value')
+        numeric_cols = [col for col in df_processed.columns
                        if col != 'value' and pd.api.types.is_numeric_dtype(df_processed[col])]
-        
+
         assert sequences.shape[2] == len(numeric_cols)
     
     def test_create_lag_features(self):
@@ -342,7 +346,7 @@ if __name__ == '__main__':
     print("  Testing time features...")
     test_time_features = TestTimeFeatures()
     test_time_features.test_create_date_features()
-    test_time_features.test_create_sequences()
+    test_time_features.test_create_input_variable_sequence()
     test_time_features.test_create_lag_features()
     test_time_features.test_create_rolling_features()
     print("  ✅ Time features tests passed")

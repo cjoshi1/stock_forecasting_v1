@@ -51,37 +51,27 @@ class StockPredictor(TimeSeriesPredictor):
         # Initialize logger with a specific format
         self.logger = self._initialize_logger()
 
-        # Initialize base predictor based on model_type
-        if model_type == 'csn':
-            from tf_predictor.core.csn_predictor import CSNPredictor
-            # Initialize CSNPredictor directly
-            CSNPredictor.__init__(
-                self,
-                target_column=target_column,
-                sequence_length=sequence_length,
-                prediction_horizon=prediction_horizon,
-                group_column=group_column,
-                **ft_kwargs
-            )
-        else:
-            # Default to FT-Transformer
-            # Pass target_column as-is to base class
-            # The base TimeSeriesPredictor will handle normalization
-            super().__init__(
-                target_column=target_column,
-                sequence_length=sequence_length,
-                prediction_horizon=prediction_horizon,
-                group_column=group_column,
-                **ft_kwargs
-            )
+        # Map model_type to factory names
+        factory_model_type = 'csn_transformer' if model_type == 'csn' else 'ft_transformer'
+
+        # Initialize base predictor with model_type
+        super().__init__(
+            target_column=target_column,
+            sequence_length=sequence_length,
+            prediction_horizon=prediction_horizon,
+            group_column=group_column,
+            model_type=factory_model_type,
+            **ft_kwargs
+        )
     
     def _initialize_logger(self):
         """Initialize and return a logger with a specific format."""
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         return logging.getLogger(__name__)
-    def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
+
+    def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
-        Create stock-specific features from OHLCV data.
+        Prepare features by creating stock-specific features and time-series features.
 
         Args:
             df: DataFrame with OHLCV data and optional date column
@@ -90,7 +80,8 @@ class StockPredictor(TimeSeriesPredictor):
         Returns:
             processed_df: DataFrame with engineered features
         """
-        return create_stock_features(
+        # First create stock-specific features (technical indicators, etc.)
+        df_with_stock_features = create_stock_features(
             df=df,
             target_column=self.original_target_column,
             verbose=self.verbose,
@@ -98,6 +89,9 @@ class StockPredictor(TimeSeriesPredictor):
             asset_type=self.asset_type,
             group_column=self.group_column
         )
+
+        # Then call parent's prepare_features to add time-series features
+        return super().prepare_features(df_with_stock_features, fit_scaler)
 
     def predict_next_bars(self, df: pd.DataFrame, n_predictions: int = 1) -> pd.DataFrame:
         """

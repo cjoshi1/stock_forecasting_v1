@@ -1,9 +1,0 @@
-INTRADAY FORECASTING - LOGICAL CHECKS SUMMARY
-================================================================================
-
-Timestamp: 20251023_233407
-Total Checks: 26
-Passed: 26
-Failed: 0
-Pass Rate: 100.0%
-

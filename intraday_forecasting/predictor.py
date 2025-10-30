@@ -89,37 +89,23 @@ class IntradayPredictor(TimeSeriesPredictor):
         # The base TimeSeriesPredictor will handle the normalization
         shifted_target_name = target_column
 
-        # Initialize base predictor based on model_type
-        if model_type == 'csn':
-            from tf_predictor.core.csn_predictor import CSNPredictor
-            # Initialize CSNPredictor directly
-            CSNPredictor.__init__(
-                self,
-                target_column=shifted_target_name,
-                sequence_length=sequence_length,
-                prediction_horizon=prediction_horizon,
-                group_column=group_column,
-                d_model=d_token,  # CSNPredictor uses d_model instead of d_token
-                n_layers=n_layers,
-                n_heads=n_heads,
-                dropout=dropout,
-                verbose=verbose,
-                **kwargs
-            )
-        else:
-            # Default to FT-Transformer
-            super().__init__(
-                target_column=shifted_target_name,
-                sequence_length=sequence_length,
-                prediction_horizon=prediction_horizon,
-                group_column=group_column,
-                d_token=d_token,
-                n_layers=n_layers,
-                n_heads=n_heads,
-                dropout=dropout,
-                verbose=verbose,
-                **kwargs
-            )
+        # Map model_type to factory names
+        factory_model_type = 'csn_transformer' if model_type == 'csn' else 'ft_transformer'
+
+        # Initialize base predictor with model_type
+        super().__init__(
+            target_column=shifted_target_name,
+            sequence_length=sequence_length,
+            prediction_horizon=prediction_horizon,
+            group_column=group_column,
+            model_type=factory_model_type,
+            d_model=d_token,
+            num_heads=n_heads,
+            num_layers=n_layers,
+            dropout=dropout,
+            verbose=verbose,
+            **kwargs
+        )
 
         # Keep original target info
         self.prediction_horizon = prediction_horizon
@@ -137,10 +123,10 @@ class IntradayPredictor(TimeSeriesPredictor):
             print(f"  - Market Hours: {market_config['open']} - {market_config['close']}")
             print(f"  - Sequence length: {sequence_length} {timeframe} bars")
             print(f"  - Model: {d_token}d x {n_layers}L x {n_heads}H")
-    
-    def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
+
+    def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
-        Create intraday-specific features for the dataset.
+        Prepare features by creating intraday-specific features and time-series features.
 
         Args:
             df: DataFrame with intraday OHLCV data
@@ -149,7 +135,8 @@ class IntradayPredictor(TimeSeriesPredictor):
         Returns:
             DataFrame with engineered features
         """
-        return create_intraday_features(
+        # First create intraday-specific features (microstructure, time-of-day effects, etc.)
+        df_with_intraday_features = create_intraday_features(
             df=df,
             target_column=self.original_target_column,  # Use original, not shifted
             timestamp_col=self.timestamp_col,
@@ -159,6 +146,9 @@ class IntradayPredictor(TimeSeriesPredictor):
             verbose=self.verbose,
             group_column=self.group_column  # Pass group_column to preserve it
         )
+
+        # Then call parent's prepare_features to add time-series features
+        return super().prepare_features(df_with_intraday_features, fit_scaler)
     
     def get_timeframe_info(self) -> dict:
         """

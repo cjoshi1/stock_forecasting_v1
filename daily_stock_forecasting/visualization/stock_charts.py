@@ -283,7 +283,7 @@ def create_comprehensive_plots(
     for target_col in target_columns:
         # Get corresponding actual values with proper alignment
         # create_features() does shift(-h) and dropna() which removes last prediction_horizon rows
-        # Then create_sequences() removes first sequence_length rows
+        # Then create_input_variable_sequence() removes first sequence_length rows
         # So we need: [sequence_length : -prediction_horizon]
         horizon = model.prediction_horizon
         if horizon == 1:

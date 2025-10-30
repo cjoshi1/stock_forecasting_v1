@@ -1,9 +1,0 @@
-DAILY FORECASTING - LOGICAL CHECKS SUMMARY
-================================================================================
-
-Timestamp: 20251023_233416
-Total Checks: 34
-Passed: 34
-Failed: 0
-Pass Rate: 100.0%
-

@@ -105,7 +105,7 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
 
         # Get timestamps for plotting - align with predictions
         # create_features() does shift(-h) and dropna() which removes last prediction_horizon rows
-        # Then create_sequences() removes first sequence_length rows from the processed data
+        # Then create_input_variable_sequence() removes first sequence_length rows from the processed data
         # So we need: iloc[sequence_length : -prediction_horizon] to match
         horizon = predictor.prediction_horizon
 

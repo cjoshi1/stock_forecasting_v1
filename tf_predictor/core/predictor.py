@@ -9,15 +9,16 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import gc
-from typing import Optional, Dict, Any, Tuple, Union
-from sklearn.preprocessing import StandardScaler
+import math
+from typing import Optional, Dict, Any, Tuple, Union, List
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from torch.utils.data import DataLoader, TensorDataset
-from abc import ABC, abstractmethod
+from .base.model_factory import ModelFactory
+from ..preprocessing.time_features import create_date_features, create_shifted_targets
+from ..preprocessing.scaler_factory import ScalerFactory
 
-from .ft_model import FTTransformerPredictor, SequenceFTTransformerPredictor
 
-
-class TimeSeriesPredictor(ABC):
+class TimeSeriesPredictor:
     """Generic FT-Transformer wrapper for time series prediction."""
     
     def __init__(
@@ -25,8 +26,13 @@ class TimeSeriesPredictor(ABC):
         target_column: Union[str, list],
         sequence_length: int = 5,
         prediction_horizon: int = 1,
-        group_column: Optional[str] = None,
-        **ft_kwargs
+        group_columns: Optional[Union[str, list]] = None,
+        categorical_columns: Optional[Union[str, list]] = None,
+        model_type: str = 'ft_transformer',
+        scaler_type: str = 'standard',
+        use_lagged_target_features: bool = False,
+        lag_periods: list = None,
+        **model_kwargs
     ):
         """
         Args:
@@ -35,9 +41,27 @@ class TimeSeriesPredictor(ABC):
                           - List[str]: Multi-target prediction (e.g., ['close', 'volume'])
             sequence_length: Number of historical time steps to use for prediction
             prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
-            group_column: Optional column name for group-based scaling (e.g., 'symbol')
-                         If provided, each unique value gets its own scaler
-            **ft_kwargs: FT-Transformer hyperparameters
+            group_columns: Column(s) for group-based scaling and sequence boundaries
+                          - str: Single column (e.g., 'symbol')
+                          - List[str]: Multiple columns (e.g., ['symbol', 'sector'])
+                          - None: No grouping
+            categorical_columns: Column(s) to encode and pass to model as categorical features
+                                - str: Single column
+                                - List[str]: Multiple columns
+                                - None: No categorical features
+            model_type: Type of model to use ('ft_transformer', 'csn_transformer', etc.)
+            scaler_type: Type of scaler to use for normalization
+                        - 'standard': StandardScaler (mean=0, std=1) - default
+                        - 'minmax': MinMaxScaler (range [0, 1])
+                        - 'robust': RobustScaler (median and IQR, robust to outliers)
+                        - 'maxabs': MaxAbsScaler (range [-1, 1], preserves sparsity)
+                        - 'onlymax': OnlyMaxScaler (divide by max only, no shifting)
+            use_lagged_target_features: Whether to include target columns in input sequences
+                                       If True, enables autoregressive modeling
+            lag_periods: List of lag periods for target features (e.g., [1, 2, 3, 7, 14])
+                        Only used if use_lagged_target_features=True
+                        Default: range(1, sequence_length + 1)
+            **model_kwargs: Model-specific hyperparameters (d_model, num_heads, num_layers, etc.)
         """
         # Normalize target_column to list for uniform handling
         if isinstance(target_column, str):
@@ -47,41 +71,70 @@ class TimeSeriesPredictor(ABC):
             self.target_columns = list(target_column)
             self.is_multi_target = len(self.target_columns) > 1
 
-        # Keep backward compatibility
-        self.target_column = self.target_columns[0] if not self.is_multi_target else self.target_columns
-
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
-        self.group_column = group_column
-        self.ft_kwargs = ft_kwargs
+
+        # Normalize group_columns to list
+        if group_columns is None:
+            self.group_columns = []
+        elif isinstance(group_columns, str):
+            self.group_columns = [group_columns]
+        else:
+            self.group_columns = list(group_columns)
+
+        # Normalize categorical_columns to list
+        if categorical_columns is None:
+            self.categorical_columns = []
+        elif isinstance(categorical_columns, str):
+            self.categorical_columns = [categorical_columns]
+        else:
+            self.categorical_columns = list(categorical_columns)
+
+        # Ensure all group_columns are in categorical_columns
+        for col in self.group_columns:
+            if col not in self.categorical_columns:
+                self.categorical_columns.append(col)
+
+        self.model_type = model_type
+        self.scaler_type = scaler_type
+        self.use_lagged_target_features = use_lagged_target_features
+        self.lag_periods = lag_periods if lag_periods else list(range(1, sequence_length + 1))
+        self.model_kwargs = model_kwargs
         self.num_targets = len(self.target_columns)
+
+        # Categorical feature encoding
+        self.cat_encoders = {}  # {col_name: LabelEncoder}
+        self.cat_cardinalities = []  # [vocab_size1, vocab_size2, ...]
+        self.numerical_columns = None  # Will be set during training
 
         # Will be set during training
         self.model = None
 
-        # Single-group scalers (used when group_column=None)
-        self.scaler = StandardScaler()  # For features
+        # Single-group scalers (used when group_columns is empty)
+        self.scaler = ScalerFactory.create_scaler(scaler_type)  # For features
 
         # Target scalers structure depends on single vs multi-target
-        # Single-target mode (backward compatible):
-        #   - single-horizon: self.target_scaler (StandardScaler)
-        #   - multi-horizon: self.target_scalers (List[StandardScaler])
+        # Single-target mode:
+        #   - single-horizon: self.target_scaler (Scaler)
+        #   - multi-horizon: self.target_scaler (Scaler) - SAME scaler for all horizons
         # Multi-target mode:
-        #   - single-horizon: self.target_scalers_dict (Dict[target_name, StandardScaler])
-        #   - multi-horizon: self.target_scalers_dict (Dict[target_name, List[StandardScaler]])
+        #   - single-horizon: self.target_scalers_dict (Dict[target_name, Scaler])
+        #   - multi-horizon: self.target_scalers_dict (Dict[target_name, Scaler]) - ONE scaler per variable
         if not self.is_multi_target:
-            self.target_scaler = StandardScaler()  # For single target, single horizon
-            self.target_scalers = []  # For single target, multi-horizon
+            self.target_scaler = ScalerFactory.create_scaler(scaler_type)  # For single target
         else:
-            self.target_scalers_dict = {}  # For multi-target
+            self.target_scalers_dict = {}  # For multi-target (will be populated with scalers)
 
-        # Multi-group scalers (used when group_column is provided)
-        # Structure: {group_value: StandardScaler} for features
+        # Multi-group scalers (used when group_columns is provided)
+        # Structure: {group_key: Scaler} for features
+        # group_key can be:
+        #   - str: Single column (e.g., 'AAPL')
+        #   - tuple: Multiple columns (e.g., ('AAPL', 'Tech'))
         # For targets:
-        #   - Single-target: {group_value: StandardScaler}
-        #   - Multi-target: {group_value: Dict[target_name, StandardScaler]}
-        self.group_feature_scalers = {}  # Dict[group_value, StandardScaler]
-        self.group_target_scalers = {}   # Dict[group_value, StandardScaler or Dict]
+        #   - Single-target: {group_key: StandardScaler}
+        #   - Multi-target: {group_key: Dict[target_name, StandardScaler]}
+        self.group_feature_scalers = {}  # Dict[group_key, StandardScaler]
+        self.group_target_scalers = {}   # Dict[group_key, StandardScaler or Dict]
 
         self.feature_columns = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -93,21 +146,7 @@ class TimeSeriesPredictor(ABC):
         # Feature caching to avoid recomputation
         self._feature_cache = {}
         self._cache_enabled = True
-    
-    @abstractmethod
-    def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
-        """
-        Create domain-specific features from raw data.
-        
-        Args:
-            df: DataFrame with raw data
-            fit_scaler: Whether to fit the scaler (True for training data)
-            
-        Returns:
-            processed_df: DataFrame with engineered features
-        """
-        pass
-    
+
     def _get_dataframe_hash(self, df: pd.DataFrame) -> str:
         """Generate a hash key for DataFrame caching."""
         import hashlib
@@ -115,10 +154,186 @@ class TimeSeriesPredictor(ABC):
         key_data = f"{df.shape}_{list(df.columns)}_{df.iloc[0].to_dict() if len(df) > 0 else {}}"
         return hashlib.md5(key_data.encode()).hexdigest()
 
+    def _create_group_key(self, row_or_df):
+        """
+        Create a composite group key from multiple columns.
+
+        Args:
+            row_or_df: Can be a Series (single row) or DataFrame
+
+        Returns:
+            - If no group columns: None
+            - If single group column: scalar value (e.g., 'AAPL')
+            - If multiple group columns: tuple (e.g., ('AAPL', 'Tech'))
+
+        Examples:
+            >>> self.group_columns = ['symbol']
+            >>> _create_group_key(df.iloc[0])
+            'AAPL'
+
+            >>> self.group_columns = ['symbol', 'sector']
+            >>> _create_group_key(df.iloc[0])
+            ('AAPL', 'Tech')
+        """
+        if not self.group_columns:
+            return None
+
+        if isinstance(row_or_df, pd.Series):
+            # Single row
+            values = tuple(row_or_df[col] for col in self.group_columns)
+            # If single column, return scalar instead of tuple
+            return values[0] if len(self.group_columns) == 1 else values
+        else:
+            # DataFrame - return Series of keys
+            if len(self.group_columns) == 1:
+                return row_or_df[self.group_columns[0]]
+            else:
+                return row_or_df[self.group_columns].apply(tuple, axis=1)
+
+    def _detect_time_column(self, df: pd.DataFrame) -> Optional[str]:
+        """Detect time-related column in DataFrame."""
+        possible_time_cols = ['timestamp', 'date', 'datetime', 'time', 'Date', 'Timestamp', 'DateTime']
+        for col in possible_time_cols:
+            if col in df.columns:
+                return col
+        return None
+
+    def _encode_categorical_features(self, df: pd.DataFrame, fit_encoders: bool = False) -> pd.DataFrame:
+        """
+        Label encode categorical features.
+
+        Args:
+            df: DataFrame with categorical columns
+            fit_encoders: Whether to fit new encoders (True for training data)
+
+        Returns:
+            DataFrame with encoded categorical columns
+        """
+        if not self.categorical_columns:
+            return df
+
+        df = df.copy()
+
+        for col in self.categorical_columns:
+            if col not in df.columns:
+                raise ValueError(f"Categorical column '{col}' not found in DataFrame")
+
+            if fit_encoders:
+                # Fit new encoder
+                encoder = LabelEncoder()
+                # Convert to string to handle any data type
+                df[col] = df[col].astype(str)
+                encoder.fit(df[col])
+                self.cat_encoders[col] = encoder
+
+                # Store cardinality (number of unique categories)
+                cardinality = len(encoder.classes_)
+                if self.verbose:
+                    print(f"   Encoded '{col}': {cardinality} unique categories")
+            else:
+                # Use existing encoder
+                if col not in self.cat_encoders:
+                    raise ValueError(f"No encoder found for categorical column '{col}'. "
+                                   f"Must fit on training data first.")
+                encoder = self.cat_encoders[col]
+                df[col] = df[col].astype(str)
+
+            # Transform
+            try:
+                df[col] = encoder.transform(df[col])
+            except ValueError as e:
+                # Handle unseen categories
+                unseen_categories = set(df[col].unique()) - set(encoder.classes_)
+                raise ValueError(
+                    f"Unseen categories in column '{col}': {unseen_categories}. "
+                    f"Known categories: {set(encoder.classes_)}. "
+                    f"Cannot handle unseen categories during prediction."
+                ) from e
+
+        # Compute and store cardinalities (after all encoders are fitted)
+        if fit_encoders:
+            self.cat_cardinalities = [
+                len(self.cat_encoders[col].classes_)
+                for col in self.categorical_columns
+            ]
+
+            if self.verbose:
+                print(f"   Categorical cardinalities: {dict(zip(self.categorical_columns, self.cat_cardinalities))}")
+
+        return df
+
+    def _create_sequences_with_categoricals(
+        self,
+        df: pd.DataFrame,
+        sequence_length: int,
+        numerical_columns: List[str],
+        categorical_columns: List[str]
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """
+        Create sequences for numerical features and extract categorical features.
+
+        For numerical features: Creates 3D sequences using sliding window (standard time series approach)
+        For categorical features: Extracts values from the LAST timestep of each sequence (static per sequence)
+
+        Args:
+            df: DataFrame with encoded features (numerical and categorical already prepared)
+            sequence_length: Length of lookback window
+            numerical_columns: List of numerical feature columns
+            categorical_columns: List of categorical feature columns (already label encoded)
+
+        Returns:
+            (X_num, X_cat) tuple:
+                X_num: (num_sequences, seq_len, num_numerical) - 3D numerical sequences
+                X_cat: (num_sequences, num_categorical) - 2D categorical features or None if no categorical columns
+
+        Example:
+            If df has 100 rows, sequence_length=10:
+            - X_num will have shape (90, 10, num_numerical) - 90 sequences of length 10
+            - X_cat will have shape (90, num_categorical) - categorical from last timestep of each sequence
+        """
+        from ..preprocessing.time_features import create_input_variable_sequence
+
+        # Step 1: Create numerical sequences (3D)
+        X_num = create_input_variable_sequence(
+            df,
+            sequence_length,
+            feature_columns=numerical_columns
+        )
+
+        # Step 2: Extract categorical from last timestep of each sequence (2D)
+        if categorical_columns:
+            # For each sequence starting at index i, we use categorical from index i+sequence_length-1 (last timestep)
+            # The sequences start at index sequence_length (first sequence uses rows 0 to sequence_length-1)
+            # So categorical values should be extracted from indices: sequence_length-1, sequence_length, ..., len(df)-2
+            # which simplifies to: df[categorical_columns].values[sequence_length-1:len(df)-1]
+
+            # However, create_input_variable_sequence creates sequences for indices sequence_length to len(df)
+            # Each sequence i corresponds to df rows [i-sequence_length:i]
+            # The last timestep of sequence i is at df index i-1
+            # So for num_sequences sequences, we need categorical from indices [sequence_length-1:sequence_length-1+num_sequences]
+
+            num_sequences = len(X_num)
+            # Extract categorical values: for sequence i (where i goes from 0 to num_sequences-1),
+            # we need categorical from df index (sequence_length - 1 + i)
+            cat_indices = np.arange(sequence_length - 1, sequence_length - 1 + num_sequences)
+            X_cat = df[categorical_columns].values[cat_indices]
+
+            # Verify shape consistency
+            assert X_cat.shape[0] == X_num.shape[0], \
+                f"Mismatch: X_num has {X_num.shape[0]} sequences but X_cat has {X_cat.shape[0]}"
+        else:
+            X_cat = None
+
+        return X_num, X_cat
+
     def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
         """
-        Prepare features by calling domain-specific feature creation and handling scaling.
+        Prepare features by creating time-series features and handling scaling.
         Uses caching to avoid recomputing features for the same data.
+
+        This method can be overridden by subclasses to add domain-specific features.
+
+        Note: This method does not modify the input dataframe (creates a copy internally).
 
         Args:
             df: DataFrame with raw data
@@ -127,7 +342,7 @@ class TimeSeriesPredictor(ABC):
         Returns:
             processed_df: DataFrame with scaled features
         """
-        # Generate cache key
+        # Generate cache key BEFORE copying (for efficiency)
         cache_key = f"{self._get_dataframe_hash(df)}_{fit_scaler}"
 
         # Check cache first
@@ -136,79 +351,113 @@ class TimeSeriesPredictor(ABC):
                 print(f"   Using cached features for dataset ({len(df)} rows)")
             return self._feature_cache[cache_key].copy()
 
-        # Sort by group and time if group_column is specified (BEFORE feature creation and scaling)
-        if self.group_column is not None and self.group_column in df.columns:
+        # Create a copy to avoid modifying the input dataframe
+        df = df.copy()
+
+        # Sort by group columns and time (BEFORE feature creation and scaling)
+        if self.group_columns:
+            # Verify all group columns exist
+            missing_cols = [col for col in self.group_columns if col not in df.columns]
+            if missing_cols:
+                raise ValueError(f"Group columns {missing_cols} not found in DataFrame. Available: {list(df.columns)}")
+
             # Detect time-related column for sorting
-            time_column = None
-            possible_time_cols = ['timestamp', 'date', 'datetime', 'time', 'Date', 'Timestamp', 'DateTime']
-            for col in possible_time_cols:
-                if col in df.columns:
-                    time_column = col
-                    break
+            time_column = self._detect_time_column(df)
 
-            # Sort dataframe by group and time to ensure temporal order
+            # Sort dataframe by group columns and time to ensure temporal order
             if time_column:
+                sort_columns = self.group_columns + [time_column]
+                df = df.sort_values(sort_columns).reset_index(drop=True)
+
                 if self.verbose:
-                    print(f"   Sorting data by '{self.group_column}' and '{time_column}' to ensure temporal order")
-                df = df.sort_values([self.group_column, time_column]).reset_index(drop=True)
+                    group_str = ' + '.join(self.group_columns)
+                    print(f"   Sorted data by {group_str} and '{time_column}' to ensure temporal order within groups")
             else:
+                # No time column - just sort by group columns
+                df = df.sort_values(self.group_columns).reset_index(drop=True)
                 if self.verbose:
-                    print(f"   No time column detected. Assuming data is already sorted in temporal order within groups.")
+                    group_str = ' + '.join(self.group_columns)
+                    print(f"   Sorted data by {group_str}. Warning: No time column detected.")
 
-        # Create domain-specific features
-        df_processed = self.create_features(df, fit_scaler)
+        # Create time-series features (date-based features)
+        time_column = self._detect_time_column(df)
 
-        # Get all feature columns (excluding target and non-numeric columns)
+        if time_column:
+            # Pass first group column to create_date_features
+            group_col_for_date_features = self.group_columns[0] if self.group_columns else None
+            df_processed = create_date_features(df, time_column, group_column=group_col_for_date_features)
+        else:
+            df_processed = df.copy()
+
+        # Encode categorical features (BEFORE scaling numerical features)
+        df_processed = self._encode_categorical_features(df_processed, fit_encoders=fit_scaler)
+
+        # Get all feature columns
+        # The key logic: use_lagged_target_features controls whether targets are in the sequence
         feature_cols = []
 
-        # Build exclusion set: all target columns (original and shifted)
-        exclude_cols = set(self.target_columns)
-
-        # Also exclude shifted target columns for all targets
+        # Build exclusion set: shifted target columns + categorical columns (always excluded from numerical features)
+        exclude_cols = set()
         for target_col in self.target_columns:
-            # Add all shifted horizon columns
+            # Always exclude shifted horizon columns (these are Y, not X)
             for h in range(1, self.prediction_horizon + 1):
                 exclude_cols.add(f"{target_col}_target_h{h}")
 
+        # Exclude categorical columns from numerical features (they'll be handled separately)
+        exclude_cols.update(self.categorical_columns)
+
+        # Decide whether to exclude original target columns
+        if not self.use_lagged_target_features:
+            # Exclude targets: model won't see close[t], close[t-1], etc. in sequence
+            exclude_cols.update(self.target_columns)
+            if self.verbose:
+                print(f"\n   Target columns EXCLUDED from sequence: {self.target_columns}")
+                print(f"   Model will NOT have autoregressive information")
+        else:
+            # Include targets: model will see close[t], close[t-1], etc. in sequence
+            if self.verbose:
+                print(f"\n   Target columns INCLUDED in sequence: {self.target_columns}")
+                print(f"   Model will have autoregressive information (use_lagged_target_features=True)")
+
+        # Select numerical feature columns
         for col in df_processed.columns:
-            # Exclude all target-related columns
             if col not in exclude_cols:
-                # Only include numeric columns for scaling
+                # Only include numeric columns
                 if pd.api.types.is_numeric_dtype(df_processed[col]):
                     feature_cols.append(col)
                 elif self.verbose:
-                    print(f"   Excluding non-numeric column from scaling: {col} (dtype: {df_processed[col].dtype})")
-            elif self.verbose and col in exclude_cols:
-                if col in self.target_columns or '_target_h' in col:
-                    pass  # Don't print for every shifted column, too verbose
+                    print(f"   Excluding non-numeric column: {col} (dtype: {df_processed[col].dtype})")
+            elif self.verbose and '_target_h' in col:
+                pass  # Don't print for every shifted column, too verbose
         
-        if self.feature_columns is None:
+        if self.numerical_columns is None:
             # First time: establish the numeric feature columns from training data
+            self.numerical_columns = feature_cols
             self.feature_columns = feature_cols
         else:
             # For validation/test data: only use features that were created during training
             # This handles cases where smaller datasets can't generate all features
-            available_features = [col for col in self.feature_columns if col in df_processed.columns]
-            missing_features = [col for col in self.feature_columns if col not in df_processed.columns]
-            
+            available_features = [col for col in self.numerical_columns if col in df_processed.columns]
+            missing_features = [col for col in self.numerical_columns if col not in df_processed.columns]
+
             if missing_features:
                 if self.verbose:
                     print(f"   Warning: {len(missing_features)} features missing in current dataset (likely due to insufficient data size)")
                     print(f"   Missing: {missing_features[:5]}{'...' if len(missing_features) > 5 else ''}")
-                
+
                 # Add missing features as zero-filled columns
                 for feature in missing_features:
                     df_processed[feature] = 0.0
                     if self.verbose:
                         print(f"   Added zero-filled feature: {feature}")
-        
+
         # Scale numeric features - route to appropriate scaling method
-        if len(self.feature_columns) > 0:
-            if self.group_column is None:
-                # Single-group scaling (original behavior)
+        if len(self.numerical_columns) > 0:
+            if not self.group_columns:
+                # Single-group scaling (no grouping)
                 df_processed = self._scale_features_single(df_processed, fit_scaler)
             else:
-                # Multi-group scaling (new behavior)
+                # Multi-group scaling
                 df_processed = self._scale_features_grouped(df_processed, fit_scaler)
 
         # Cache the result
@@ -260,11 +509,11 @@ class TimeSeriesPredictor(ABC):
 
     def _scale_features_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool) -> pd.DataFrame:
         """
-        Scale features separately per group.
+        Scale features separately per group (supports multi-column grouping).
 
-        Each unique value in group_column gets its own scaler. This ensures
-        that different entities (e.g., different stock symbols) are scaled
-        independently, preserving their individual statistical properties.
+        Each unique group (single column or composite) gets its own scaler. This ensures
+        that different entities (e.g., different stock symbols, or symbol+sector combinations)
+        are scaled independently, preserving their individual statistical properties.
 
         Args:
             df_processed: DataFrame with engineered features
@@ -273,56 +522,75 @@ class TimeSeriesPredictor(ABC):
         Returns:
             DataFrame with group-scaled features
         """
-        if self.group_column not in df_processed.columns:
+        # Verify all group columns exist
+        missing_cols = [col for col in self.group_columns if col not in df_processed.columns]
+        if missing_cols:
             raise ValueError(
-                f"Group column '{self.group_column}' not found in dataframe. "
+                f"Group columns {missing_cols} not found in dataframe. "
                 f"Available columns: {list(df_processed.columns)}"
             )
 
         # Create a copy to avoid modifying original
         df_scaled = df_processed.copy()
 
+        # Ensure numerical columns are float type to avoid dtype incompatibility warnings
+        for col in self.numerical_columns:
+            if col in df_scaled.columns:
+                df_scaled[col] = df_scaled[col].astype('float64')
+
+        # Create composite group key
+        df_scaled['_group_key'] = self._create_group_key(df_scaled)
+
         # Get unique groups
-        unique_groups = df_processed[self.group_column].unique()
+        unique_groups = df_scaled['_group_key'].unique()
 
         if self.verbose:
-            print(f"   Scaling features for {len(unique_groups)} groups: {unique_groups}")
+            print(f"   Scaling features for {len(unique_groups)} groups")
+            if len(unique_groups) <= 10:
+                print(f"   Groups: {unique_groups}")
 
         # Scale each group separately
-        for group_value in unique_groups:
+        for group_key in unique_groups:
             # Get mask for this group
-            group_mask = df_processed[self.group_column] == group_value
+            group_mask = df_scaled['_group_key'] == group_key
             group_size = group_mask.sum()
 
             if group_size == 0:
                 continue
 
-            # Get data for this group
-            group_data = df_processed.loc[group_mask, self.feature_columns]
+            # Get data for this group (use numerical_columns)
+            group_data = df_scaled.loc[group_mask, self.numerical_columns]
 
             if fit_scaler:
                 # Create and fit new scaler for this group
-                scaler = StandardScaler()
+                scaler = ScalerFactory.create_scaler(self.scaler_type)
                 scaled_data = scaler.fit_transform(group_data)
-                self.group_feature_scalers[group_value] = scaler
+                self.group_feature_scalers[group_key] = scaler
 
                 if self.verbose:
-                    print(f"   Group '{group_value}': fitted scaler on {group_size} samples")
+                    print(f"   Group {group_key}: fitted scaler on {group_size} samples")
             else:
                 # Use existing scaler for this group
-                if group_value not in self.group_feature_scalers:
+                if group_key not in self.group_feature_scalers:
                     raise ValueError(
-                        f"No scaler found for group '{group_value}'. "
+                        f"No scaler found for group {group_key}. "
                         f"Make sure to fit on training data first."
                     )
-                scaled_data = self.group_feature_scalers[group_value].transform(group_data)
+                scaled_data = self.group_feature_scalers[group_key].transform(group_data)
 
-            # Update the scaled data for this group
-            df_scaled.loc[group_mask, self.feature_columns] = scaled_data
+            # Update the scaled data for this group (convert to DataFrame to preserve dtypes)
+            df_scaled.loc[group_mask, self.numerical_columns] = pd.DataFrame(
+                scaled_data,
+                columns=self.numerical_columns,
+                index=df_scaled[group_mask].index
+            )
+
+        # Remove temporary column
+        df_scaled = df_scaled.drop(columns=['_group_key'])
 
         return df_scaled
 
-    def _prepare_data_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _prepare_data_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], torch.Tensor]:
         """
         Prepare sequential data with group-based target scaling.
 
@@ -331,10 +599,12 @@ class TimeSeriesPredictor(ABC):
             fit_scaler: Whether to fit new target scalers or use existing ones
 
         Returns:
-            X: Sequences tensor of shape (n_samples, sequence_length, n_features)
+            X: If categorical_columns exist: Tuple of (X_num, X_cat) where
+                  X_num: (n_samples, sequence_length, n_numerical_features)
+                  X_cat: (n_samples, n_categorical_features)
+               Otherwise: X_num tensor only
             y: Target tensor of shape (n_samples,) for single-horizon or (n_samples, prediction_horizon) for multi-horizon
         """
-        from ..preprocessing.time_features import create_sequences
 
         # Note: Data is already sorted by group and time in prepare_features()
         # so temporal order is guaranteed at this point
@@ -354,27 +624,38 @@ class TimeSeriesPredictor(ABC):
             first_target = self.target_columns[0]
             target_cols = expected_targets[first_target]
         else:
-            # Single-target: existing behavior
+            # Single-target: use first target column
+            target_col = self.target_columns[0]
             if self.prediction_horizon == 1:
-                expected_target = f"{self.target_column}_target_h1" if not self.target_column.endswith('_target_h1') else self.target_column
+                expected_target = f"{target_col}_target_h1" if not target_col.endswith('_target_h1') else target_col
                 if expected_target not in df_processed.columns:
                     raise ValueError(f"Single horizon target column '{expected_target}' not found")
                 target_cols = [expected_target]
             else:
-                target_cols = [f"{self.target_column}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
+                target_cols = [f"{target_col}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
                 missing = [col for col in target_cols if col not in df_processed.columns]
                 if missing:
                     raise ValueError(f"Multi-horizon target columns {missing} not found")
 
         # Process each group separately
-        unique_groups = df_processed[self.group_column].unique()
-        all_sequences = []
+        # Create temporary composite key column
+        df_processed = df_processed.copy()
+        df_processed['_group_key'] = self._create_group_key(df_processed)
+        unique_groups = df_processed['_group_key'].unique()
+
+        all_sequences_num = []  # Numerical sequences
+        all_sequences_cat = []  # Categorical features (if any)
         all_targets = []
         group_indices = []  # Track which group each sequence belongs to
 
+        # Determine numerical feature columns (exclude categoricals)
+        numerical_feature_cols = [col for col in self.feature_columns if col not in self.categorical_columns]
+
         for group_value in unique_groups:
-            group_mask = df_processed[self.group_column] == group_value
+            group_mask = df_processed['_group_key'] == group_value
             group_df = df_processed[group_mask].copy()
+            # Remove temporary column from group_df
+            group_df = group_df.drop(columns=['_group_key'])
 
             # Check if group has enough data for sequences
             if len(group_df) <= self.sequence_length:
@@ -382,8 +663,13 @@ class TimeSeriesPredictor(ABC):
                     print(f"  Warning: Skipping group '{group_value}' - insufficient data ({len(group_df)} <= {self.sequence_length})")
                 continue
 
-            # Create sequences for this group using first target column
-            sequences, targets_h1 = create_sequences(group_df, self.sequence_length, target_cols[0], self.feature_columns)
+            # Create sequences with separate numerical and categorical handling
+            sequences_num, sequences_cat = self._create_sequences_with_categoricals(
+                group_df,
+                self.sequence_length,
+                numerical_feature_cols,
+                self.categorical_columns
+            )
 
             if self.is_multi_target:
                 # Multi-target mode
@@ -401,7 +687,7 @@ class TimeSeriesPredictor(ABC):
                         target_values = target_values.reshape(-1, 1)
 
                         if fit_scaler:
-                            scaler = StandardScaler()
+                            scaler = ScalerFactory.create_scaler(self.scaler_type)
                             targets_scaled = scaler.fit_transform(target_values).flatten()
                             self.group_target_scalers[group_value][target_col] = scaler
                         else:
@@ -426,24 +712,15 @@ class TimeSeriesPredictor(ABC):
                         targets_matrix = np.column_stack(all_horizons)
 
                         if fit_scaler:
-                            # Scale each horizon separately for this target
-                            self.group_target_scalers[group_value][target_col] = []
-                            scaled_horizons = []
-                            for h in range(self.prediction_horizon):
-                                scaler = StandardScaler()
-                                scaled = scaler.fit_transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
-                                self.group_target_scalers[group_value][target_col].append(scaler)
-                                scaled_horizons.append(scaled)
-                            targets_scaled = np.column_stack(scaled_horizons)
+                            # Use ONE scaler for all horizons of this target (shared statistics)
+                            scaler = ScalerFactory.create_scaler(self.scaler_type)
+                            targets_scaled = scaler.fit_transform(targets_matrix)
+                            self.group_target_scalers[group_value][target_col] = scaler
                         else:
-                            # Use existing scalers
+                            # Use existing scaler
                             if group_value not in self.group_target_scalers or target_col not in self.group_target_scalers[group_value]:
-                                raise ValueError(f"No scalers found for group '{group_value}', target '{target_col}'")
-                            scaled_horizons = []
-                            for h, scaler in enumerate(self.group_target_scalers[group_value][target_col]):
-                                scaled = scaler.transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
-                                scaled_horizons.append(scaled)
-                            targets_scaled = np.column_stack(scaled_horizons)
+                                raise ValueError(f"No scaler found for group '{group_value}', target '{target_col}'")
+                            targets_scaled = self.group_target_scalers[group_value][target_col].transform(targets_matrix)
 
                         all_scaled_dict[target_col] = targets_scaled
 
@@ -461,18 +738,22 @@ class TimeSeriesPredictor(ABC):
                             y_list.append(all_scaled_dict[target_col][:, h])
                     y_combined = np.column_stack(y_list)
 
-                all_sequences.append(sequences)
+                all_sequences_num.append(sequences_num)
+                if sequences_cat is not None:
+                    all_sequences_cat.append(sequences_cat)
                 all_targets.append(y_combined)
-                group_indices.extend([group_value] * len(sequences))
+                group_indices.extend([group_value] * len(sequences_num))
 
             else:
                 # Single-target mode (original behavior)
                 if self.prediction_horizon == 1:
                     # Single horizon - scale targets
+                    target_col_name = target_cols[0]
+                    targets_h1 = group_df[target_col_name].values[self.sequence_length:]
                     targets = targets_h1.reshape(-1, 1)
 
                     if fit_scaler:
-                        scaler = StandardScaler()
+                        scaler = ScalerFactory.create_scaler(self.scaler_type)
                         targets_scaled = scaler.fit_transform(targets).flatten()
                         self.group_target_scalers[group_value] = scaler
                     else:
@@ -480,10 +761,12 @@ class TimeSeriesPredictor(ABC):
                             raise ValueError(f"No fitted target scaler found for group '{group_value}'")
                         targets_scaled = self.group_target_scalers[group_value].transform(targets).flatten()
 
-                    all_sequences.append(sequences)
+                    all_sequences_num.append(sequences_num)
+                    if sequences_cat is not None:
+                        all_sequences_cat.append(sequences_cat)
                     all_targets.append(targets_scaled)
                     # Track which group these sequences belong to
-                    group_indices.extend([group_value] * len(sequences))
+                    group_indices.extend([group_value] * len(sequences_num))
 
                 else:
                     # Multi-horizon - extract all target values and scale
@@ -497,7 +780,7 @@ class TimeSeriesPredictor(ABC):
 
                     if fit_scaler:
                         # Create ONE scaler for this group (all horizons together)
-                        scaler = StandardScaler()
+                        scaler = ScalerFactory.create_scaler(self.scaler_type)
                         targets_scaled = scaler.fit_transform(targets_matrix)
                         self.group_target_scalers[group_value] = scaler
                     else:
@@ -505,16 +788,24 @@ class TimeSeriesPredictor(ABC):
                             raise ValueError(f"No fitted target scaler found for group '{group_value}'")
                         targets_scaled = self.group_target_scalers[group_value].transform(targets_matrix)
 
-                    all_sequences.append(sequences)
+                    all_sequences_num.append(sequences_num)
+                    if sequences_cat is not None:
+                        all_sequences_cat.append(sequences_cat)
                     all_targets.append(targets_scaled)
                     # Track which group these sequences belong to
-                    group_indices.extend([group_value] * len(sequences))
+                    group_indices.extend([group_value] * len(sequences_num))
 
         # Concatenate all groups
-        if len(all_sequences) == 0:
+        if len(all_sequences_num) == 0:
             raise ValueError(f"No groups had sufficient data (need > {self.sequence_length} samples per group)")
 
-        X_combined = np.vstack(all_sequences)
+        X_num_combined = np.vstack(all_sequences_num)
+
+        # Concatenate categorical if present
+        if len(all_sequences_cat) > 0:
+            X_cat_combined = np.vstack(all_sequences_cat)
+        else:
+            X_cat_combined = None
 
         # Handle target concatenation based on single vs multi-target mode
         if self.is_multi_target:
@@ -532,28 +823,56 @@ class TimeSeriesPredictor(ABC):
         self._last_group_indices = group_indices
 
         # Convert to tensors
-        X = torch.tensor(X_combined, dtype=torch.float32)
+        X_num = torch.tensor(X_num_combined, dtype=torch.float32)
         y = torch.tensor(y_combined, dtype=torch.float32)
 
-        if self.verbose:
-            print(f"  Created {len(X)} sequences from {len(unique_groups)} groups")
-            print(f"  X shape: {X.shape}, y shape: {y.shape}")
+        if X_cat_combined is not None:
+            X_cat = torch.tensor(X_cat_combined, dtype=torch.long)  # Categorical indices are integers
+            X = (X_num, X_cat)
+            if self.verbose:
+                print(f"  Created {len(X_num)} sequences from {len(unique_groups)} groups")
+                print(f"  X_num shape: {X_num.shape}, X_cat shape: {X_cat.shape}, y shape: {y.shape}")
+        else:
+            X = X_num
+            if self.verbose:
+                print(f"  Created {len(X_num)} sequences from {len(unique_groups)} groups")
+                print(f"  X shape: {X_num.shape}, y shape: {y.shape}")
 
         return X, y
 
-    def prepare_data(self, df: pd.DataFrame, fit_scaler: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def prepare_data(self, df: pd.DataFrame, fit_scaler: bool = False) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         """
         Prepare sequential data for model training/inference.
 
+        Note: This method does not modify the input dataframe (creates a copy internally).
+
         Returns:
-            X: Sequences tensor of shape (n_samples, sequence_length, n_features)
+            X: If categorical_columns exist: Tuple of (X_num, X_cat) where
+                  X_num: (n_samples, sequence_length, n_numerical_features)
+                  X_cat: (n_samples, n_categorical_features)
+               Otherwise: X_num tensor only
             y: Target tensor of shape (n_samples,) (None for inference)
         """
+        # Create a copy to avoid modifying the input dataframe
+        df = df.copy()
+
         # First prepare features (includes group-based or single scaling)
         df_processed = self.prepare_features(df, fit_scaler)
 
+        # Create shifted target columns
+        # Use categorical_columns for shifting to prevent data leakage across all categorical boundaries
+        # Falls back to group_columns if categorical_columns not specified
+        group_col_for_shift = self.categorical_columns if self.categorical_columns else self.group_columns
+        df_processed = create_shifted_targets(
+            df_processed,
+            target_column=self.target_columns,
+            prediction_horizon=self.prediction_horizon,
+            group_column=group_col_for_shift,
+            verbose=self.verbose
+        )
+
         # Route to appropriate data preparation method
-        if self.group_column is not None:
+        if self.group_columns:
             # Group-based sequence creation and target scaling
             return self._prepare_data_grouped(df_processed, fit_scaler)
 
@@ -582,7 +901,7 @@ class TimeSeriesPredictor(ABC):
             # Use first target's first horizon for sequence creation
             actual_target = expected_targets[self.target_columns[0]][0]
         else:
-            # Single-target: existing behavior
+            # Single-target mode
             if self.prediction_horizon == 1:
                 expected_target = f"{self.target_columns[0]}_target_h1"
                 if expected_target not in df_processed.columns:
@@ -598,10 +917,10 @@ class TimeSeriesPredictor(ABC):
 
         # Create sequences - this will reduce our sample count
         if actual_target in df_processed.columns:
-            from ..preprocessing.time_features import create_sequences
-            
-            # For training: create sequences with targets
-            sequences, targets = create_sequences(df_processed, self.sequence_length, actual_target, self.feature_columns)
+            from ..preprocessing.time_features import create_input_variable_sequence
+
+            # For training: create sequences (input variables only)
+            sequences = create_input_variable_sequence(df_processed, self.sequence_length, self.feature_columns)
 
             if self.is_multi_target:
                 # Multi-target handling
@@ -615,7 +934,7 @@ class TimeSeriesPredictor(ABC):
                         target_values = target_values.reshape(-1, 1)
 
                         if fit_scaler:
-                            scaler = StandardScaler()
+                            scaler = ScalerFactory.create_scaler(self.scaler_type)
                             targets_scaled = scaler.fit_transform(target_values).flatten()
                             self.target_scalers_dict[target_col] = scaler
                         else:
@@ -640,24 +959,15 @@ class TimeSeriesPredictor(ABC):
                         targets_matrix = np.column_stack(all_horizons)
 
                         if fit_scaler:
-                            # Scale each horizon separately for this target
-                            self.target_scalers_dict[target_col] = []
-                            scaled_horizons = []
-                            for h in range(self.prediction_horizon):
-                                scaler = StandardScaler()
-                                scaled = scaler.fit_transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
-                                self.target_scalers_dict[target_col].append(scaler)
-                                scaled_horizons.append(scaled)
-                            targets_scaled = np.column_stack(scaled_horizons)
+                            # Use ONE scaler for all horizons of this target (shared statistics)
+                            scaler = ScalerFactory.create_scaler(self.scaler_type)
+                            targets_scaled = scaler.fit_transform(targets_matrix)
+                            self.target_scalers_dict[target_col] = scaler
                         else:
-                            # Use existing scalers
+                            # Use existing scaler
                             if target_col not in self.target_scalers_dict:
-                                raise ValueError(f"No scalers found for target '{target_col}'")
-                            scaled_horizons = []
-                            for h, scaler in enumerate(self.target_scalers_dict[target_col]):
-                                scaled = scaler.transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
-                                scaled_horizons.append(scaled)
-                            targets_scaled = np.column_stack(scaled_horizons)
+                                raise ValueError(f"No scaler found for target '{target_col}'")
+                            targets_scaled = self.target_scalers_dict[target_col].transform(targets_matrix)
 
                         all_scaled_dict[target_col] = targets_scaled
 
@@ -681,7 +991,9 @@ class TimeSeriesPredictor(ABC):
 
             elif self.prediction_horizon == 1:
                 # Single-target, single horizon target scaling
-                targets = targets.reshape(-1, 1)
+                # Extract target values manually (after sequence_length offset)
+                target_col_name = f"{self.target_columns[0]}_target_h1"
+                targets = df_processed[target_col_name].values[self.sequence_length:].reshape(-1, 1)
                 if fit_scaler:
                     targets_scaled = self.target_scaler.fit_transform(targets)
                 else:
@@ -693,10 +1005,10 @@ class TimeSeriesPredictor(ABC):
 
             else:
                 # Single-target, multi-horizon target handling - MEMORY OPTIMIZED
-                target_columns = [f"{self.target_column}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
+                target_columns = [f"{self.target_columns[0]}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
 
                 # Extract target values directly without re-creating sequences
-                # This is much more memory efficient than calling create_sequences multiple times
+                # This is much more memory efficient than calling create_input_variable_sequence multiple times
                 all_targets = []
                 for target_col in target_columns:
                     # Extract target values starting from sequence_length (matching sequence indexing)
@@ -706,24 +1018,16 @@ class TimeSeriesPredictor(ABC):
                 # Stack into matrix: (samples, horizons)
                 targets_matrix = np.column_stack(all_targets)
 
-                # Scale each horizon separately
+                # Use ONE scaler for all horizons (shared statistics)
                 if fit_scaler:
-                    self.target_scalers = []
-                    scaled_targets = []
-                    for h in range(self.prediction_horizon):
-                        scaler = StandardScaler()
-                        scaled = scaler.fit_transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
-                        self.target_scalers.append(scaler)
-                        scaled_targets.append(scaled)
+                    self.target_scaler = ScalerFactory.create_scaler(self.scaler_type)
+                    targets_scaled = self.target_scaler.fit_transform(targets_matrix)
                 else:
-                    scaled_targets = []
-                    for h, scaler in enumerate(self.target_scalers):
-                        scaled = scaler.transform(targets_matrix[:, h].reshape(-1, 1)).flatten()
-                        scaled_targets.append(scaled)
+                    targets_scaled = self.target_scaler.transform(targets_matrix)
 
                 # Convert to tensors
                 X = torch.tensor(sequences, dtype=torch.float32)  # (n_samples, seq_len, n_features)
-                y = torch.tensor(np.column_stack(scaled_targets), dtype=torch.float32)  # (n_samples, horizons)
+                y = torch.tensor(targets_scaled, dtype=torch.float32)  # (n_samples, horizons)
             
             if self.verbose:
                 print(f"   Created {len(sequences)} sequences of length {self.sequence_length}")
@@ -737,9 +1041,9 @@ class TimeSeriesPredictor(ABC):
             dummy_targets = df_processed[self.feature_columns[0]]  # Use first feature as dummy target
             temp_df = df_processed.copy()
             temp_df['__dummy_target__'] = dummy_targets
-            
-            from ..preprocessing.time_features import create_sequences
-            sequences, _ = create_sequences(temp_df, self.sequence_length, '__dummy_target__', self.feature_columns)
+
+            from ..preprocessing.time_features import create_input_variable_sequence
+            sequences = create_input_variable_sequence(temp_df, self.sequence_length, self.feature_columns)
             X = torch.tensor(sequences, dtype=torch.float32)
             
             return X, None
@@ -773,56 +1077,77 @@ class TimeSeriesPredictor(ABC):
         if val_df is not None:
             X_val, y_val = self.prepare_data(val_df, fit_scaler=False)
             # Save validation group indices for later use in progress reporting
-            if self.group_column is not None and hasattr(self, '_last_group_indices'):
+            if self.group_columns and hasattr(self, '_last_group_indices'):
                 self._last_val_group_indices = self._last_group_indices.copy()
         else:
             X_val, y_val = None, None
         
-        # Initialize model - use sequence model
-        if len(X_train.shape) == 3:  # Sequence data: (batch, seq_len, features)
-            _, seq_len, num_features = X_train.shape
-            # Filter out invalid kwargs for model initialization
-            model_kwargs = {k: v for k, v in self.ft_kwargs.items() if k not in ['verbose']}
+        # Initialize model using factory pattern
+        # Handle tuple input (X_num, X_cat) for categorical models
+        if isinstance(X_train, tuple):
+            X_num_train, X_cat_train = X_train
+            _, seq_len, num_numerical = X_num_train.shape
+            num_categorical = X_cat_train.shape[1] if X_cat_train is not None else 0
+        else:
+            # Original behavior: single tensor
+            if len(X_train.shape) == 3:  # Sequence data: (batch, seq_len, features)
+                _, seq_len, num_features = X_train.shape
+            else:  # Single timestep data: (batch, features)
+                seq_len = 1  # Treat as sequence of length 1
+                num_features = X_train.shape[1]
+            num_numerical = num_features
+            num_categorical = 0
 
-            # Calculate total output size
-            if self.is_multi_target:
-                # Multi-target: output num_targets * prediction_horizon values
-                total_output_size = self.num_targets * self.prediction_horizon
-            else:
-                # Single-target: output prediction_horizon values
-                total_output_size = self.prediction_horizon
+        # Filter out invalid kwargs for model initialization
+        model_kwargs = {k: v for k, v in self.model_kwargs.items() if k not in ['verbose']}
 
-            self.model = SequenceFTTransformerPredictor(
-                num_numerical=num_features,
-                cat_cardinalities=[],  # All features are numerical for now
+        # Calculate total output size
+        if self.is_multi_target:
+            # Multi-target: output num_targets * prediction_horizon values
+            total_output_size = self.num_targets * self.prediction_horizon
+        else:
+            # Single-target: output prediction_horizon values
+            total_output_size = self.prediction_horizon
+
+        # Create model using factory
+        # For _cls models, pass additional categorical parameters
+        if self.model_type.endswith('_cls'):
+            self.model = ModelFactory.create_model(
+                model_type=self.model_type,
                 sequence_length=seq_len,
-                n_classes=1,  # Regression
-                prediction_horizons=total_output_size,
+                num_numerical=num_numerical,
+                num_categorical=num_categorical,
+                cat_cardinalities=self.cat_cardinalities,
+                output_dim=total_output_size,
                 **model_kwargs
             ).to(self.device)
-        else:  # Single timestep data: (batch, features) - fallback to original model
-            num_features = X_train.shape[1]
-            # Filter out invalid kwargs for model initialization
-            model_kwargs = {k: v for k, v in self.ft_kwargs.items() if k not in ['verbose']}
-
-            # Calculate total output size
-            if self.is_multi_target:
-                total_output_size = self.num_targets * self.prediction_horizon
-            else:
-                total_output_size = self.prediction_horizon
-
-            self.model = FTTransformerPredictor(
-                num_numerical=num_features,
-                cat_cardinalities=[],  # All features are numerical for now
-                n_classes=1,  # Regression
-                prediction_horizons=total_output_size,
+        else:
+            # Standard models use num_features parameter
+            num_features = num_numerical + num_categorical
+            self.model = ModelFactory.create_model(
+                model_type=self.model_type,
+                sequence_length=seq_len,
+                num_features=num_features,
+                output_dim=total_output_size,
                 **model_kwargs
             ).to(self.device)
+
+        if self.verbose:
+            print(f"\n   Created {self.model_type} model:")
+            print(f"   - Input: sequences of length {seq_len} with {num_features} features")
+            print(f"   - Output: {total_output_size} values ({'multi-target' if self.is_multi_target else 'single-target'}, {'multi-horizon' if self.prediction_horizon > 1 else 'single-horizon'})")
+            print(f"   - Parameters: {self.model.get_num_parameters():,}")
+            print(f"   - Embedding dim: {self.model.get_embedding_dim()}")
         
         # Training setup
-        dataset = TensorDataset(X_train, y_train)
-        # Optimize batch size based on data size for better throughput
-        optimal_batch_size = min(batch_size, max(32, len(X_train) // 20))
+        # Handle tuple input (X_num, X_cat) for categorical models
+        if isinstance(X_train, tuple):
+            X_num_train, X_cat_train = X_train
+            dataset = TensorDataset(X_num_train, X_cat_train, y_train)
+            optimal_batch_size = min(batch_size, max(32, len(X_num_train) // 20))
+        else:
+            dataset = TensorDataset(X_train, y_train)
+            optimal_batch_size = min(batch_size, max(32, len(X_train) // 20))
         dataloader = DataLoader(dataset, batch_size=optimal_batch_size, shuffle=True, num_workers=0, pin_memory=False)
 
         # Use more aggressive optimizer settings for faster convergence
@@ -838,7 +1163,8 @@ class TimeSeriesPredictor(ABC):
         
         self.verbose = verbose
         if verbose:
-            print(f"Training FT-Transformer for {self.target_column} prediction")
+            target_desc = ', '.join(self.target_columns) if self.is_multi_target else self.target_columns[0]
+            print(f"Training FT-Transformer for {target_desc} prediction")
             print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
             print(f"Training samples: {len(X_train)} (batch_size: {optimal_batch_size})")
             if X_val is not None:
@@ -853,18 +1179,34 @@ class TimeSeriesPredictor(ABC):
             # Training
             self.model.train()
             train_loss = 0
-            for batch_x, batch_y in dataloader:
-                batch_x, batch_y = batch_x.to(self.device, non_blocking=True), batch_y.to(self.device, non_blocking=True)
+            for batch_data in dataloader:
+                # Unpack batch based on dataset format
+                if isinstance(X_train, tuple):
+                    # Categorical model: (X_num, X_cat, y)
+                    batch_x_num, batch_x_cat, batch_y = batch_data
+                    batch_x_num = batch_x_num.to(self.device, non_blocking=True)
+                    batch_x_cat = batch_x_cat.to(self.device, non_blocking=True)
+                    batch_y = batch_y.to(self.device, non_blocking=True)
+                else:
+                    # Standard model: (X, y)
+                    batch_x, batch_y = batch_data
+                    batch_x = batch_x.to(self.device, non_blocking=True)
+                    batch_y = batch_y.to(self.device, non_blocking=True)
 
                 optimizer.zero_grad()
 
                 # Use mixed precision training if available
                 if use_amp:
                     with torch.cuda.amp.autocast():
-                        if len(batch_x.shape) == 3:  # Sequence data
-                            outputs = self.model(batch_x).squeeze()
-                        else:  # Non-sequence data
-                            outputs = self.model(batch_x, None).squeeze()
+                        if isinstance(X_train, tuple):
+                            # CLS models with categorical features
+                            outputs = self.model(batch_x_num, batch_x_cat).squeeze()
+                        else:
+                            # Standard models
+                            if len(batch_x.shape) == 3:  # Sequence data
+                                outputs = self.model(batch_x).squeeze()
+                            else:  # Non-sequence data
+                                outputs = self.model(batch_x, None).squeeze()
                         loss = criterion(outputs, batch_y)
 
                     scaler.scale(loss).backward()
@@ -873,11 +1215,16 @@ class TimeSeriesPredictor(ABC):
                     scaler.step(optimizer)
                     scaler.update()
                 else:
-                    # Handle both sequence and non-sequence models
-                    if len(batch_x.shape) == 3:  # Sequence data
-                        outputs = self.model(batch_x).squeeze()
-                    else:  # Non-sequence data
-                        outputs = self.model(batch_x, None).squeeze()
+                    # Handle both categorical and standard models
+                    if isinstance(X_train, tuple):
+                        # CLS models with categorical features
+                        outputs = self.model(batch_x_num, batch_x_cat).squeeze()
+                    else:
+                        # Standard models
+                        if len(batch_x.shape) == 3:  # Sequence data
+                            outputs = self.model(batch_x).squeeze()
+                        else:  # Non-sequence data
+                            outputs = self.model(batch_x, None).squeeze()
 
                     loss = criterion(outputs, batch_y)
                     loss.backward()
@@ -894,22 +1241,39 @@ class TimeSeriesPredictor(ABC):
             if X_val is not None:
                 self.model.eval()
                 with torch.no_grad():
-                    X_val_device = X_val.to(self.device, non_blocking=True)
+                    # Handle tuple input for categorical models
+                    if isinstance(X_val, tuple):
+                        X_num_val, X_cat_val = X_val
+                        X_num_val_device = X_num_val.to(self.device, non_blocking=True)
+                        X_cat_val_device = X_cat_val.to(self.device, non_blocking=True)
+                    else:
+                        X_val_device = X_val.to(self.device, non_blocking=True)
+
                     y_val_device = y_val.to(self.device, non_blocking=True)
 
                     # Use mixed precision for validation too
                     if use_amp:
                         with torch.cuda.amp.autocast():
+                            if isinstance(X_val, tuple):
+                                # CLS models with categorical features
+                                val_outputs = self.model(X_num_val_device, X_cat_val_device).squeeze()
+                            else:
+                                # Standard models
+                                if len(X_val.shape) == 3:  # Sequence data
+                                    val_outputs = self.model(X_val_device).squeeze()
+                                else:  # Non-sequence data
+                                    val_outputs = self.model(X_val_device, None).squeeze()
+                            val_loss = criterion(val_outputs, y_val_device).item()
+                    else:
+                        if isinstance(X_val, tuple):
+                            # CLS models with categorical features
+                            val_outputs = self.model(X_num_val_device, X_cat_val_device).squeeze()
+                        else:
+                            # Standard models
                             if len(X_val.shape) == 3:  # Sequence data
                                 val_outputs = self.model(X_val_device).squeeze()
                             else:  # Non-sequence data
                                 val_outputs = self.model(X_val_device, None).squeeze()
-                            val_loss = criterion(val_outputs, y_val_device).item()
-                    else:
-                        if len(X_val.shape) == 3:  # Sequence data
-                            val_outputs = self.model(X_val_device).squeeze()
-                        else:  # Non-sequence data
-                            val_outputs = self.model(X_val_device, None).squeeze()
                         val_loss = criterion(val_outputs, y_val_device).item()
 
                     self.history['val_loss'].append(val_loss)
@@ -939,7 +1303,7 @@ class TimeSeriesPredictor(ABC):
                         val_actual_scaled_np = y_val_device.cpu().numpy()
 
                         # Inverse transform based on group-based vs single-group mode
-                        if self.group_column is not None:
+                        if self.group_columns:
                             # Group-based inverse transform
                             # Multi-target group-based mode: skip detailed metrics during training
                             if self.is_multi_target:
@@ -990,18 +1354,9 @@ class TimeSeriesPredictor(ABC):
                                 val_pred = self.target_scaler.inverse_transform(val_pred_scaled_np.reshape(-1, 1)).flatten()
                                 val_actual = self.target_scaler.inverse_transform(val_actual_scaled_np.reshape(-1, 1)).flatten()
                             else:
-                                # Single-target, multi-horizon: inverse transform each horizon
-                                val_pred_list = []
-                                val_actual_list = []
-                                for h in range(self.prediction_horizon):
-                                    val_pred_list.append(
-                                        self.target_scalers[h].inverse_transform(val_pred_scaled_np[:, h].reshape(-1, 1)).flatten()
-                                    )
-                                    val_actual_list.append(
-                                        self.target_scalers[h].inverse_transform(val_actual_scaled_np[:, h].reshape(-1, 1)).flatten()
-                                    )
-                                val_pred = np.column_stack(val_pred_list)
-                                val_actual = np.column_stack(val_actual_list)
+                                # Single-target, multi-horizon: use single scaler for all horizons
+                                val_pred = self.target_scaler.inverse_transform(val_pred_scaled_np)
+                                val_actual = self.target_scaler.inverse_transform(val_actual_scaled_np)
 
                         # Calculate MAPE and MAE (for single horizon or average across horizons)
                         if self.prediction_horizon == 1:
@@ -1048,18 +1403,32 @@ class TimeSeriesPredictor(ABC):
         with torch.no_grad():
             # Use batched inference to avoid OOM errors
             batch_size = 256  # Process predictions in smaller batches
-            num_samples = X.shape[0]
+
+            # Handle tuple input for categorical models
+            if isinstance(X, tuple):
+                X_num, X_cat = X
+                num_samples = X_num.shape[0]
+            else:
+                num_samples = X.shape[0]
+
             all_predictions = []
 
             for i in range(0, num_samples, batch_size):
                 batch_end = min(i + batch_size, num_samples)
-                X_batch = X[i:batch_end]
 
-                # Handle both sequence and non-sequence models
-                if len(X_batch.shape) == 3:  # Sequence data
-                    batch_preds = self.model(X_batch.to(self.device))
-                else:  # Non-sequence data
-                    batch_preds = self.model(X_batch.to(self.device), None)
+                # Handle both categorical and standard models
+                if isinstance(X, tuple):
+                    # CLS models with categorical features
+                    X_num_batch = X_num[i:batch_end].to(self.device)
+                    X_cat_batch = X_cat[i:batch_end].to(self.device)
+                    batch_preds = self.model(X_num_batch, X_cat_batch)
+                else:
+                    # Standard models
+                    X_batch = X[i:batch_end]
+                    if len(X_batch.shape) == 3:  # Sequence data
+                        batch_preds = self.model(X_batch.to(self.device))
+                    else:  # Non-sequence data
+                        batch_preds = self.model(X_batch.to(self.device), None)
 
                 # Move to CPU immediately to free GPU memory
                 all_predictions.append(batch_preds.cpu())
@@ -1072,7 +1441,7 @@ class TimeSeriesPredictor(ABC):
             predictions_scaled = torch.cat(all_predictions, dim=0).numpy()
 
             # Handle group-based vs single-group inverse transform
-            if self.group_column is not None:
+            if self.group_columns:
                 # Group-based inverse transform
                 if not hasattr(self, '_last_group_indices') or len(self._last_group_indices) != len(predictions_scaled):
                     raise RuntimeError("Group indices not available or mismatched. This shouldn't happen.")
@@ -1111,13 +1480,8 @@ class TimeSeriesPredictor(ABC):
                                 # Extract all horizons for this target in this group
                                 group_horizons_scaled = predictions_scaled[group_mask, start_idx:end_idx]
 
-                                # Inverse transform each horizon separately
-                                group_horizons_original = np.zeros_like(group_horizons_scaled)
-                                for h in range(self.prediction_horizon):
-                                    col_idx = start_idx + h - start_idx  # Relative index within group_horizons_scaled
-                                    horizon_scaled = group_horizons_scaled[:, col_idx].reshape(-1, 1)
-                                    horizon_original = self.group_target_scalers[group_value][target_col][h].inverse_transform(horizon_scaled).flatten()
-                                    group_horizons_original[:, col_idx] = horizon_original
+                                # Inverse transform all horizons together using single scaler
+                                group_horizons_original = self.group_target_scalers[group_value][target_col].inverse_transform(group_horizons_scaled)
 
                                 target_preds[group_mask] = group_horizons_original
 
@@ -1180,16 +1544,12 @@ class TimeSeriesPredictor(ABC):
                             start_idx = idx * self.prediction_horizon
                             end_idx = start_idx + self.prediction_horizon
 
-                            # Inverse transform each horizon for this target
-                            horizons_list = []
-                            for h in range(self.prediction_horizon):
-                                col_idx = start_idx + h
-                                horizon_preds_scaled = predictions_scaled[:, col_idx].reshape(-1, 1)
-                                horizon_preds = self.target_scalers_dict[target_col][h].inverse_transform(horizon_preds_scaled).flatten()
-                                horizons_list.append(horizon_preds)
+                            # Inverse transform all horizons together using single scaler
+                            horizons_scaled = predictions_scaled[:, start_idx:end_idx]
+                            horizons_original = self.target_scalers_dict[target_col].inverse_transform(horizons_scaled)
 
                             # Stack into (n_samples, horizons) for this target
-                            predictions_dict[target_col] = np.column_stack(horizons_list)
+                            predictions_dict[target_col] = horizons_original
 
                     return predictions_dict
 
@@ -1200,15 +1560,8 @@ class TimeSeriesPredictor(ABC):
                     return predictions.flatten()
                 else:
                     # Single-target, multi-horizon: predictions_scaled shape is (n_samples, horizons)
-                    # Inverse transform each horizon separately using its own scaler
-                    predictions_list = []
-                    for h in range(self.prediction_horizon):
-                        horizon_preds = predictions_scaled[:, h].reshape(-1, 1)
-                        horizon_preds_original = self.target_scalers[h].inverse_transform(horizon_preds)
-                        predictions_list.append(horizon_preds_original.flatten())
-
-                    # Stack predictions: (n_samples, horizons)
-                    predictions = np.column_stack(predictions_list)
+                    # Inverse transform all horizons together using single scaler
+                    predictions = self.target_scaler.inverse_transform(predictions_scaled)
                     return predictions
 
     def predict_from_features(self, df_processed: pd.DataFrame) -> np.ndarray:
@@ -1227,24 +1580,17 @@ class TimeSeriesPredictor(ABC):
             raise RuntimeError("Model must be trained first. Call fit().")
 
         # Group-based mode is not supported in this optimized path
-        if self.group_column is not None:
+        if self.group_columns:
             raise NotImplementedError(
                 "predict_from_features() does not support group-based scaling. "
                 "Please use predict() instead."
             )
 
         # Skip feature preprocessing since it's already done
-        from ..preprocessing.time_features import create_sequences
+        from ..preprocessing.time_features import create_input_variable_sequence
 
         # Create sequences directly from processed features
-        if self.target_column in df_processed.columns:
-            sequences, _ = create_sequences(df_processed, self.sequence_length, self.target_column, self.feature_columns)
-        else:
-            # Use first feature as dummy target for sequence creation
-            dummy_target = df_processed[self.feature_columns[0]]
-            temp_df = df_processed.copy()
-            temp_df['__dummy_target__'] = dummy_target
-            sequences, _ = create_sequences(temp_df, self.sequence_length, '__dummy_target__', self.feature_columns)
+        sequences = create_input_variable_sequence(df_processed, self.sequence_length, self.feature_columns)
 
         X = torch.tensor(sequences, dtype=torch.float32)
 
@@ -1266,15 +1612,8 @@ class TimeSeriesPredictor(ABC):
                 return predictions.flatten()
             else:
                 # Multi-horizon: predictions_scaled shape is (n_samples, horizons)
-                # Inverse transform each horizon separately using its own scaler
-                predictions_list = []
-                for h in range(self.prediction_horizon):
-                    horizon_preds = predictions_scaled[:, h].reshape(-1, 1)
-                    horizon_preds_original = self.target_scalers[h].inverse_transform(horizon_preds)
-                    predictions_list.append(horizon_preds_original.flatten())
-
-                # Stack predictions: (n_samples, horizons)
-                predictions = np.column_stack(predictions_list)
+                # Inverse transform all horizons together using single scaler
+                predictions = self.target_scaler.inverse_transform(predictions_scaled)
                 return predictions
 
     def evaluate(self, df: pd.DataFrame, per_group: bool = False) -> Dict:
@@ -1302,30 +1641,27 @@ class TimeSeriesPredictor(ABC):
         self._feature_cache.clear()
         gc.collect()  # Force garbage collection to free memory
 
-        # Process features first to get the target column
-        df_processed = self.prepare_features(df, fit_scaler=False)
-
-        # Now check if target column(s) exist after processing
+        # Validate that target column(s) exist in raw dataframe
         if self.is_multi_target:
             # Check all target columns exist
-            missing_targets = [col for col in self.target_columns if col not in df_processed.columns]
+            missing_targets = [col for col in self.target_columns if col not in df.columns]
             if missing_targets:
-                raise ValueError(f"Target columns {missing_targets} not found after feature engineering")
+                raise ValueError(f"Target columns {missing_targets} not found in dataframe")
         else:
             # Single-target check
-            if self.target_column not in df_processed.columns:
-                raise ValueError(f"Target column '{self.target_column}' not found after feature engineering")
+            if self.target_columns[0] not in df.columns:
+                raise ValueError(f"Target column '{self.target_columns[0]}' not found in dataframe")
 
         # Check if we should do per-group evaluation
-        if per_group and self.group_column is not None:
-            return self._evaluate_per_group(df, df_processed)
+        if per_group and self.group_columns:
+            return self._evaluate_per_group(df)
         else:
-            # Standard evaluation (backward compatible)
-            return self._evaluate_standard(df_processed)
+            # Standard evaluation - predict() handles all preprocessing
+            return self._evaluate_standard(df)
 
-    def _evaluate_standard(self, df_processed: pd.DataFrame) -> Dict:
+    def _evaluate_standard(self, df: pd.DataFrame) -> Dict:
         """Standard evaluation without per-group breakdown."""
-        predictions = self.predict(df_processed.copy())  # Returns dict for multi-target
+        predictions = self.predict(df)  # Returns dict for multi-target, predict() handles all preprocessing
 
         # Check if multi-target
         if self.is_multi_target:
@@ -1335,11 +1671,11 @@ class TimeSeriesPredictor(ABC):
             metrics_dict = {}
 
             for target_col in self.target_columns:
-                # Get actual values for this target
+                # Get actual values for this target from raw dataframe
                 if self.sequence_length > 1:
-                    actual = df_processed[target_col].values[self.sequence_length:]
+                    actual = df[target_col].values[self.sequence_length:]
                 else:
-                    actual = df_processed[target_col].values
+                    actual = df[target_col].values
 
                 target_predictions = predictions[target_col]
 
@@ -1379,16 +1715,17 @@ class TimeSeriesPredictor(ABC):
             return metrics_dict
 
         else:
-            # Single-target evaluation (existing behavior)
+            # Single-target evaluation
             # For sequences, we need to align the actual values with predictions
+            target_col = self.target_columns[0]
             if self.sequence_length > 1:
-                actual = df_processed[self.target_column].values[self.sequence_length:]
+                actual = df[target_col].values[self.sequence_length:]
             else:
-                actual = df_processed[self.target_column].values
+                actual = df[target_col].values
 
             # Handle single vs multi-horizon evaluation
             if self.prediction_horizon == 1:
-                # Single-horizon: return simple metrics dict (backward compatible)
+                # Single-horizon: return simple metrics dict
                 from ..core.utils import calculate_metrics
 
                 # Ensure same length
@@ -1413,7 +1750,7 @@ class TimeSeriesPredictor(ABC):
                     self.prediction_horizon
                 )
 
-    def _evaluate_per_group(self, df: pd.DataFrame, df_processed: pd.DataFrame) -> Dict:
+    def _evaluate_per_group(self, df: pd.DataFrame) -> Dict:
         """
         Evaluate performance per group (e.g., per stock symbol).
 
@@ -1421,8 +1758,8 @@ class TimeSeriesPredictor(ABC):
         """
         from ..core.utils import calculate_metrics, calculate_metrics_multi_horizon
 
-        # Get predictions with group information
-        predictions, group_indices = self.predict(df_processed.copy(), return_group_info=True)
+        # Get predictions with group information - predict() handles all preprocessing
+        predictions, group_indices = self.predict(df, return_group_info=True)
 
         # Get unique groups
         unique_groups = sorted(set(group_indices))
@@ -1438,11 +1775,11 @@ class TimeSeriesPredictor(ABC):
             all_metrics = {}
 
             for target_col in self.target_columns:
-                # Get actual values for this target
+                # Get actual values for this target from raw dataframe
                 if self.sequence_length > 1:
-                    actual_base = df_processed[target_col].values[self.sequence_length:]
+                    actual_base = df[target_col].values[self.sequence_length:]
                 else:
-                    actual_base = df_processed[target_col].values
+                    actual_base = df[target_col].values
 
                 target_predictions = predictions[target_col]
 
@@ -1498,12 +1835,13 @@ class TimeSeriesPredictor(ABC):
             return all_metrics
 
         else:
-            # Single-target per-group evaluation (existing behavior)
-            # Prepare actual values
+            # Single-target per-group evaluation
+            # Prepare actual values from raw dataframe
+            target_col = self.target_columns[0]
             if self.sequence_length > 1:
-                actual_base = df_processed[self.target_column].values[self.sequence_length:]
+                actual_base = df[target_col].values[self.sequence_length:]
             else:
-                actual_base = df_processed[self.target_column].values
+                actual_base = df[target_col].values
 
             # Storage for per-group metrics
             all_metrics = {}
@@ -1568,24 +1906,21 @@ class TimeSeriesPredictor(ABC):
         Returns:
             metrics: Dictionary of evaluation metrics
         """
-        if self.target_column not in df_processed.columns:
-            raise ValueError(f"Target column '{self.target_column}' not found in processed features")
+        target_col = self.target_columns[0]
+        if target_col not in df_processed.columns:
+            raise ValueError(f"Target column '{target_col}' not found in processed features")
 
         # Use predict() instead of predict_from_features() if group-based scaling is enabled
-        if self.group_column is not None:
+        if self.group_columns:
             predictions = self.predict(df_processed)
         else:
             predictions = self.predict_from_features(df_processed)
 
-        # Get the original target column name (which should NOT be scaled in df_processed)
-        original_target = getattr(self, 'original_target_column', self.target_column)
-
         # For sequences, align actual values with predictions
-        # Use the original unscaled target column from df_processed
         if hasattr(df_processed, 'iloc'):
-            actual = df_processed[original_target].iloc[self.sequence_length:self.sequence_length + len(predictions)].values
+            actual = df_processed[target_col].iloc[self.sequence_length:self.sequence_length + len(predictions)].values
         else:
-            actual = df_processed[original_target].values
+            actual = df_processed[target_col].values
 
         # Ensure same length (take minimum to be safe)
         min_len = min(len(actual), len(predictions))
@@ -1603,18 +1938,24 @@ class TimeSeriesPredictor(ABC):
         state = {
             'model_state_dict': self.model.state_dict(),
             'scaler': self.scaler,
+            'scaler_type': self.scaler_type,  # Save scaler type
             'feature_columns': self.feature_columns,
             'num_features': len(self.feature_columns),  # Save the actual number of features used
-            'target_column': self.target_column,
             'target_columns': self.target_columns,  # Save list
             'is_multi_target': self.is_multi_target,  # Save flag
             'num_targets': self.num_targets,  # Save count
             'sequence_length': self.sequence_length,
             'prediction_horizon': self.prediction_horizon,  # Explicitly save
             'ft_kwargs': self.ft_kwargs,
+            'model_kwargs': self.model_kwargs,  # Save new model kwargs
+            'model_type': self.model_type,  # Save model type
+            'use_lagged_target_features': self.use_lagged_target_features,  # Save lagged target feature flag
+            'lag_periods': self.lag_periods,  # Save lag periods
             'history': self.history,
-            # Group-based scaling
-            'group_column': self.group_column,
+            # Group-based scaling (save new format)
+            'group_columns': self.group_columns,
+            'categorical_columns': self.categorical_columns,
+            'numerical_columns': self.numerical_columns,
             'group_feature_scalers': self.group_feature_scalers,
             'group_target_scalers': self.group_target_scalers
         }
@@ -1636,25 +1977,29 @@ class TimeSeriesPredictor(ABC):
         """Load a saved model."""
         state = torch.load(path, map_location='cpu', weights_only=False)
 
-        # Determine target_column format (backward compatible)
-        if 'target_columns' in state:
-            target_column = state['target_columns']
-        else:
-            # Backward compatibility: single target
-            target_column = state['target_column']
+        # Handle both old and new formats for group columns
+        group_columns = state.get('group_columns', None)
+        categorical_columns = state.get('categorical_columns', None)
+        scaler_type = state.get('scaler_type', 'standard')  # Default for backward compatibility
 
         # Create predictor with correct parameters
         predictor = cls(
-            target_column=target_column,
-            sequence_length=state.get('sequence_length', 5),
-            prediction_horizon=state.get('prediction_horizon', 1),
-            group_column=state.get('group_column', None),
-            **state['ft_kwargs']
+            target_column=state['target_columns'],
+            sequence_length=state['sequence_length'],
+            prediction_horizon=state['prediction_horizon'],
+            group_columns=group_columns,
+            categorical_columns=categorical_columns,
+            model_type=state['model_type'],
+            scaler_type=scaler_type,
+            use_lagged_target_features=state['use_lagged_target_features'],
+            lag_periods=state['lag_periods'],
+            **state['model_kwargs']
         )
 
         # Restore feature scaler and feature columns
         predictor.scaler = state['scaler']
         predictor.feature_columns = state['feature_columns']
+        predictor.numerical_columns = state.get('numerical_columns', None)
         predictor.history = state.get('history', {'train_loss': [], 'val_loss': []})
 
         # Restore target scalers based on mode
@@ -1663,7 +2008,8 @@ class TimeSeriesPredictor(ABC):
             predictor.target_scalers_dict = state.get('target_scalers_dict', {})
         else:
             # Single-target: restore target_scaler and target_scalers
-            predictor.target_scaler = state.get('target_scaler', StandardScaler())
+            # Note: target_scaler should always be in state; only provide fallback for backward compatibility
+            predictor.target_scaler = state.get('target_scaler', ScalerFactory.create_scaler(predictor.scaler_type))
             predictor.target_scalers = state.get('target_scalers', [])
 
         # Restore group scalers (if present)
@@ -1680,27 +2026,19 @@ class TimeSeriesPredictor(ABC):
         else:
             total_output_size = predictor.prediction_horizon
 
-        # Filter out non-model parameters from ft_kwargs
-        model_kwargs = {k: v for k, v in predictor.ft_kwargs.items()
+        # Filter out non-model parameters from model_kwargs
+        model_kwargs = {k: v for k, v in predictor.model_kwargs.items()
                        if k not in ['verbose']}
 
-        if predictor.sequence_length > 1:
-            predictor.model = SequenceFTTransformerPredictor(
-                num_numerical=num_features,
-                cat_cardinalities=[],
-                sequence_length=predictor.sequence_length,
-                n_classes=1,
-                prediction_horizons=total_output_size,
-                **model_kwargs
-            )
-        else:
-            predictor.model = FTTransformerPredictor(
-                num_numerical=num_features,
-                cat_cardinalities=[],
-                n_classes=1,
-                prediction_horizons=total_output_size,
-                **model_kwargs
-            )
+        # Recreate model using factory
+        predictor.model = ModelFactory.create_model(
+            model_type=predictor.model_type,
+            sequence_length=predictor.sequence_length if predictor.sequence_length > 1 else 1,
+            num_features=num_features,
+            output_dim=total_output_size,
+            **model_kwargs
+        )
+
         predictor.model.load_state_dict(state['model_state_dict'])
         predictor.model.to(predictor.device)
 
