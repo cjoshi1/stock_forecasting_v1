@@ -59,6 +59,7 @@ python intraday_forecasting/main.py \
   --group_columns symbol \
   --categorical_columns symbol \
   --scaler_type standard \
+  --use_lagged_target_features \
   --sequence_length 60 \
   --prediction_horizon 5 \
   --d_model 128 \
@@ -98,7 +99,8 @@ python daily_stock_forecasting/main.py \
   --group_columns symbol \
   --categorical_columns symbol \
   --scaler_type standard \
-  --sequence_length 10 \
+  --use_lagged_target_features \
+  --sequence_length 50 \
   --prediction_horizon 3 \
   --d_model 128 \
   --num_layers 3 \
@@ -137,8 +139,7 @@ python daily_stock_forecasting/main.py \
 | `--scaler_type` | string | Type of scaler for normalization | standard | Options: standard, minmax, robust, maxabs, onlymax |
 | `--use_sample_data` | flag | Use synthetic sample data | False | For testing without real data |
 | `--per_group_metrics` | flag | Show per-group evaluation metrics | False | Only with `--group_columns` |
-| `--use_lagged_target_features` | flag | Include target columns in input for autoregressive modeling | False | Enables lagged target features |
-| `--lag_periods` | string | Comma-separated lag periods for target features | None | e.g., "1,2,3,7,14". Only with `--use_lagged_target_features` |
+| `--use_lagged_target_features` | flag | Include target columns in input sequences for autoregressive modeling | False | Includes target values in the sequence window |
 
 ### Market-Specific Parameters (Intraday Only)
 

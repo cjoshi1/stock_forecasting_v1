@@ -31,7 +31,6 @@ class TimeSeriesPredictor:
         model_type: str = 'ft_transformer',
         scaler_type: str = 'standard',
         use_lagged_target_features: bool = False,
-        lag_periods: list = None,
         **model_kwargs
     ):
         """
@@ -57,10 +56,8 @@ class TimeSeriesPredictor:
                         - 'maxabs': MaxAbsScaler (range [-1, 1], preserves sparsity)
                         - 'onlymax': OnlyMaxScaler (divide by max only, no shifting)
             use_lagged_target_features: Whether to include target columns in input sequences
-                                       If True, enables autoregressive modeling
-            lag_periods: List of lag periods for target features (e.g., [1, 2, 3, 7, 14])
-                        Only used if use_lagged_target_features=True
-                        Default: range(1, sequence_length + 1)
+                                       If True, enables autoregressive modeling by including target
+                                       values in the sequence window
             **model_kwargs: Model-specific hyperparameters (d_model, num_heads, num_layers, etc.)
         """
         # Normalize target_column to list for uniform handling
@@ -98,7 +95,6 @@ class TimeSeriesPredictor:
         self.model_type = model_type
         self.scaler_type = scaler_type
         self.use_lagged_target_features = use_lagged_target_features
-        self.lag_periods = lag_periods if lag_periods else list(range(1, sequence_length + 1))
         self.model_kwargs = model_kwargs
         self.num_targets = len(self.target_columns)
 
@@ -2038,7 +2034,6 @@ class TimeSeriesPredictor:
             'model_kwargs': self.model_kwargs,  # Save model kwargs
             'model_type': self.model_type,  # Save model type
             'use_lagged_target_features': self.use_lagged_target_features,  # Save lagged target feature flag
-            'lag_periods': self.lag_periods,  # Save lag periods
             'history': self.history,
             # Group-based scaling (save new format)
             'group_columns': self.group_columns,
@@ -2074,7 +2069,6 @@ class TimeSeriesPredictor:
             model_type=state['model_type'],
             scaler_type=state['scaler_type'],
             use_lagged_target_features=state['use_lagged_target_features'],
-            lag_periods=state['lag_periods'],
             **state['model_kwargs']
         )
 

@@ -406,8 +406,6 @@ def main():
                        help='Type of scaler for normalization (default: standard)')
     parser.add_argument('--use_lagged_target_features', action='store_true',
                        help='Include target columns in input sequences for autoregressive modeling')
-    parser.add_argument('--lag_periods', type=str, default=None,
-                       help='Comma-separated lag periods for target features (e.g., "1,2,3,5,10"). Only used if --use_lagged_target_features is set.')
 
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=None,
@@ -584,11 +582,6 @@ def main():
         else:
             cat_cols_for_model = args.categorical_columns
 
-    # Parse lag_periods
-    lag_periods_parsed = None
-    if args.lag_periods:
-        lag_periods_parsed = [int(p.strip()) for p in args.lag_periods.split(',')]
-
     model = IntradayPredictor(
         target_column=target_columns,  # Can be str or list
         timeframe=args.timeframe,
@@ -600,7 +593,6 @@ def main():
         categorical_columns=cat_cols_for_model,
         scaler_type=args.scaler_type,
         use_lagged_target_features=args.use_lagged_target_features,
-        lag_periods=lag_periods_parsed,
         d_model=args.d_model,
         num_layers=args.num_layers,
         num_heads=args.num_heads,
@@ -622,8 +614,7 @@ def main():
     print(f"   - Attention heads: {args.num_heads}")
     print(f"   - Scaler type: {args.scaler_type}")
     if args.use_lagged_target_features:
-        lag_info = f"{lag_periods_parsed}" if lag_periods_parsed else "auto"
-        print(f"   - Lagged target features: enabled (lags={lag_info})")
+        print(f"   - Lagged target features: enabled")
     if group_cols_for_model:
         print(f"   - Group-based scaling: enabled (group_columns='{args.group_columns}')")
     else:
