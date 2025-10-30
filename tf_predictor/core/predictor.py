@@ -1095,6 +1095,7 @@ class TimeSeriesPredictor:
             num_categorical = 0
 
         # Filter out invalid kwargs for model initialization
+        # 'verbose' is a general parameter, not for model init
         model_kwargs = {k: v for k, v in self.model_kwargs.items() if k not in ['verbose']}
 
         # Calculate total output size
@@ -2099,6 +2100,7 @@ class TimeSeriesPredictor:
             total_output_size = predictor.prediction_horizon
 
         # Filter out non-model parameters from model_kwargs
+        # 'verbose' is a general parameter, not for model init
         model_kwargs = {k: v for k, v in predictor.model_kwargs.items()
                        if k not in ['verbose']}
 

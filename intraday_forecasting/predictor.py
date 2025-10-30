@@ -33,7 +33,6 @@ class IntradayPredictor(TimeSeriesPredictor):
                  categorical_columns: Optional[Union[str, list]] = None,
                  scaler_type: str = 'standard',
                  use_lagged_target_features: bool = False,
-                 lag_periods: list = None,
                  d_model: int = 128, num_heads: int = 8, num_layers: int = 3,
                  dropout: float = 0.1, verbose: bool = False, **kwargs):
         """
@@ -52,7 +51,6 @@ class IntradayPredictor(TimeSeriesPredictor):
             categorical_columns: Optional column(s) to encode and pass as categorical features
             scaler_type: Type of scaler ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
             use_lagged_target_features: Whether to include target columns in input sequences
-            lag_periods: List of lag periods for target features (e.g., [1, 2, 3, 5, 10])
             d_model: Token embedding dimension
             num_heads: Number of attention heads
             num_layers: Number of transformer layers
@@ -107,7 +105,6 @@ class IntradayPredictor(TimeSeriesPredictor):
             model_type=model_type,
             scaler_type=scaler_type,
             use_lagged_target_features=use_lagged_target_features,
-            lag_periods=lag_periods,
             d_model=d_model,
             num_heads=num_heads,
             num_layers=num_layers,
