@@ -1975,20 +1975,15 @@ class TimeSeriesPredictor:
         """Load a saved model."""
         state = torch.load(path, map_location='cpu', weights_only=False)
 
-        # Handle both old and new formats for group columns
-        group_columns = state.get('group_columns', None)
-        categorical_columns = state.get('categorical_columns', None)
-        scaler_type = state.get('scaler_type', 'standard')  # Default for backward compatibility
-
         # Create predictor with correct parameters
         predictor = cls(
             target_column=state['target_columns'],
             sequence_length=state['sequence_length'],
             prediction_horizon=state['prediction_horizon'],
-            group_columns=group_columns,
-            categorical_columns=categorical_columns,
+            group_columns=state['group_columns'],
+            categorical_columns=state['categorical_columns'],
             model_type=state['model_type'],
-            scaler_type=scaler_type,
+            scaler_type=state['scaler_type'],
             use_lagged_target_features=state['use_lagged_target_features'],
             lag_periods=state['lag_periods'],
             **state['model_kwargs']
@@ -1997,26 +1992,22 @@ class TimeSeriesPredictor:
         # Restore feature scaler and feature columns
         predictor.scaler = state['scaler']
         predictor.feature_columns = state['feature_columns']
-        predictor.numerical_columns = state.get('numerical_columns', None)
-        predictor.history = state.get('history', {'train_loss': [], 'val_loss': []})
+        predictor.numerical_columns = state['numerical_columns']
+        predictor.history = state['history']
 
         # Restore target scalers based on mode
         if predictor.is_multi_target:
-            # Multi-target: restore target_scalers_dict
-            predictor.target_scalers_dict = state.get('target_scalers_dict', {})
+            predictor.target_scalers_dict = state['target_scalers_dict']
         else:
-            # Single-target: restore target_scaler and target_scalers
-            # Note: target_scaler should always be in state; only provide fallback for backward compatibility
-            predictor.target_scaler = state.get('target_scaler', ScalerFactory.create_scaler(predictor.scaler_type))
-            predictor.target_scalers = state.get('target_scalers', [])
+            predictor.target_scaler = state['target_scaler']
+            predictor.target_scalers = state['target_scalers']
 
-        # Restore group scalers (if present)
-        predictor.group_feature_scalers = state.get('group_feature_scalers', {})
-        predictor.group_target_scalers = state.get('group_target_scalers', {})
+        # Restore group scalers
+        predictor.group_feature_scalers = state['group_feature_scalers']
+        predictor.group_target_scalers = state['group_target_scalers']
 
         # Recreate model with correct output size
-        # Use saved num_features to ensure model architecture matches the saved weights
-        num_features = state.get('num_features', len(predictor.feature_columns))
+        num_features = state['num_features']
 
         # Calculate total output size
         if predictor.is_multi_target:

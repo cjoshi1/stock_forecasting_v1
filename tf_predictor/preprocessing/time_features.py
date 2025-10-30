@@ -23,12 +23,12 @@ def create_cyclical_features(df: pd.DataFrame, datetime_col: str,
         df: DataFrame with cyclical encoding features added
     """
     df = df.copy()
-    
+
     # Convert to datetime if not already
     if not pd.api.types.is_datetime64_any_dtype(df[datetime_col]):
         df[datetime_col] = pd.to_datetime(df[datetime_col])
-    
-    # Default features for backward compatibility
+
+    # Default features
     if include_features is None:
         include_features = ['month', 'dayofweek']
     

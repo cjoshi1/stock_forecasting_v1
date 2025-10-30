@@ -15,7 +15,7 @@ python daily_stock_forecasting/main.py --use_sample_data --target "close,volume"
 python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type stock --prediction_horizon 3 --epochs 50
 
 # Portfolio with group-based scaling (multiple stocks)
-python daily_stock_forecasting/main.py --data_path portfolio.csv --target close --asset_type stock --group_column symbol --epochs 100
+python daily_stock_forecasting/main.py --data_path portfolio.csv --target close --asset_type stock --group_columns symbol --epochs 100
 
 # Crypto prediction (7-day week, includes weekends)
 python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
@@ -31,7 +31,7 @@ python intraday_forecasting/main.py --use_sample_data --timeframe 5min --country
 python intraday_forecasting/main.py --use_sample_data --target "close,volume" --timeframe 5min --country US --epochs 30
 
 # Multi-symbol portfolio with group scaling
-python intraday_forecasting/main.py --data_path multi_symbol.csv --timeframe 5min --country US --group_column symbol --epochs 50
+python intraday_forecasting/main.py --data_path multi_symbol.csv --timeframe 5min --country US --group_columns symbol --epochs 50
 
 # Indian market prediction
 python intraday_forecasting/main.py --use_sample_data --timeframe 5min --country INDIA --epochs 30
@@ -56,12 +56,14 @@ python intraday_forecasting/main.py \
   --timeframe 5min \
   --model_type ft \
   --country US \
-  --group_column symbol \
+  --group_columns symbol \
+  --categorical_columns symbol \
+  --scaler_type standard \
   --sequence_length 60 \
   --prediction_horizon 5 \
-  --d_token 128 \
-  --n_layers 3 \
-  --n_heads 8 \
+  --d_model 128 \
+  --num_layers 3 \
+  --num_heads 8 \
   --dropout 0.1 \
   --per_group_metrics \
   --epochs 50 \
@@ -92,12 +94,15 @@ python daily_stock_forecasting/main.py \
   --data_path /path/to/stock_data.csv \
   --target "close,volume" \
   --asset_type stock \
-  --group_column symbol \
+  --model_type ft \
+  --group_columns symbol \
+  --categorical_columns symbol \
+  --scaler_type standard \
   --sequence_length 10 \
   --prediction_horizon 3 \
-  --d_token 128 \
-  --n_layers 3 \
-  --n_heads 8 \
+  --d_model 128 \
+  --num_layers 3 \
+  --num_heads 8 \
   --dropout 0.1 \
   --per_group_metrics \
   --epochs 100 \
@@ -127,9 +132,13 @@ python daily_stock_forecasting/main.py \
 |-----------|------|-------------|---------|-------|
 | `--data_path` | string | Path to CSV file with OHLCV data | None | Required unless using `--use_sample_data` |
 | `--target` | string | Column(s) to predict | close | Single: `close` or Multi: `"close,volume"` (comma-separated, use quotes) |
-| `--group_column` | string | Column for group-based scaling | None | Use 'symbol' for multi-asset datasets |
+| `--group_columns` | string | Column(s) for group-based scaling | None | Use 'symbol' for multi-asset datasets. Multiple: `"symbol,sector"` |
+| `--categorical_columns` | string | Column(s) to encode as categorical features | None | Multiple: `"symbol,sector"` |
+| `--scaler_type` | string | Type of scaler for normalization | standard | Options: standard, minmax, robust, maxabs, onlymax |
 | `--use_sample_data` | flag | Use synthetic sample data | False | For testing without real data |
-| `--per_group_metrics` | flag | Show per-group evaluation metrics | False | Only with `--group_column` |
+| `--per_group_metrics` | flag | Show per-group evaluation metrics | False | Only with `--group_columns` |
+| `--use_lagged_target_features` | flag | Include target columns in input for autoregressive modeling | False | Enables lagged target features |
+| `--lag_periods` | string | Comma-separated lag periods for target features | None | e.g., "1,2,3,7,14". Only with `--use_lagged_target_features` |
 
 ### Market-Specific Parameters (Intraday Only)
 
@@ -151,11 +160,12 @@ python daily_stock_forecasting/main.py \
 
 | Parameter | Type | Description | Default | Recommended Range |
 |-----------|------|-------------|---------|-------------------|
-| `--sequence_length` | int | Historical periods for input | Auto/5 | 5-60 |
+| `--sequence_length` | int | Historical periods for input | 5 (daily), auto (intraday) | 5-60 |
 | `--prediction_horizon` | int | Steps ahead to predict | 1 | 1=single step, >1=multi-horizon |
-| `--d_token` | int | Token embedding dimension | 128 | 64-512 |
-| `--n_layers` | int | Number of transformer layers | 3 | 2-8 |
-| `--n_heads` | int | Number of attention heads | 8 | 4-16 |
+| `--model_type` | string | Model architecture | ft | ft (FT-Transformer), csn (CSN-Transformer) |
+| `--d_model` | int | Token embedding dimension | 128 | 64-512 |
+| `--num_layers` | int | Number of transformer layers | 3 | 2-8 |
+| `--num_heads` | int | Number of attention heads | 8 | 4-16 |
 | `--dropout` | float | Dropout rate | 0.1 | 0.05-0.3 |
 
 ### Training Parameters

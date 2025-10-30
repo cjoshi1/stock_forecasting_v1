@@ -65,8 +65,7 @@ class MultiHorizonHead(nn.Module):
         """
         predictions = self.head(cls_output)  # [batch_size, prediction_horizons]
 
-        # For single horizon, optionally squeeze to [batch_size]
-        # This maintains backward compatibility with existing code
+        # For single horizon, squeeze to [batch_size]
         if self.prediction_horizons == 1:
             predictions = predictions.squeeze(-1)  # [batch_size]
 
