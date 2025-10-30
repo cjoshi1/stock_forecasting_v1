@@ -387,9 +387,9 @@ def main():
     parser.add_argument('--timeframe', type=str, default='5min',
                        choices=['1min', '5min', '15min', '1h'],
                        help='Trading timeframe for prediction')
-    parser.add_argument('--model_type', type=str, default='ft',
-                       choices=['ft', 'csn'],
-                       help='Model architecture (ft=FT-Transformer, csn=CSNTransformer)')
+    parser.add_argument('--model_type', type=str, default='ft_transformer_cls',
+                       choices=['ft_transformer_cls', 'csn_transformer_cls'],
+                       help='Model architecture (ft_transformer_cls=FT-Transformer, csn_transformer_cls=CSNTransformer)')
     parser.add_argument('--country', type=str, default='US',
                        choices=['US', 'INDIA', 'CRYPTO'],
                        help='Country market (US, INDIA, or CRYPTO for 24/7 cryptocurrency trading)')

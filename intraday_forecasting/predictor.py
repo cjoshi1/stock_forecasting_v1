@@ -27,7 +27,7 @@ class IntradayPredictor(TimeSeriesPredictor):
     time-of-day effects, and market microstructure features.
     """
     
-    def __init__(self, target_column: Union[str, list] = 'close', timeframe: str = '5min', model_type: str = 'ft',
+    def __init__(self, target_column: Union[str, list] = 'close', timeframe: str = '5min', model_type: str = 'ft_transformer_cls',
                  timestamp_col: str = 'timestamp', country: str = 'US',
                  prediction_horizon: int = 1, group_columns: Optional[Union[str, list]] = None,
                  categorical_columns: Optional[Union[str, list]] = None,
@@ -44,7 +44,7 @@ class IntradayPredictor(TimeSeriesPredictor):
                           - str: Single target (e.g., 'close')
                           - List[str]: Multiple targets (e.g., ['close', 'volume'])
             timeframe: Trading timeframe ('1min', '5min', '15min', '1h')
-            model_type: Model architecture ('ft' for FT-Transformer, 'csn' for CSNTransformer)
+            model_type: Model architecture ('ft_transformer_cls' for FT-Transformer, 'csn_transformer_cls' for CSNTransformer)
             timestamp_col: Name of timestamp column
             country: Country code ('US' or 'INDIA')
             prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
@@ -65,8 +65,8 @@ class IntradayPredictor(TimeSeriesPredictor):
             raise ValueError(f"Unsupported country: {country}. Use: US or INDIA")
 
         # Validate model type
-        if model_type not in ['ft', 'csn']:
-            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft' or 'csn'")
+        if model_type not in ['ft_transformer_cls', 'csn_transformer_cls']:
+            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft_transformer_cls' or 'csn_transformer_cls'")
 
         # Get timeframe-specific configuration
         self.timeframe = timeframe
@@ -97,17 +97,14 @@ class IntradayPredictor(TimeSeriesPredictor):
         # The base TimeSeriesPredictor will handle the normalization
         shifted_target_name = target_column
 
-        # Map model_type to factory names
-        factory_model_type = 'csn_transformer' if model_type == 'csn' else 'ft_transformer'
-
-        # Initialize base predictor with model_type
+        # Initialize base predictor with model_type (no mapping needed - names match factory)
         super().__init__(
             target_column=shifted_target_name,
             sequence_length=sequence_length,
             prediction_horizon=prediction_horizon,
             group_columns=group_columns,
             categorical_columns=categorical_columns,
-            model_type=factory_model_type,
+            model_type=model_type,
             scaler_type=scaler_type,
             use_lagged_target_features=use_lagged_target_features,
             lag_periods=lag_periods,
@@ -126,7 +123,7 @@ class IntradayPredictor(TimeSeriesPredictor):
         self.market_config = market_config
 
         if verbose:
-            model_name = "CSNTransformer" if model_type == 'csn' else "FT-Transformer"
+            model_name = "CSNTransformer" if model_type == 'csn_transformer_cls' else "FT-Transformer"
             targets_text = ', '.join(target_columns_list) if is_multi_target else target_columns_list[0]
             print(f"Initialized IntradayPredictor for {timeframe} forecasting")
             print(f"  - Target(s): {targets_text}")

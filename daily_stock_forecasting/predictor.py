@@ -22,7 +22,7 @@ class StockPredictor(TimeSeriesPredictor):
         sequence_length: int = 5,  # Number of historical days to use
         prediction_horizon: int = 1,  # Number of steps ahead to predict
         asset_type: str = 'stock',  # 'stock' or 'crypto'
-        model_type: str = 'ft',  # 'ft' or 'csn'
+        model_type: str = 'ft_transformer_cls',  # 'ft_transformer_cls' or 'csn_transformer_cls'
         group_columns: Optional[Union[str, list]] = None,  # Column(s) for group-based scaling
         categorical_columns: Optional[Union[str, list]] = None,  # Column(s) for categorical features
         scaler_type: str = 'standard',  # Scaler type for normalization
@@ -42,7 +42,7 @@ class StockPredictor(TimeSeriesPredictor):
             sequence_length: Number of historical days to use for prediction
             prediction_horizon: Number of steps ahead to predict (1 = next step)
             asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
-            model_type: Model architecture ('ft' for FT-Transformer, 'csn' for CSNTransformer)
+            model_type: Model architecture ('ft_transformer_cls' for FT-Transformer, 'csn_transformer_cls' for CSNTransformer)
             group_columns: Optional column(s) for group-based scaling (e.g., 'symbol' for multi-stock datasets)
             categorical_columns: Optional column(s) to encode and pass as categorical features
             scaler_type: Type of scaler ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
@@ -55,8 +55,8 @@ class StockPredictor(TimeSeriesPredictor):
             **kwargs: Additional model hyperparameters
         """
         # Validate model type
-        if model_type not in ['ft', 'csn']:
-            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft' or 'csn'")
+        if model_type not in ['ft_transformer_cls', 'csn_transformer_cls']:
+            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft_transformer_cls' or 'csn_transformer_cls'")
 
         # Store original target info before any transformation
         self.original_target_column = target_column
@@ -67,17 +67,14 @@ class StockPredictor(TimeSeriesPredictor):
         # Initialize logger with a specific format
         self.logger = self._initialize_logger()
 
-        # Map model_type to factory names
-        factory_model_type = 'csn_transformer' if model_type == 'csn' else 'ft_transformer'
-
-        # Initialize base predictor with model_type
+        # Initialize base predictor with model_type (no mapping needed - names match factory)
         super().__init__(
             target_column=target_column,
             sequence_length=sequence_length,
             prediction_horizon=prediction_horizon,
             group_columns=group_columns,
             categorical_columns=categorical_columns,
-            model_type=factory_model_type,
+            model_type=model_type,
             scaler_type=scaler_type,
             use_lagged_target_features=use_lagged_target_features,
             lag_periods=lag_periods,

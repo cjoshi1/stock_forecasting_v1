@@ -54,7 +54,7 @@ python intraday_forecasting/main.py \
   --data_path /path/to/intraday_data.csv \
   --target "close,volume" \
   --timeframe 5min \
-  --model_type ft \
+  --model_type ft_transformer_cls \
   --country US \
   --group_columns symbol \
   --categorical_columns symbol \
@@ -94,7 +94,7 @@ python daily_stock_forecasting/main.py \
   --data_path /path/to/stock_data.csv \
   --target "close,volume" \
   --asset_type stock \
-  --model_type ft \
+  --model_type ft_transformer_cls \
   --group_columns symbol \
   --categorical_columns symbol \
   --scaler_type standard \
@@ -146,7 +146,7 @@ python daily_stock_forecasting/main.py \
 |-----------|------|-------------|---------|---------|
 | `--timeframe` | string | Trading timeframe | 5min | 1min, 5min, 15min, 1h |
 | `--country` | string | Market type | US | US, INDIA, CRYPTO |
-| `--model_type` | string | Model architecture | ft | ft (FT-Transformer), csn (CSN-Transformer) |
+| `--model_type` | string | Model architecture | ft_transformer_cls | ft_transformer_cls (FT-Transformer), csn_transformer_cls (CSN-Transformer) |
 | `--sample_days` | int | Days for sample data | 5 | Used with `--use_sample_data` |
 | `--future_predictions` | int | Future periods to predict | 0 | 0 = no future predictions |
 
@@ -162,7 +162,7 @@ python daily_stock_forecasting/main.py \
 |-----------|------|-------------|---------|-------------------|
 | `--sequence_length` | int | Historical periods for input | 5 (daily), auto (intraday) | 5-60 |
 | `--prediction_horizon` | int | Steps ahead to predict | 1 | 1=single step, >1=multi-horizon |
-| `--model_type` | string | Model architecture | ft | ft (FT-Transformer), csn (CSN-Transformer) |
+| `--model_type` | string | Model architecture | ft_transformer_cls | ft_transformer_cls (FT-Transformer), csn_transformer_cls (CSN-Transformer) |
 | `--d_model` | int | Token embedding dimension | 128 | 64-512 |
 | `--num_layers` | int | Number of transformer layers | 3 | 2-8 |
 | `--num_heads` | int | Number of attention heads | 8 | 4-16 |

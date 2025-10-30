@@ -64,9 +64,9 @@ def main():
                        help='Number of historical days to use for prediction')
     parser.add_argument('--prediction_horizon', type=int, default=1,
                        help='Number of steps ahead to predict (1=next step, 2=two steps ahead, etc.)')
-    parser.add_argument('--model_type', type=str, default='ft',
-                       choices=['ft', 'csn'],
-                       help='Model architecture (ft=FT-Transformer, csn=CSNTransformer)')
+    parser.add_argument('--model_type', type=str, default='ft_transformer_cls',
+                       choices=['ft_transformer_cls', 'csn_transformer_cls'],
+                       help='Model architecture (ft_transformer_cls=FT-Transformer, csn_transformer_cls=CSNTransformer)')
     parser.add_argument('--d_model', type=int, default=128,
                        help='Token embedding dimension (formerly d_token)')
     parser.add_argument('--num_layers', type=int, default=3,
@@ -266,8 +266,7 @@ def main():
 
     print(f"   Model configuration:")
     print(f"   - Asset type: {args.asset_type}")
-    model_name = "CSNTransformer" if args.model_type == 'csn' else "FT-Transformer"
-    print(f"   - Model type: {model_name}")
+    print(f"   - Model type: {args.model_type}")
     if isinstance(target_columns, list):
         print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
     else:

@@ -159,7 +159,7 @@ PYTHONPATH=. venv/bin/python intraday_forecasting/main.py \
   --data_path /path/to/your/data.csv \
   --target close \
   --timeframe 5min \
-  --model_type ft \
+  --model_type ft_transformer_cls \
   --country US \
   --sequence_length 60 \
   --d_token 128 \
@@ -183,7 +183,7 @@ PYTHONPATH=. venv/bin/python intraday_forecasting/main.py \
 - `--data_path PATH`: Path to your CSV file
 - `--target {close,open,high,low,volume}`: Target column to predict (default: close)
 - `--timeframe {1min,5min,15min,1h}`: Trading timeframe (default: 5min)
-- `--model_type {ft,csn}`: Model architecture (ft=FT-Transformer, csn=CSNTransformer)
+- `--model_type {ft_transformer_cls,csn_transformer_cls}`: Model architecture (ft_transformer_cls=FT-Transformer, csn_transformer_cls=CSNTransformer)
 - `--country {US,INDIA,CRYPTO}`: Market type (default: US)
 - `--use_sample_data`: Use synthetic sample data instead of real data
 - `--sample_days N`: Number of days for sample data generation (default: 5)
