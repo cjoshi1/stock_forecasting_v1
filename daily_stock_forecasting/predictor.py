@@ -117,6 +117,46 @@ class StockPredictor(TimeSeriesPredictor):
         # Then call parent's prepare_features to add time-series features
         return super().prepare_features(df_with_stock_features, fit_scaler)
 
+    def predict(self, df: pd.DataFrame, return_group_info: bool = False):
+        """
+        Override predict to store properly preprocessed dataframe for evaluation.
+
+        The issue: StockPredictor.prepare_features() calls create_stock_features()
+        which creates shifted targets, but then prepare_data() calls
+        create_shifted_targets() AGAIN. We need to store the FINAL processed
+        dataframe (after both preprocessing steps) for evaluation alignment.
+
+        Args:
+            df: DataFrame with raw stock data
+            return_group_info: If True, return (predictions, group_indices)
+
+        Returns:
+            predictions: Array or dict of predictions (same as parent)
+            group_indices: List of group values (only if return_group_info=True)
+        """
+        # Preprocess exactly as prepare_data() does it
+        # Step 1: Call prepare_features (applies stock features + base features)
+        df_processed = self.prepare_features(df.copy(), fit_scaler=False)
+
+        # Step 2: Apply the same target shifting that prepare_data() does
+        # This is critical - prepare_data() calls create_shifted_targets() which
+        # overwrites the targets created by create_stock_features()
+        from tf_predictor.preprocessing.time_features import create_shifted_targets
+        group_col_for_shift = self.categorical_columns if self.categorical_columns else self.group_columns
+        df_processed = create_shifted_targets(
+            df_processed,
+            target_column=self.target_columns,
+            prediction_horizon=self.prediction_horizon,
+            group_column=group_col_for_shift,
+            verbose=False
+        )
+
+        # Store for evaluation - this now matches what prepare_data() produces
+        self._last_processed_df = df_processed
+
+        # Call parent predict (which will call prepare_data internally)
+        return super().predict(df, return_group_info)
+
     def predict_next_bars(self, df: pd.DataFrame, n_predictions: int = 1) -> pd.DataFrame:
         """
         Predict next N days for stock/crypto trading.
