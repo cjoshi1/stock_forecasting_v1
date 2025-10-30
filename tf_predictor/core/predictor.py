@@ -1764,6 +1764,23 @@ class TimeSeriesPredictor:
         # Get unique groups
         unique_groups = sorted(set(group_indices))
 
+        # We need to map group_value (label encoded int) back to original group column values
+        # First, decode the group values using the categorical encoder
+        if self.group_columns:
+            # Get the group column name
+            group_col_name = self.group_columns[0]  # Assuming single group column for now
+
+            # Get encoder for this group column
+            if group_col_name in self.cat_encoders:
+                encoder = self.cat_encoders[group_col_name]
+                # Map encoded values back to original strings
+                group_value_to_name = {i: name for i, name in enumerate(encoder.classes_)}
+            else:
+                # Fallback: use group values as-is (shouldn't happen in normal flow)
+                group_value_to_name = {gv: gv for gv in unique_groups}
+        else:
+            group_value_to_name = {gv: gv for gv in unique_groups}
+
         # Check if multi-target
         if self.is_multi_target:
             # Multi-target per-group evaluation
@@ -1775,38 +1792,61 @@ class TimeSeriesPredictor:
             all_metrics = {}
 
             for target_col in self.target_columns:
-                # Get actual values for this target from raw dataframe
-                if self.sequence_length > 1:
-                    actual_base = df[target_col].values[self.sequence_length:]
-                else:
-                    actual_base = df[target_col].values
-
                 target_predictions = predictions[target_col]
 
                 # Calculate per-group metrics for this target
                 for group_value in unique_groups:
-                    # Find indices for this group
+                    # Get the original group name
+                    group_name = group_value_to_name[group_value]
+
+                    # Filter DataFrame by this group to get actual values
+                    group_df = df[df[group_col_name] == group_name].copy()
+
+                    # Extract actual values for this group with sequence_length offset
+                    if self.sequence_length > 1:
+                        group_actual_full = group_df[target_col].values[self.sequence_length:]
+                    else:
+                        group_actual_full = group_df[target_col].values
+
+                    # Get predictions for this group
                     group_mask = np.array([g == group_value for g in group_indices])
-                    group_pred_indices = np.where(group_mask)[0]
 
                     if self.prediction_horizon == 1:
                         # Single-horizon
                         group_preds = target_predictions[group_mask]
-                        group_actual = actual_base[group_pred_indices]
-                        min_len = min(len(group_actual), len(group_preds))
 
-                        group_metrics = calculate_metrics(group_actual[:min_len], group_preds[:min_len])
+                        # Align actual values with predictions
+                        min_len = min(len(group_actual_full), len(group_preds))
+                        group_actual = group_actual_full[:min_len]
+                        group_preds = group_preds[:min_len]
+
+                        group_metrics = calculate_metrics(group_actual, group_preds)
                     else:
                         # Multi-horizon
                         group_preds = target_predictions[group_mask, :]
-                        group_actual_aligned = actual_base[group_pred_indices[0]:group_pred_indices[-1] + self.prediction_horizon]
-                        min_len = min(len(group_actual_aligned) - self.prediction_horizon + 1, group_preds.shape[0])
 
-                        group_metrics = calculate_metrics_multi_horizon(
-                            group_actual_aligned[:min_len + self.prediction_horizon - 1],
-                            group_preds[:min_len],
-                            self.prediction_horizon
-                        )
+                        # For multi-horizon, we need enough actual values to cover all horizons
+                        # Each prediction at index i needs actuals[i:i+prediction_horizon]
+                        num_preds = group_preds.shape[0]
+                        needed_actuals = num_preds + self.prediction_horizon - 1
+
+                        if len(group_actual_full) >= needed_actuals:
+                            group_actual_aligned = group_actual_full[:needed_actuals]
+                        else:
+                            # Not enough actuals - trim predictions
+                            num_preds = max(0, len(group_actual_full) - self.prediction_horizon + 1)
+                            group_actual_aligned = group_actual_full
+                            group_preds = group_preds[:num_preds] if num_preds > 0 else group_preds[:0]
+
+                        if len(group_preds) > 0:
+                            group_metrics = calculate_metrics_multi_horizon(
+                                group_actual_aligned,
+                                group_preds,
+                                self.prediction_horizon
+                            )
+                        else:
+                            # Skip if no valid predictions
+                            continue
 
                     # Store metrics in nested structure
                     group_key = str(group_value)
@@ -1814,18 +1854,36 @@ class TimeSeriesPredictor:
                         all_metrics[group_key] = {}
                     all_metrics[group_key][target_col] = group_metrics
 
-                # Calculate overall metrics for this target
-                if self.prediction_horizon == 1:
-                    min_len = min(len(actual_base), len(target_predictions))
-                    overall_target_metrics = calculate_metrics(actual_base[:min_len], target_predictions[:min_len])
+                # Calculate overall metrics for this target (using all groups combined)
+                # Get all actual values across all groups
+                if self.sequence_length > 1:
+                    all_actual = df[target_col].values[self.sequence_length:]
                 else:
-                    min_len = min(len(actual_base), target_predictions.shape[0])
-                    actual_aligned = actual_base[:min_len + self.prediction_horizon - 1]
-                    overall_target_metrics = calculate_metrics_multi_horizon(
-                        actual_aligned,
-                        target_predictions[:min_len],
-                        self.prediction_horizon
-                    )
+                    all_actual = df[target_col].values
+
+                if self.prediction_horizon == 1:
+                    min_len = min(len(all_actual), len(target_predictions))
+                    overall_target_metrics = calculate_metrics(all_actual[:min_len], target_predictions[:min_len])
+                else:
+                    num_preds = target_predictions.shape[0]
+                    needed_actuals = num_preds + self.prediction_horizon - 1
+
+                    if len(all_actual) >= needed_actuals:
+                        actual_aligned = all_actual[:needed_actuals]
+                        preds_aligned = target_predictions
+                    else:
+                        num_preds = max(0, len(all_actual) - self.prediction_horizon + 1)
+                        actual_aligned = all_actual
+                        preds_aligned = target_predictions[:num_preds] if num_preds > 0 else target_predictions[:0]
+
+                    if len(preds_aligned) > 0:
+                        overall_target_metrics = calculate_metrics_multi_horizon(
+                            actual_aligned,
+                            preds_aligned,
+                            self.prediction_horizon
+                        )
+                    else:
+                        continue
 
                 # Store overall metrics for this target
                 if 'overall' not in all_metrics:
@@ -1836,59 +1894,90 @@ class TimeSeriesPredictor:
 
         else:
             # Single-target per-group evaluation
-            # Prepare actual values from raw dataframe
             target_col = self.target_columns[0]
-            if self.sequence_length > 1:
-                actual_base = df[target_col].values[self.sequence_length:]
-            else:
-                actual_base = df[target_col].values
 
             # Storage for per-group metrics
             all_metrics = {}
 
             # Calculate metrics per group
             for group_value in unique_groups:
-                # Find indices for this group
+                # Get the original group name
+                group_name = group_value_to_name[group_value]
+
+                # Filter DataFrame by this group to get actual values
+                group_df = df[df[group_col_name] == group_name].copy()
+
+                # Extract actual values for this group with sequence_length offset
+                if self.sequence_length > 1:
+                    group_actual_full = group_df[target_col].values[self.sequence_length:]
+                else:
+                    group_actual_full = group_df[target_col].values
+
+                # Get predictions for this group
                 group_mask = np.array([g == group_value for g in group_indices])
                 group_preds = predictions[group_mask] if self.prediction_horizon == 1 else predictions[group_mask, :]
 
-                # Get actual values for this group
-                group_pred_indices = np.where(group_mask)[0]
-
                 if self.prediction_horizon == 1:
                     # Single-horizon
-                    group_actual = actual_base[group_pred_indices]
-                    min_len = min(len(group_actual), len(group_preds))
+                    min_len = min(len(group_actual_full), len(group_preds))
+                    group_actual = group_actual_full[:min_len]
+                    group_preds = group_preds[:min_len]
 
-                    group_metrics = calculate_metrics(group_actual[:min_len], group_preds[:min_len])
+                    group_metrics = calculate_metrics(group_actual, group_preds)
                     all_metrics[str(group_value)] = group_metrics
 
                 else:
                     # Multi-horizon
-                    group_actual_aligned = actual_base[group_pred_indices[0]:group_pred_indices[-1] + self.prediction_horizon]
-                    min_len = min(len(group_actual_aligned) - self.prediction_horizon + 1, group_preds.shape[0])
+                    num_preds = group_preds.shape[0]
+                    needed_actuals = num_preds + self.prediction_horizon - 1
 
-                    group_metrics = calculate_metrics_multi_horizon(
-                        group_actual_aligned[:min_len + self.prediction_horizon - 1],
-                        group_preds[:min_len],
-                        self.prediction_horizon
-                    )
-                    all_metrics[str(group_value)] = group_metrics
+                    if len(group_actual_full) >= needed_actuals:
+                        group_actual_aligned = group_actual_full[:needed_actuals]
+                    else:
+                        # Not enough actuals - trim predictions
+                        num_preds = max(0, len(group_actual_full) - self.prediction_horizon + 1)
+                        group_actual_aligned = group_actual_full
+                        group_preds = group_preds[:num_preds] if num_preds > 0 else group_preds[:0]
+
+                    if len(group_preds) > 0:
+                        group_metrics = calculate_metrics_multi_horizon(
+                            group_actual_aligned,
+                            group_preds,
+                            self.prediction_horizon
+                        )
+                        all_metrics[str(group_value)] = group_metrics
 
             # Calculate overall metrics across all groups
+            if self.sequence_length > 1:
+                all_actual = df[target_col].values[self.sequence_length:]
+            else:
+                all_actual = df[target_col].values
+
             if self.prediction_horizon == 1:
                 # Single-horizon overall
-                min_len = min(len(actual_base), len(predictions))
-                overall_metrics = calculate_metrics(actual_base[:min_len], predictions[:min_len])
+                min_len = min(len(all_actual), len(predictions))
+                overall_metrics = calculate_metrics(all_actual[:min_len], predictions[:min_len])
             else:
                 # Multi-horizon overall
-                min_len = min(len(actual_base), predictions.shape[0])
-                actual_aligned = actual_base[:min_len + self.prediction_horizon - 1]
-                overall_metrics = calculate_metrics_multi_horizon(
-                    actual_aligned,
-                    predictions[:min_len],
-                    self.prediction_horizon
-                )
+                num_preds = predictions.shape[0]
+                needed_actuals = num_preds + self.prediction_horizon - 1
+
+                if len(all_actual) >= needed_actuals:
+                    actual_aligned = all_actual[:needed_actuals]
+                    preds_aligned = predictions
+                else:
+                    num_preds = max(0, len(all_actual) - self.prediction_horizon + 1)
+                    actual_aligned = all_actual
+                    preds_aligned = predictions[:num_preds] if num_preds > 0 else predictions[:0]
+
+                if len(preds_aligned) > 0:
+                    overall_metrics = calculate_metrics_multi_horizon(
+                        actual_aligned,
+                        preds_aligned,
+                        self.prediction_horizon
+                    )
+                else:
+                    overall_metrics = {}
 
             # Combine into final structure
             result = {'overall': overall_metrics}
