@@ -33,6 +33,11 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
     if group_column is not None:
         group_column = group_column.lower()
 
+    # Standardize datetime column name to 'date'
+    if 'datetime' in df.columns and 'date' not in df.columns:
+        df = df.rename(columns={'datetime': 'date'})
+        date_column = 'date'
+
     # Remove any non-numeric columns that we don't need (except group column)
     # Keep only OHLCV + date + group column + any other useful columns
     cols_to_keep = []
