@@ -74,34 +74,26 @@ def create_intraday_visualizations(predictor, train_df, test_df, output_dir="out
         if train_features is not None:
             # Use provided cached features
             train_predictions = predictor.predict_from_features(train_features)
-            train_processed = train_features
         else:
             # Fall back to regular prediction
             train_predictions = predictor.predict(train_df)
-            train_processed = predictor.prepare_features(train_df, fit_scaler=False)
 
         # Handle validation data
         if val_df is not None:
             if val_features is not None:
                 val_predictions = predictor.predict_from_features(val_features)
-                val_processed = val_features
             else:
                 val_predictions = predictor.predict(val_df)
-                val_processed = predictor.prepare_features(val_df, fit_scaler=False)
         else:
             val_predictions = None
-            val_processed = None
 
         if test_df is not None:
             if test_features is not None:
                 test_predictions = predictor.predict_from_features(test_features)
-                test_processed = test_features
             else:
                 test_predictions = predictor.predict(test_df)
-                test_processed = predictor.prepare_features(test_df, fit_scaler=False)
         else:
             test_predictions = None
-            test_processed = None
 
         # Get timestamps for plotting - align with predictions
         # create_features() does shift(-h) and dropna() which removes last prediction_horizon rows

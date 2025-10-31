@@ -356,18 +356,6 @@ def main():
             print(f"\n   Test Metrics:")
             print_metrics_recursive(test_metrics, indent=2)
 
-    # Prepare features for visualization (after evaluation to avoid double computation)
-    print("\n   Preparing features for visualization...")
-    train_features = model.prepare_features(train_df, fit_scaler=False)
-    if val_df is not None and len(val_df) > 0:
-        val_features = model.prepare_features(val_df, fit_scaler=False)
-    else:
-        val_features = None
-    if test_df is not None and len(test_df) > 0:
-        test_features = model.prepare_features(test_df, fit_scaler=False)
-    else:
-        test_features = None
-    
     # 7. Generate Comprehensive Plots
     if not args.no_plots:
         print(f"\n📊 Generating comprehensive visualizations...")

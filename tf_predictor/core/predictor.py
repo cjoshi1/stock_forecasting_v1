@@ -627,7 +627,7 @@ class TimeSeriesPredictor:
             y: Target tensor of shape (n_samples, n_targets * n_horizons) - already scaled
         """
 
-        # Note: Data is already sorted by group and time in prepare_features()
+        # Note: Data is already sorted by group and time in _create_base_features()
         # so temporal order is guaranteed at this point
 
         # Validate target columns exist
@@ -1972,7 +1972,10 @@ class TimeSeriesPredictor:
             'categorical_columns': self.categorical_columns,
             'numerical_columns': self.numerical_columns,
             'group_feature_scalers': self.group_feature_scalers,
-            'group_target_scalers': self.group_target_scalers
+            'group_target_scalers': self.group_target_scalers,
+            # Categorical encoders (needed for CLS models)
+            'cat_encoders': self.cat_encoders,
+            'cat_cardinalities': self.cat_cardinalities
         }
 
         # Add per-horizon target scalers (used for both single and multi-target)
@@ -2012,6 +2015,12 @@ class TimeSeriesPredictor:
         predictor.group_feature_scalers = state['group_feature_scalers']
         predictor.group_target_scalers = state['group_target_scalers']
 
+        # Restore categorical encoders and cardinalities (needed for CLS models)
+        if 'cat_encoders' in state:
+            predictor.cat_encoders = state['cat_encoders']
+        if 'cat_cardinalities' in state:
+            predictor.cat_cardinalities = state['cat_cardinalities']
+
         # Recreate model with correct output size
         num_features = state['num_features']
 
@@ -2027,13 +2036,29 @@ class TimeSeriesPredictor:
                        if k not in ['verbose']}
 
         # Recreate model using factory
-        predictor.model = ModelFactory.create_model(
-            model_type=predictor.model_type,
-            sequence_length=predictor.sequence_length if predictor.sequence_length > 1 else 1,
-            num_features=num_features,
-            output_dim=total_output_size,
-            **model_kwargs
-        )
+        if predictor.model_type.endswith('_cls'):
+            # CLS models need separate numerical/categorical counts
+            num_numerical = len(predictor.numerical_columns) if predictor.numerical_columns else num_features
+            num_categorical = len(predictor.categorical_columns) if predictor.categorical_columns else 0
+
+            predictor.model = ModelFactory.create_model(
+                model_type=predictor.model_type,
+                sequence_length=predictor.sequence_length if predictor.sequence_length > 1 else 1,
+                num_numerical=num_numerical,
+                num_categorical=num_categorical,
+                cat_cardinalities=predictor.cat_cardinalities,
+                output_dim=total_output_size,
+                **model_kwargs
+            )
+        else:
+            # Standard models use num_features
+            predictor.model = ModelFactory.create_model(
+                model_type=predictor.model_type,
+                sequence_length=predictor.sequence_length if predictor.sequence_length > 1 else 1,
+                num_features=num_features,
+                output_dim=total_output_size,
+                **model_kwargs
+            )
 
         predictor.model.load_state_dict(state['model_state_dict'])
         predictor.model.to(predictor.device)
