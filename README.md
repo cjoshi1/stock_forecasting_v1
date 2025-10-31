@@ -1,6 +1,17 @@
 # 🚀 TF Predictor: Modular Time Series Forecasting Framework
 
+**Version:** 2.0.0 (Updated: 2025-10-31)
+
 A comprehensive, modular framework for time series forecasting using the TF Predictor (Feature Tokenizer Transformer) architecture. This project provides a generic reusable library and specialized applications for daily and intraday stock market forecasting.
+
+## 🎉 Version 2.0.0 Highlights
+
+- **Per-Horizon Scaling**: Each prediction horizon gets its own scaler for improved accuracy
+- **Automatic Cyclical Encoding**: Temporal features automatically encoded as sin/cos
+- **Evaluation Bug Fixed**: Resolved 100% MAPE bug through proper dataframe alignment
+- **Cleaner Architecture**: 7-stage preprocessing pipeline with clear separation of concerns
+- **Simplified API**: `_create_base_features()` replaces `prepare_features()` for better extensibility
+- **Better Metrics**: Per-horizon evaluation breakdown (MAPE, RMSE, R2 for each horizon)
 
 ## 🚀 Quick Start
 
@@ -49,19 +60,33 @@ python main.py --data_path data/raw/AAPL.csv --target close --asset_type stock -
 python main.py --use_sample_data --target "close,volume" --asset_type stock --epochs 50
 ```
 
-### For Custom Time Series (Generic Library)
+### For Custom Time Series (Generic Library - v2.0.0 API)
 ```python
 from tf_predictor.core.predictor import TimeSeriesPredictor
-from tf_predictor.preprocessing.time_features import create_date_features
 
 # Create your domain-specific predictor
 class MyPredictor(TimeSeriesPredictor):
-    def create_features(self, df, fit_scaler=False):
-        df_processed = create_date_features(df, 'date')
-        # Add your domain-specific features...
-        return df_processed.fillna(0)
+    def _create_base_features(self, df):
+        """
+        Add domain-specific features only (v2.0.0).
+        Time-series features added automatically by parent.
+        """
+        df_processed = df.copy()
+        # Add your custom features
+        df_processed['custom_feature'] = df_processed['value'] * 2
+        # Fill NaN
+        df_processed = df_processed.fillna(0)
+        # Call parent for time-series features (automatic cyclical encoding)
+        return super()._create_base_features(df_processed)
 
-predictor = MyPredictor(target_column='value', sequence_length=10, prediction_horizon=1)
+predictor = MyPredictor(
+    target_column='value',
+    sequence_length=10,
+    prediction_horizon=1,
+    d_model=128,  # Renamed from d_token in v2.0.0
+    num_layers=3,  # Renamed from n_layers
+    num_heads=8    # Renamed from n_heads
+)
 predictor.fit(train_df, val_df, epochs=100)
 ```
 
@@ -309,10 +334,12 @@ predictor.fit(train_df, val_df, epochs=50)
 - **📊 Intraday Forecasting**: See `intraday_forecasting/README.md` for high-frequency trading details.
 - **🎓 Examples**: Working code examples in all packages.
 
-### Quick Reference Guides ⭐ NEW
+### Quick Reference Guides
 - **⚡ Quick Start**: See `QUICK_START.md` for 30-second setup
 - **📖 Command Examples**: See `COMMAND_EXAMPLES.md` for comprehensive CLI reference
-- **🔧 Group Scaling**: See `GROUP_SCALING_SUMMARY.md` for multi-asset training details
+- **🔧 Pipeline Guide**: See `PIPELINE_QUICK_REFERENCE.md` for v2.0.0 pipeline details
+- **📝 Changelog**: See `CHANGELOG.md` for v2.0.0 migration guide
+- **📋 Refactoring Summary**: See `REFACTORING_COMPLETE_v2.md` for complete v2.0.0 changes
 
 ## 🧪 Testing
 

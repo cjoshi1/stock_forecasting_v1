@@ -1,18 +1,28 @@
 # 📊 Intraday Forecasting with TF Predictor
 
+**Version:** 2.0.0 (Updated: 2025-10-31)
+
 A specialized high-frequency trading forecasting system using the TF Predictor (Feature Tokenizer Transformer) architecture. This package extends the generic `tf_predictor` library with intraday-specific features and workflows for minute-level to hourly predictions across multiple markets.
 
 ## 🎯 Features
 
-- **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously (e.g., close + volume)
-- **Multi-Horizon Prediction**: Predict 1, 2, 3+ time periods ahead simultaneously
-- **Multi-Symbol Support** ⭐ NEW: Train on multiple symbols with group-based scaling for better accuracy
-- **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
+### Version 2.0.0 Highlights ⭐ NEW
+- **Per-Horizon Scaling**: Each prediction horizon gets its own scaler for optimal accuracy
+- **Automatic Cyclical Encoding**: Temporal features (hour, minute, day) automatically encoded as sin/cos
+- **Simplified Feature Engineering**: Clean separation between domain features (vwap) and time-series features
+- **Improved Pipeline**: 7-stage preprocessing pipeline with proper evaluation alignment
+- **Better Metrics**: Per-horizon evaluation metrics (MAPE, RMSE, R2 for each horizon)
+
+### Core Features
+- **Multi-Target Prediction**: Predict multiple variables simultaneously (e.g., close + volume)
+- **Multi-Horizon Prediction**: Predict 1, 2, 3+ time periods ahead simultaneously with per-horizon scalers
+- **Multi-Symbol Support**: Train on multiple symbols with group-based scaling for better accuracy
+- **Automatic Temporal Ordering**: Data automatically sorted to maintain correct time sequences
 - **Multi-Country Support**: US, India, and Crypto markets with specific trading hours (24/7 for crypto)
 - **Multiple Timeframes**: 1min, 5min, 15min, 1h trading frequencies
 - **Market Hours Filtering**: Automatic filtering for each country's trading hours
 - **Intraday Pattern Recognition**: Country-specific time-of-day effects, market session analysis
-- **Rich Feature Engineering**: Volume, VWAP, and cyclical time encodings
+- **Rich Feature Engineering**: Volume, VWAP, and automatic cyclical time encodings
 - **Real-time Ready**: Built for live trading applications
 - **Production Ready**: Complete CLI, testing, and model persistence
 
@@ -41,9 +51,9 @@ predictor = IntradayPredictor(
     timeframe='5min',
     country='US',  # or 'INDIA' or 'CRYPTO'
     prediction_horizon=1,  # Predict 1 step ahead (can use 2, 3+ for multi-horizon)
-    d_token=128,
-    n_layers=3,
-    n_heads=8
+    d_model=128,  # Token embedding dimension (renamed from d_token in v2.0)
+    num_layers=3,  # Number of transformer layers (renamed from n_layers)
+    num_heads=8   # Number of attention heads (renamed from n_heads)
 )
 
 # Train the model
@@ -230,25 +240,37 @@ PYTHONPATH=. venv/bin/python intraday_forecasting/main.py \
 | `15min` | 15-minute bars | 32 periods (8 hours) | Swing trading, medium-term |
 | `1h` | 1-hour bars | 12 periods (12 hours) | Position trading, longer-term |
 
-## 📈 Intraday Features
+## 📈 Intraday Features (v2.0.0)
 
-### Core Features
-- **Volume**: Trading volume
-- **VWAP**: Volume-weighted average price (typical price)
-- **Cyclical Time Encodings**: Hour and minute cyclical encodings (sin/cos)
-- **Day of Week**: Cyclical day-of-week encoding
-- **Market-specific**: Country-specific market session features
+### Domain-Specific Features (Added by IntradayPredictor)
+- **Volume**: Trading volume (preserved from raw data)
+- **VWAP**: Volume-weighted average price = (high + low + close) / 3
+
+### Time-Series Features (Added Automatically by Base Class)
+- **Cyclical Hour**: `hour_sin`, `hour_cos` for 24-hour cycles
+- **Cyclical Minute**: `minute_sin`, `minute_cos` for 60-minute cycles
+- **Cyclical Day**: `day_sin`, `day_cos`, `month_sin`, `month_cos`
+- **Day of Week**: `dayofweek_sin`, `dayofweek_cos`, `is_weekend`
+
+### Removed Features (v2.0.0)
+- Original non-cyclical features (`year`, `month`, `day`, `hour`, `minute`) are automatically dropped after cyclical encoding
+- Target shifting now handled automatically by base class (no manual `_target_h1` columns needed)
 
 ## 🛠️ Configuration Options
 
-### Model Parameters
-- `target_column`: What to predict ('close', 'open', 'high', 'low', 'volume')
+### Model Parameters (v2.0.0)
+- `target_column`: What to predict (str or list: 'close', ['close', 'volume'])
 - `timeframe`: Trading frequency ('1min', '5min', '15min', '1h')
-- `prediction_horizon`: Number of periods ahead to predict (default: 1, >1 for multi-horizon)
+- `prediction_horizon`: Number of periods ahead to predict (default: 1, >1 for multi-horizon with per-horizon scaling)
 - `sequence_length`: Historical periods to use (auto-configured per timeframe)
-- `d_token`: Token embedding dimension (32-512, default: 128)
-- `n_layers`: Transformer layers (1-8, default: 3)
-- `n_heads`: Attention heads (2-16, default: 8)
+- `model_type`: Model architecture ('ft_transformer_cls' or 'csn_transformer_cls')
+- `group_columns`: Column(s) for group-based scaling (str or list: 'symbol' or ['symbol', 'sector'])
+- `categorical_columns`: Categorical features to encode (str or list)
+- `scaler_type`: Scaler type ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
+- `use_lagged_target_features`: Include target in input sequences (bool, default: False)
+- `d_model`: Token embedding dimension (32-512, default: 128) - renamed from `d_token`
+- `num_layers`: Transformer layers (1-8, default: 3) - renamed from `n_layers`
+- `num_heads`: Attention heads (2-16, default: 8) - renamed from `n_heads`
 - `dropout`: Dropout rate (0.0-0.5, default: 0.1)
 
 ### Training Parameters

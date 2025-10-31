@@ -109,17 +109,11 @@ class TimeSeriesPredictor:
         # Single-group scalers (used when group_columns is empty)
         self.scaler = ScalerFactory.create_scaler(scaler_type)  # For features
 
-        # Target scalers structure depends on single vs multi-target
-        # Single-target mode:
-        #   - single-horizon: self.target_scaler (Scaler)
-        #   - multi-horizon: self.target_scaler (Scaler) - SAME scaler for all horizons
-        # Multi-target mode:
-        #   - single-horizon: self.target_scalers_dict (Dict[target_name, Scaler])
-        #   - multi-horizon: self.target_scalers_dict (Dict[target_name, Scaler]) - ONE scaler per variable
-        if not self.is_multi_target:
-            self.target_scaler = ScalerFactory.create_scaler(scaler_type)  # For single target
-        else:
-            self.target_scalers_dict = {}  # For multi-target (will be populated with scalers)
+        # Target scalers structure - now uses per-horizon scalers
+        # Both single-target and multi-target use target_scalers_dict
+        # Dict keys are shifted target column names (e.g., 'close_target_h1', 'close_target_h2')
+        # This allows each horizon to have its own scaler for better accuracy
+        self.target_scalers_dict = {}  # Will be populated during fit with per-horizon scalers
 
         # Multi-group scalers (used when group_columns is provided)
         # Structure: {group_key: Scaler} for features
@@ -322,35 +316,26 @@ class TimeSeriesPredictor:
 
         return X_num, X_cat
 
-    def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
+    def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Prepare features by creating time-series features and handling scaling.
-        Uses caching to avoid recomputing features for the same data.
+        Create base features without encoding or scaling.
 
-        This method can be overridden by subclasses to add domain-specific features.
+        This method can be overridden by subclasses to add domain-specific features
+        (e.g., StockPredictor adds vwap).
 
-        Note: This method does not modify the input dataframe (creates a copy internally).
+        Steps:
+        1. Sort by group/time
+        2. Create date-based features (year, month, cyclical encodings)
 
         Args:
-            df: DataFrame with raw data
-            fit_scaler: Whether to fit the scaler (True for training data)
+            df: Raw input dataframe
 
         Returns:
-            processed_df: DataFrame with scaled features
+            DataFrame with base features (unencoded, unscaled)
         """
-        # Generate cache key BEFORE copying (for efficiency)
-        cache_key = f"{self._get_dataframe_hash(df)}_{fit_scaler}"
-
-        # Check cache first
-        if self._cache_enabled and cache_key in self._feature_cache:
-            if self.verbose:
-                print(f"   Using cached features for dataset ({len(df)} rows)")
-            return self._feature_cache[cache_key].copy()
-
-        # Create a copy to avoid modifying the input dataframe
         df = df.copy()
 
-        # Sort by group columns and time (BEFORE feature creation and scaling)
+        # Sort by group columns and time
         if self.group_columns:
             # Verify all group columns exist
             missing_cols = [col for col in self.group_columns if col not in df.columns]
@@ -381,25 +366,34 @@ class TimeSeriesPredictor:
         if time_column:
             # Pass first group column to create_date_features
             group_col_for_date_features = self.group_columns[0] if self.group_columns else None
-            df_processed = create_date_features(df, time_column, group_column=group_col_for_date_features)
-        else:
-            df_processed = df.copy()
+            df = create_date_features(df, time_column, group_column=group_col_for_date_features)
 
-        # Encode categorical features (BEFORE scaling numerical features)
-        df_processed = self._encode_categorical_features(df_processed, fit_encoders=fit_scaler)
+        return df
 
-        # Get all feature columns
-        # The key logic: use_lagged_target_features controls whether targets are in the sequence
-        feature_cols = []
+    def _determine_numerical_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Determine which columns are numerical features for sequences.
 
-        # Build exclusion set: shifted target columns + categorical columns (always excluded from numerical features)
+        Excludes:
+        - Shifted target columns (close_target_h1, etc.) - these are Y, not X
+        - Categorical columns - handled separately
+        - Original target columns (if use_lagged_target_features=False)
+
+        Args:
+            df: DataFrame with all features
+
+        Returns:
+            Same dataframe (sets self.numerical_columns, self.feature_columns as side effect)
+        """
+        # Build exclusion set
         exclude_cols = set()
+
+        # Always exclude shifted target columns (these are Y, not X)
         for target_col in self.target_columns:
-            # Always exclude shifted horizon columns (these are Y, not X)
             for h in range(1, self.prediction_horizon + 1):
                 exclude_cols.add(f"{target_col}_target_h{h}")
 
-        # Exclude categorical columns from numerical features (they'll be handled separately)
+        # Exclude categorical columns from numerical features (handled separately)
         exclude_cols.update(self.categorical_columns)
 
         # Decide whether to exclude original target columns
@@ -416,53 +410,38 @@ class TimeSeriesPredictor:
                 print(f"   Model will have autoregressive information (use_lagged_target_features=True)")
 
         # Select numerical feature columns
-        for col in df_processed.columns:
+        feature_cols = []
+        for col in df.columns:
             if col not in exclude_cols:
                 # Only include numeric columns
-                if pd.api.types.is_numeric_dtype(df_processed[col]):
+                if pd.api.types.is_numeric_dtype(df[col]):
                     feature_cols.append(col)
                 elif self.verbose:
-                    print(f"   Excluding non-numeric column: {col} (dtype: {df_processed[col].dtype})")
+                    print(f"   Excluding non-numeric column: {col} (dtype: {df[col].dtype})")
             elif self.verbose and '_target_h' in col:
                 pass  # Don't print for every shifted column, too verbose
-        
+
         if self.numerical_columns is None:
             # First time: establish the numeric feature columns from training data
             self.numerical_columns = feature_cols
             self.feature_columns = feature_cols
         else:
-            # For validation/test data: only use features that were created during training
+            # For validation/test data: only use features created during training
             # This handles cases where smaller datasets can't generate all features
-            available_features = [col for col in self.numerical_columns if col in df_processed.columns]
-            missing_features = [col for col in self.numerical_columns if col not in df_processed.columns]
+            missing_features = [col for col in self.numerical_columns if col not in df.columns]
 
             if missing_features:
                 if self.verbose:
-                    print(f"   Warning: {len(missing_features)} features missing in current dataset (likely due to insufficient data size)")
+                    print(f"   Warning: {len(missing_features)} features missing in current dataset")
                     print(f"   Missing: {missing_features[:5]}{'...' if len(missing_features) > 5 else ''}")
 
                 # Add missing features as zero-filled columns
                 for feature in missing_features:
-                    df_processed[feature] = 0.0
+                    df[feature] = 0.0
                     if self.verbose:
                         print(f"   Added zero-filled feature: {feature}")
 
-        # Scale numeric features - route to appropriate scaling method
-        if len(self.numerical_columns) > 0:
-            if not self.group_columns:
-                # Single-group scaling (no grouping)
-                df_processed = self._scale_features_single(df_processed, fit_scaler)
-            else:
-                # Multi-group scaling
-                df_processed = self._scale_features_grouped(df_processed, fit_scaler)
-
-        # Cache the result
-        if self._cache_enabled:
-            self._feature_cache[cache_key] = df_processed.copy()
-            if self.verbose:
-                print(f"   Cached features for dataset ({len(df)} rows)")
-
-        return df_processed
+        return df
 
     def clear_feature_cache(self):
         """Clear the feature cache to free memory."""
@@ -479,18 +458,19 @@ class TimeSeriesPredictor:
         """Enable feature caching."""
         self._cache_enabled = True
 
-    def _scale_features_single(self, df_processed: pd.DataFrame, fit_scaler: bool) -> pd.DataFrame:
+    def _scale_features_single(self, df_processed: pd.DataFrame, fit_scaler: bool, shifted_target_columns: list = None) -> pd.DataFrame:
         """
-        Scale features using single scaler (original behavior).
+        Scale features and shifted targets using single scaler.
 
         Args:
-            df_processed: DataFrame with engineered features
+            df_processed: DataFrame with engineered features and shifted targets
             fit_scaler: Whether to fit the scaler
+            shifted_target_columns: List of shifted target column names to scale (e.g., ['close_target_h1', 'close_target_h2'])
 
         Returns:
-            DataFrame with scaled features
+            DataFrame with scaled features and targets
         """
-        # Scale only the numeric features
+        # Scale numerical input features
         if len(self.feature_columns) > 0:
             if fit_scaler:
                 df_processed[self.feature_columns] = self.scaler.fit_transform(
@@ -501,22 +481,39 @@ class TimeSeriesPredictor:
                     df_processed[self.feature_columns]
                 )
 
+        # Scale shifted target columns (each horizon separately)
+        if shifted_target_columns:
+            for shifted_col in shifted_target_columns:
+                if shifted_col in df_processed.columns:
+                    values = df_processed[shifted_col].values.reshape(-1, 1)
+
+                    if fit_scaler:
+                        scaler = ScalerFactory.create_scaler(self.scaler_type)
+                        df_processed[shifted_col] = scaler.fit_transform(values).flatten()
+                        # Store scaler per-horizon
+                        self.target_scalers_dict[shifted_col] = scaler
+                    else:
+                        if shifted_col not in self.target_scalers_dict:
+                            raise ValueError(f"No scaler found for {shifted_col}")
+                        df_processed[shifted_col] = self.target_scalers_dict[shifted_col].transform(values).flatten()
+
         return df_processed
 
-    def _scale_features_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool) -> pd.DataFrame:
+    def _scale_features_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool, shifted_target_columns: list = None) -> pd.DataFrame:
         """
-        Scale features separately per group (supports multi-column grouping).
+        Scale features and shifted targets separately per group (supports multi-column grouping).
 
         Each unique group (single column or composite) gets its own scaler. This ensures
         that different entities (e.g., different stock symbols, or symbol+sector combinations)
         are scaled independently, preserving their individual statistical properties.
 
         Args:
-            df_processed: DataFrame with engineered features
+            df_processed: DataFrame with engineered features and shifted targets
             fit_scaler: Whether to fit the scalers
+            shifted_target_columns: List of shifted target column names to scale
 
         Returns:
-            DataFrame with group-scaled features
+            DataFrame with group-scaled features and targets
         """
         # Verify all group columns exist
         missing_cols = [col for col in self.group_columns if col not in df_processed.columns]
@@ -581,6 +578,31 @@ class TimeSeriesPredictor:
                 index=df_scaled[group_mask].index
             )
 
+        # Scale shifted target columns per group (each horizon separately)
+        if shifted_target_columns:
+            # Re-add group key for target scaling
+            df_scaled['_group_key'] = self._create_group_key(df_scaled)
+
+            for group_key in unique_groups:
+                group_mask = df_scaled['_group_key'] == group_key
+
+                for shifted_col in shifted_target_columns:
+                    if shifted_col in df_scaled.columns:
+                        values = df_scaled.loc[group_mask, shifted_col].values.reshape(-1, 1)
+
+                        if fit_scaler:
+                            scaler = ScalerFactory.create_scaler(self.scaler_type)
+                            df_scaled.loc[group_mask, shifted_col] = scaler.fit_transform(values).flatten()
+                            # Store per group, per horizon
+                            if group_key not in self.group_target_scalers:
+                                self.group_target_scalers[group_key] = {}
+                            self.group_target_scalers[group_key][shifted_col] = scaler
+                        else:
+                            if group_key not in self.group_target_scalers or shifted_col not in self.group_target_scalers[group_key]:
+                                raise ValueError(f"No scaler found for group {group_key}, target {shifted_col}")
+                            scaler = self.group_target_scalers[group_key][shifted_col]
+                            df_scaled.loc[group_mask, shifted_col] = scaler.transform(values).flatten()
+
         # Remove temporary column
         df_scaled = df_scaled.drop(columns=['_group_key'])
 
@@ -588,18 +610,21 @@ class TimeSeriesPredictor:
 
     def _prepare_data_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], torch.Tensor]:
         """
-        Prepare sequential data with group-based target scaling.
+        Create sequences and extract targets for grouped data.
+
+        Note: Targets are already scaled (done in prepare_data step 6), so this method
+        just extracts them without scaling.
 
         Args:
-            df_processed: DataFrame with features already scaled by group
-            fit_scaler: Whether to fit new target scalers or use existing ones
+            df_processed: DataFrame with features and targets already scaled by group
+            fit_scaler: Unused (kept for compatibility, targets already scaled)
 
         Returns:
             X: If categorical_columns exist: Tuple of (X_num, X_cat) where
                   X_num: (n_samples, sequence_length, n_numerical_features)
                   X_cat: (n_samples, n_categorical_features)
                Otherwise: X_num tensor only
-            y: Target tensor of shape (n_samples,) for single-horizon or (n_samples, prediction_horizon) for multi-horizon
+            y: Target tensor of shape (n_samples, n_targets * n_horizons) - already scaled
         """
 
         # Note: Data is already sorted by group and time in prepare_features()
@@ -667,129 +692,26 @@ class TimeSeriesPredictor:
                 self.categorical_columns
             )
 
-            if self.is_multi_target:
-                # Multi-target mode
-                if fit_scaler:
-                    # Initialize dict for this group
-                    self.group_target_scalers[group_value] = {}
+            # Extract already-scaled target values (no scaling needed - done in step 6)
+            y_list = []
+            for target_col in self.target_columns:
+                for h in range(1, self.prediction_horizon + 1):
+                    shifted_col = f"{target_col}_target_h{h}"
+                    # Extract values after sequence offset (already scaled)
+                    target_values = group_df[shifted_col].values[self.sequence_length:]
+                    y_list.append(target_values)
 
-                all_scaled_dict = {}  # {target_name: scaled_targets}
-
-                for target_col in self.target_columns:
-                    if self.prediction_horizon == 1:
-                        # Single-horizon for this target
-                        target_col_name = f"{target_col}_target_h1"
-                        target_values = group_df[target_col_name].values[self.sequence_length:]
-                        target_values = target_values.reshape(-1, 1)
-
-                        if fit_scaler:
-                            scaler = ScalerFactory.create_scaler(self.scaler_type)
-                            targets_scaled = scaler.fit_transform(target_values).flatten()
-                            self.group_target_scalers[group_value][target_col] = scaler
-                        else:
-                            if group_value not in self.group_target_scalers or target_col not in self.group_target_scalers[group_value]:
-                                raise ValueError(f"No scaler found for group '{group_value}', target '{target_col}'")
-                            targets_scaled = self.group_target_scalers[group_value][target_col].transform(target_values).flatten()
-
-                        all_scaled_dict[target_col] = targets_scaled
-
-                    else:
-                        # Multi-horizon for this target
-                        target_cols_list = [f"{target_col}_target_h{h}"
-                                           for h in range(1, self.prediction_horizon + 1)]
-
-                        # Extract all horizon values
-                        all_horizons = []
-                        for tcol in target_cols_list:
-                            target_values = group_df[tcol].values[self.sequence_length:]
-                            all_horizons.append(target_values)
-
-                        # Stack into matrix: (samples, horizons)
-                        targets_matrix = np.column_stack(all_horizons)
-
-                        if fit_scaler:
-                            # Use ONE scaler for all horizons of this target (shared statistics)
-                            scaler = ScalerFactory.create_scaler(self.scaler_type)
-                            targets_scaled = scaler.fit_transform(targets_matrix)
-                            self.group_target_scalers[group_value][target_col] = scaler
-                        else:
-                            # Use existing scaler
-                            if group_value not in self.group_target_scalers or target_col not in self.group_target_scalers[group_value]:
-                                raise ValueError(f"No scaler found for group '{group_value}', target '{target_col}'")
-                            targets_scaled = self.group_target_scalers[group_value][target_col].transform(targets_matrix)
-
-                        all_scaled_dict[target_col] = targets_scaled
-
-                # Concatenate all targets: single-horizon -> [samples, num_targets]
-                #                          multi-horizon -> [samples, num_targets * horizons]
-                if self.prediction_horizon == 1:
-                    # Stack as columns: each target is one column
-                    y_combined = np.column_stack([all_scaled_dict[tc] for tc in self.target_columns])
-                else:
-                    # Flatten: [close_h1, close_h2, ..., volume_h1, volume_h2, ...]
-                    y_list = []
-                    for target_col in self.target_columns:
-                        # all_scaled_dict[target_col] is (samples, horizons)
-                        for h in range(self.prediction_horizon):
-                            y_list.append(all_scaled_dict[target_col][:, h])
-                    y_combined = np.column_stack(y_list)
-
-                all_sequences_num.append(sequences_num)
-                if sequences_cat is not None:
-                    all_sequences_cat.append(sequences_cat)
-                all_targets.append(y_combined)
-                group_indices.extend([group_value] * len(sequences_num))
-
+            # Combine targets
+            if len(y_list) == 1:
+                y_combined = y_list[0]
             else:
-                # Single-target mode (original behavior)
-                if self.prediction_horizon == 1:
-                    # Single horizon - scale targets
-                    target_col_name = target_cols[0]
-                    targets_h1 = group_df[target_col_name].values[self.sequence_length:]
-                    targets = targets_h1.reshape(-1, 1)
+                y_combined = np.column_stack(y_list)
 
-                    if fit_scaler:
-                        scaler = ScalerFactory.create_scaler(self.scaler_type)
-                        targets_scaled = scaler.fit_transform(targets).flatten()
-                        self.group_target_scalers[group_value] = scaler
-                    else:
-                        if group_value not in self.group_target_scalers:
-                            raise ValueError(f"No fitted target scaler found for group '{group_value}'")
-                        targets_scaled = self.group_target_scalers[group_value].transform(targets).flatten()
-
-                    all_sequences_num.append(sequences_num)
-                    if sequences_cat is not None:
-                        all_sequences_cat.append(sequences_cat)
-                    all_targets.append(targets_scaled)
-                    # Track which group these sequences belong to
-                    group_indices.extend([group_value] * len(sequences_num))
-
-                else:
-                    # Multi-horizon - extract all target values and scale
-                    targets_list = []
-                    for target_col in target_cols:
-                        target_values = group_df[target_col].values[self.sequence_length:]
-                        targets_list.append(target_values)
-
-                    # Stack into matrix: (samples, horizons)
-                    targets_matrix = np.column_stack(targets_list)
-
-                    if fit_scaler:
-                        # Create ONE scaler for this group (all horizons together)
-                        scaler = ScalerFactory.create_scaler(self.scaler_type)
-                        targets_scaled = scaler.fit_transform(targets_matrix)
-                        self.group_target_scalers[group_value] = scaler
-                    else:
-                        if group_value not in self.group_target_scalers:
-                            raise ValueError(f"No fitted target scaler found for group '{group_value}'")
-                        targets_scaled = self.group_target_scalers[group_value].transform(targets_matrix)
-
-                    all_sequences_num.append(sequences_num)
-                    if sequences_cat is not None:
-                        all_sequences_cat.append(sequences_cat)
-                    all_targets.append(targets_scaled)
-                    # Track which group these sequences belong to
-                    group_indices.extend([group_value] * len(sequences_num))
+            all_sequences_num.append(sequences_num)
+            if sequences_cat is not None:
+                all_sequences_cat.append(sequences_cat)
+            all_targets.append(y_combined)
+            group_indices.extend([group_value] * len(sequences_num))
 
         # Concatenate all groups
         if len(all_sequences_num) == 0:
@@ -836,11 +758,24 @@ class TimeSeriesPredictor:
 
         return X, y
 
-    def prepare_data(self, df: pd.DataFrame, fit_scaler: bool = False) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
+    def prepare_data(self, df: pd.DataFrame, fit_scaler: bool = False, store_for_evaluation: bool = False) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         """
         Prepare sequential data for model training/inference.
 
-        Note: This method does not modify the input dataframe (creates a copy internally).
+        Pipeline:
+        1. Create base features (sorting, date features) - can be overridden by subclasses
+        2. Create shifted targets
+        3. STORE unscaled/unencoded dataframe (if store_for_evaluation=True)
+        4. Encode categorical features
+        5. Determine numerical columns
+        6. Scale numerical features AND shifted targets (per-horizon)
+        7. Create sequences and extract already-scaled targets
+
+        Args:
+            df: Input dataframe
+            fit_scaler: Whether to fit scalers (True for training data)
+            store_for_evaluation: If True, stores unscaled/unencoded dataframe in self._last_processed_df
+                                 for evaluation alignment. Should be True during predict(), False during fit().
 
         Returns:
             X: If categorical_columns exist: Tuple of (X_num, X_cat) where
@@ -849,200 +784,103 @@ class TimeSeriesPredictor:
                Otherwise: X_num tensor only
             y: Target tensor of shape (n_samples,) (None for inference)
         """
-        # Create a copy to avoid modifying the input dataframe
-        df = df.copy()
+        # Step 1: Create base features (sorting, date features)
+        # Can be overridden by subclasses (e.g., StockPredictor adds vwap)
+        df_features = self._create_base_features(df)
 
-        # First prepare features (includes group-based or single scaling)
-        df_processed = self.prepare_features(df, fit_scaler)
-
-        # Create shifted target columns
+        # Step 2: Create shifted target columns
         # Use categorical_columns for shifting to prevent data leakage across all categorical boundaries
         # Falls back to group_columns if categorical_columns not specified
         group_col_for_shift = self.categorical_columns if self.categorical_columns else self.group_columns
-        df_processed = create_shifted_targets(
-            df_processed,
+        df_with_targets = create_shifted_targets(
+            df_features,
             target_column=self.target_columns,
             prediction_horizon=self.prediction_horizon,
             group_column=group_col_for_shift,
             verbose=self.verbose
         )
 
-        # Route to appropriate data preparation method
-        if self.group_columns:
-            # Group-based sequence creation and target scaling
-            return self._prepare_data_grouped(df_processed, fit_scaler)
-
-        # Single-group data preparation (original behavior)
-        # Check if we have enough data for sequences
-        if len(df_processed) <= self.sequence_length:
-            raise ValueError(f"Need at least {self.sequence_length + 1} samples for sequence_length={self.sequence_length}, got {len(df_processed)}")
-        
-        # Handle target validation for single vs multi-target and single vs multi-horizon
-        if self.is_multi_target:
-            # Multi-target: check all targets have their shifted columns
-            if self.prediction_horizon == 1:
-                expected_targets = {target_col: [f"{target_col}_target_h1"]
-                                   for target_col in self.target_columns}
-            else:
-                expected_targets = {target_col: [f"{target_col}_target_h{h}"
-                                                 for h in range(1, self.prediction_horizon + 1)]
-                                   for target_col in self.target_columns}
-
-            # Check all expected columns exist
-            for target_col, shifted_cols in expected_targets.items():
-                missing = [col for col in shifted_cols if col not in df_processed.columns]
-                if missing:
-                    raise ValueError(f"Target columns {missing} not found for target '{target_col}'")
-
-            # Use first target's first horizon for sequence creation
-            actual_target = expected_targets[self.target_columns[0]][0]
-        else:
-            # Single-target mode
-            if self.prediction_horizon == 1:
-                expected_target = f"{self.target_columns[0]}_target_h1"
-                if expected_target not in df_processed.columns:
-                    raise ValueError(f"Single horizon target column '{expected_target}' not found")
-                actual_target = expected_target
-            else:
-                target_columns = [f"{self.target_columns[0]}_target_h{h}"
-                                 for h in range(1, self.prediction_horizon + 1)]
-                missing_targets = [col for col in target_columns if col not in df_processed.columns]
-                if missing_targets:
-                    raise ValueError(f"Multi-horizon target columns {missing_targets} not found")
-                actual_target = target_columns[0]
-
-        # Create sequences - this will reduce our sample count
-        if actual_target in df_processed.columns:
-            from ..preprocessing.time_features import create_input_variable_sequence
-
-            # For training: create sequences (input variables only)
-            sequences = create_input_variable_sequence(df_processed, self.sequence_length, self.feature_columns)
-
-            if self.is_multi_target:
-                # Multi-target handling
-                all_scaled_dict = {}   # {target_name: scaled_targets}
-
-                for target_col in self.target_columns:
-                    if self.prediction_horizon == 1:
-                        # Single horizon for this target
-                        target_col_name = f"{target_col}_target_h1"
-                        target_values = df_processed[target_col_name].values[self.sequence_length:]
-                        target_values = target_values.reshape(-1, 1)
-
-                        if fit_scaler:
-                            scaler = ScalerFactory.create_scaler(self.scaler_type)
-                            targets_scaled = scaler.fit_transform(target_values).flatten()
-                            self.target_scalers_dict[target_col] = scaler
-                        else:
-                            if target_col not in self.target_scalers_dict:
-                                raise ValueError(f"No scaler found for target '{target_col}'")
-                            targets_scaled = self.target_scalers_dict[target_col].transform(target_values).flatten()
-
-                        all_scaled_dict[target_col] = targets_scaled
-
-                    else:
-                        # Multi-horizon for this target
-                        target_cols_list = [f"{target_col}_target_h{h}"
-                                           for h in range(1, self.prediction_horizon + 1)]
-
-                        # Extract all horizon values
-                        all_horizons = []
-                        for tcol in target_cols_list:
-                            target_values = df_processed[tcol].values[self.sequence_length:]
-                            all_horizons.append(target_values)
-
-                        # Stack into matrix: (samples, horizons)
-                        targets_matrix = np.column_stack(all_horizons)
-
-                        if fit_scaler:
-                            # Use ONE scaler for all horizons of this target (shared statistics)
-                            scaler = ScalerFactory.create_scaler(self.scaler_type)
-                            targets_scaled = scaler.fit_transform(targets_matrix)
-                            self.target_scalers_dict[target_col] = scaler
-                        else:
-                            # Use existing scaler
-                            if target_col not in self.target_scalers_dict:
-                                raise ValueError(f"No scaler found for target '{target_col}'")
-                            targets_scaled = self.target_scalers_dict[target_col].transform(targets_matrix)
-
-                        all_scaled_dict[target_col] = targets_scaled
-
-                # Concatenate all targets: single-horizon -> [samples, num_targets]
-                #                          multi-horizon -> [samples, num_targets * horizons]
-                if self.prediction_horizon == 1:
-                    # Stack as columns: each target is one column
-                    y_combined = np.column_stack([all_scaled_dict[tc] for tc in self.target_columns])
-                else:
-                    # Flatten: [close_h1, close_h2, ..., volume_h1, volume_h2, ...]
-                    y_list = []
-                    for target_col in self.target_columns:
-                        # all_scaled_dict[target_col] is (samples, horizons)
-                        for h in range(self.prediction_horizon):
-                            y_list.append(all_scaled_dict[target_col][:, h])
-                    y_combined = np.column_stack(y_list)
-
-                # Convert to tensors
-                X = torch.tensor(sequences, dtype=torch.float32)
-                y = torch.tensor(y_combined, dtype=torch.float32)
-
-            elif self.prediction_horizon == 1:
-                # Single-target, single horizon target scaling
-                # Extract target values manually (after sequence_length offset)
-                target_col_name = f"{self.target_columns[0]}_target_h1"
-                targets = df_processed[target_col_name].values[self.sequence_length:].reshape(-1, 1)
-                if fit_scaler:
-                    targets_scaled = self.target_scaler.fit_transform(targets)
-                else:
-                    targets_scaled = self.target_scaler.transform(targets)
-
-                # Convert to tensors
-                X = torch.tensor(sequences, dtype=torch.float32)  # (n_samples, seq_len, n_features)
-                y = torch.tensor(targets_scaled.flatten(), dtype=torch.float32)
-
-            else:
-                # Single-target, multi-horizon target handling - MEMORY OPTIMIZED
-                target_columns = [f"{self.target_columns[0]}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
-
-                # Extract target values directly without re-creating sequences
-                # This is much more memory efficient than calling create_input_variable_sequence multiple times
-                all_targets = []
-                for target_col in target_columns:
-                    # Extract target values starting from sequence_length (matching sequence indexing)
-                    target_values = df_processed[target_col].values[self.sequence_length:]
-                    all_targets.append(target_values)
-
-                # Stack into matrix: (samples, horizons)
-                targets_matrix = np.column_stack(all_targets)
-
-                # Use ONE scaler for all horizons (shared statistics)
-                if fit_scaler:
-                    self.target_scaler = ScalerFactory.create_scaler(self.scaler_type)
-                    targets_scaled = self.target_scaler.fit_transform(targets_matrix)
-                else:
-                    targets_scaled = self.target_scaler.transform(targets_matrix)
-
-                # Convert to tensors
-                X = torch.tensor(sequences, dtype=torch.float32)  # (n_samples, seq_len, n_features)
-                y = torch.tensor(targets_scaled, dtype=torch.float32)  # (n_samples, horizons)
-            
+        # Step 3: STORE unscaled/unencoded dataframe for evaluation
+        if store_for_evaluation:
+            self._last_processed_df = df_with_targets.copy()
             if self.verbose:
-                print(f"   Created {len(sequences)} sequences of length {self.sequence_length}")
-                print(f"   Each sequence has {sequences.shape[2]} features")
-                print(f"   Total tensor shape: {X.shape}")
-            
-            return X, y
-        else:
-            # For inference: create sequences without targets (use last available value as dummy target)
-            # We'll create sequences up to the last available data point
-            dummy_targets = df_processed[self.feature_columns[0]]  # Use first feature as dummy target
-            temp_df = df_processed.copy()
-            temp_df['__dummy_target__'] = dummy_targets
+                print(f"   Stored unscaled dataframe for evaluation ({len(df_with_targets)} rows)")
 
-            from ..preprocessing.time_features import create_input_variable_sequence
-            sequences = create_input_variable_sequence(temp_df, self.sequence_length, self.feature_columns)
-            X = torch.tensor(sequences, dtype=torch.float32)
-            
-            return X, None
+        # Step 4: Encode categorical features
+        df_encoded = self._encode_categorical_features(df_with_targets, fit_encoders=fit_scaler)
+
+        # Step 5: Determine numerical columns (excludes shifted targets, categoricals)
+        df_encoded = self._determine_numerical_columns(df_encoded)
+
+        # Step 6: Collect shifted target column names for scaling
+        shifted_target_columns = []
+        for target_col in self.target_columns:
+            for h in range(1, self.prediction_horizon + 1):
+                shifted_col = f"{target_col}_target_h{h}"
+                if shifted_col in df_encoded.columns:
+                    shifted_target_columns.append(shifted_col)
+
+        # Step 6: Scale numerical features AND shifted targets (per-horizon)
+        if self.group_columns:
+            df_scaled = self._scale_features_grouped(df_encoded, fit_scaler, shifted_target_columns)
+        else:
+            df_scaled = self._scale_features_single(df_encoded, fit_scaler, shifted_target_columns)
+
+        # Step 7: Create sequences and extract already-scaled targets
+        if self.group_columns:
+            # Group-based sequence creation (no target scaling - already done in step 6)
+            return self._prepare_data_grouped(df_scaled, fit_scaler=False)
+
+        # Non-grouped path: single-group data preparation
+        # Check if we have enough data for sequences
+        if len(df_scaled) <= self.sequence_length:
+            raise ValueError(f"Need at least {self.sequence_length + 1} samples for sequence_length={self.sequence_length}, got {len(df_scaled)}")
+
+        # Create sequences using _create_sequences_with_categoricals (same as grouped path)
+        numerical_cols = [col for col in self.feature_columns if col not in (self.categorical_columns or [])]
+        X_num, X_cat = self._create_sequences_with_categoricals(
+            df_scaled,
+            self.sequence_length,
+            numerical_cols,
+            self.categorical_columns
+        )
+
+        # Extract already-scaled target values (no scaling needed - done in step 6)
+        y_list = []
+        for target_col in self.target_columns:
+            for h in range(1, self.prediction_horizon + 1):
+                shifted_col = f"{target_col}_target_h{h}"
+                if shifted_col not in df_scaled.columns:
+                    raise ValueError(f"Target column '{shifted_col}' not found")
+                # Extract values after sequence offset
+                target_values = df_scaled[shifted_col].values[self.sequence_length:]
+                y_list.append(target_values)
+
+        # Combine targets
+        if len(y_list) == 1:
+            y = y_list[0]
+        else:
+            y = np.column_stack(y_list)
+
+        # Convert to tensors
+        X_num_tensor = torch.tensor(X_num, dtype=torch.float32)
+        if X_cat is not None:
+            X_cat_tensor = torch.tensor(X_cat, dtype=torch.long)
+            X = (X_num_tensor, X_cat_tensor)
+        else:
+            X = X_num_tensor
+
+        y_tensor = torch.tensor(y, dtype=torch.float32)
+
+        if self.verbose:
+            print(f"   Created {len(X_num)} sequences of length {self.sequence_length}")
+            if isinstance(X, tuple):
+                print(f"   X_num shape: {X[0].shape}, X_cat shape: {X[1].shape}")
+            else:
+                print(f"   X shape: {X.shape}")
+            print(f"   y shape: {y_tensor.shape}")
+
+        return X, y_tensor
     
     def fit(
         self, 
@@ -1067,11 +905,11 @@ class TimeSeriesPredictor:
             verbose: Whether to print training progress
         """
         # Prepare data (target column validation happens inside prepare_data)
-        # The target column might be an engineered feature created during create_features
-        X_train, y_train = self.prepare_data(df, fit_scaler=True)
+        # Don't store dataframe during training (store_for_evaluation=False)
+        X_train, y_train = self.prepare_data(df, fit_scaler=True, store_for_evaluation=False)
 
         if val_df is not None:
-            X_val, y_val = self.prepare_data(val_df, fit_scaler=False)
+            X_val, y_val = self.prepare_data(val_df, fit_scaler=False, store_for_evaluation=False)
             # Save validation group indices for later use in progress reporting
             if self.group_columns and hasattr(self, '_last_group_indices'):
                 self._last_val_group_indices = self._last_group_indices.copy()
@@ -1317,20 +1155,27 @@ class TimeSeriesPredictor:
                                     if not group_mask.any():
                                         continue
 
+                                    target_col = self.target_columns[0]  # Single-target mode in this path
                                     if self.prediction_horizon == 1:
-                                        val_pred[group_mask] = self.group_target_scalers[group_value].inverse_transform(
+                                        shifted_col = f"{target_col}_target_h1"
+                                        val_pred[group_mask] = self.group_target_scalers[group_value][shifted_col].inverse_transform(
                                             val_pred_scaled_np[group_mask].reshape(-1, 1)
                                         ).flatten()
-                                        val_actual[group_mask] = self.group_target_scalers[group_value].inverse_transform(
+                                        val_actual[group_mask] = self.group_target_scalers[group_value][shifted_col].inverse_transform(
                                             val_actual_scaled_np[group_mask].reshape(-1, 1)
                                         ).flatten()
                                     else:
-                                        val_pred[group_mask] = self.group_target_scalers[group_value].inverse_transform(
-                                            val_pred_scaled_np[group_mask]
-                                        )
-                                        val_actual[group_mask] = self.group_target_scalers[group_value].inverse_transform(
-                                            val_actual_scaled_np[group_mask]
-                                        )
+                                        # Multi-horizon: inverse transform each horizon separately
+                                        group_pred_scaled = val_pred_scaled_np[group_mask]
+                                        group_actual_scaled = val_actual_scaled_np[group_mask]
+                                        for h in range(self.prediction_horizon):
+                                            shifted_col = f"{target_col}_target_h{h+1}"
+                                            val_pred[group_mask, h] = self.group_target_scalers[group_value][shifted_col].inverse_transform(
+                                                group_pred_scaled[:, h].reshape(-1, 1)
+                                            ).flatten()
+                                            val_actual[group_mask, h] = self.group_target_scalers[group_value][shifted_col].inverse_transform(
+                                                group_actual_scaled[:, h].reshape(-1, 1)
+                                            ).flatten()
                             else:
                                 # Fallback: just show loss without detailed metrics
                                 print(f"Epoch {epoch+1:3d}: Train Loss = {avg_train_loss:.6f}, Val Loss = {val_loss:.6f}")
@@ -1348,12 +1193,23 @@ class TimeSeriesPredictor:
                                 continue
                             elif self.prediction_horizon == 1:
                                 # Single-target, single-horizon
-                                val_pred = self.target_scaler.inverse_transform(val_pred_scaled_np.reshape(-1, 1)).flatten()
-                                val_actual = self.target_scaler.inverse_transform(val_actual_scaled_np.reshape(-1, 1)).flatten()
+                                target_col = self.target_columns[0]
+                                shifted_col = f"{target_col}_target_h1"
+                                val_pred = self.target_scalers_dict[shifted_col].inverse_transform(val_pred_scaled_np.reshape(-1, 1)).flatten()
+                                val_actual = self.target_scalers_dict[shifted_col].inverse_transform(val_actual_scaled_np.reshape(-1, 1)).flatten()
                             else:
-                                # Single-target, multi-horizon: use single scaler for all horizons
-                                val_pred = self.target_scaler.inverse_transform(val_pred_scaled_np)
-                                val_actual = self.target_scaler.inverse_transform(val_actual_scaled_np)
+                                # Single-target, multi-horizon: inverse transform each horizon separately
+                                target_col = self.target_columns[0]
+                                val_pred = np.zeros_like(val_pred_scaled_np)
+                                val_actual = np.zeros_like(val_actual_scaled_np)
+                                for h in range(self.prediction_horizon):
+                                    shifted_col = f"{target_col}_target_h{h+1}"
+                                    val_pred[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(
+                                        val_pred_scaled_np[:, h].reshape(-1, 1)
+                                    ).flatten()
+                                    val_actual[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(
+                                        val_actual_scaled_np[:, h].reshape(-1, 1)
+                                    ).flatten()
 
                         # Calculate MAPE and MAE (for single horizon or average across horizons)
                         if self.prediction_horizon == 1:
@@ -1394,11 +1250,9 @@ class TimeSeriesPredictor:
         self._feature_cache.clear()
         gc.collect()  # Force garbage collection to free memory
 
-        # Store processed dataframe for evaluation alignment
-        # This ensures actuals are extracted from the same processed data used for predictions
-        self._last_processed_df = self.prepare_features(df.copy(), fit_scaler=False)
-
-        X, _ = self.prepare_data(df, fit_scaler=False)
+        # Store processed dataframe for evaluation alignment (store_for_evaluation=True)
+        # This stores the dataframe after feature engineering and target shifting, but before encoding/scaling
+        X, _ = self.prepare_data(df, fit_scaler=False, store_for_evaluation=True)
 
         self.model.eval()
         with torch.no_grad():
@@ -1470,7 +1324,10 @@ class TimeSeriesPredictor:
                                 # Single-horizon: extract column for this target
                                 col_idx = idx
                                 group_preds_scaled = predictions_scaled[group_mask, col_idx].reshape(-1, 1)
-                                group_preds_original = self.group_target_scalers[group_value][target_col].inverse_transform(group_preds_scaled).flatten()
+
+                                # Use per-horizon scaler
+                                shifted_col = f"{target_col}_target_h1"
+                                group_preds_original = self.group_target_scalers[group_value][shifted_col].inverse_transform(group_preds_scaled).flatten()
                                 target_preds[group_mask] = group_preds_original
                             else:
                                 # Multi-horizon: extract horizons for this target
@@ -1481,8 +1338,12 @@ class TimeSeriesPredictor:
                                 # Extract all horizons for this target in this group
                                 group_horizons_scaled = predictions_scaled[group_mask, start_idx:end_idx]
 
-                                # Inverse transform all horizons together using single scaler
-                                group_horizons_original = self.group_target_scalers[group_value][target_col].inverse_transform(group_horizons_scaled)
+                                # Inverse transform each horizon separately using per-horizon scalers
+                                group_horizons_original = np.zeros_like(group_horizons_scaled)
+                                for h in range(self.prediction_horizon):
+                                    shifted_col = f"{target_col}_target_h{h+1}"
+                                    horizon_scaled = group_horizons_scaled[:, h].reshape(-1, 1)
+                                    group_horizons_original[:, h] = self.group_target_scalers[group_value][shifted_col].inverse_transform(horizon_scaled).flatten()
 
                                 target_preds[group_mask] = group_horizons_original
 
@@ -1505,15 +1366,21 @@ class TimeSeriesPredictor:
                             continue
 
                         group_preds_scaled = predictions_scaled[group_mask]
+                        target_col = self.target_columns[0]  # Single-target mode
 
                         if self.prediction_horizon == 1:
                             # Single horizon
                             group_preds_scaled = group_preds_scaled.reshape(-1, 1)
-                            group_preds_original = self.group_target_scalers[group_value].inverse_transform(group_preds_scaled)
+                            shifted_col = f"{target_col}_target_h1"
+                            group_preds_original = self.group_target_scalers[group_value][shifted_col].inverse_transform(group_preds_scaled)
                             predictions[group_mask] = group_preds_original.flatten()
                         else:
-                            # Multi-horizon: use same scaler for all horizons in this group
-                            group_preds_original = self.group_target_scalers[group_value].inverse_transform(group_preds_scaled)
+                            # Multi-horizon: inverse transform each horizon separately
+                            group_preds_original = np.zeros_like(group_preds_scaled)
+                            for h in range(self.prediction_horizon):
+                                shifted_col = f"{target_col}_target_h{h+1}"
+                                horizon_scaled = group_preds_scaled[:, h].reshape(-1, 1)
+                                group_preds_original[:, h] = self.group_target_scalers[group_value][shifted_col].inverse_transform(horizon_scaled).flatten()
                             predictions[group_mask] = group_preds_original
 
                     final_predictions = predictions.flatten() if self.prediction_horizon == 1 else predictions
@@ -1537,7 +1404,8 @@ class TimeSeriesPredictor:
                         if self.prediction_horizon == 1:
                             # Single-horizon: extract column for this target
                             target_preds_scaled = predictions_scaled[:, idx].reshape(-1, 1)
-                            target_preds = self.target_scalers_dict[target_col].inverse_transform(target_preds_scaled).flatten()
+                            shifted_col = f"{target_col}_target_h1"
+                            target_preds = self.target_scalers_dict[shifted_col].inverse_transform(target_preds_scaled).flatten()
                             predictions_dict[target_col] = target_preds
                         else:
                             # Multi-horizon: extract horizons for this target
@@ -1545,9 +1413,13 @@ class TimeSeriesPredictor:
                             start_idx = idx * self.prediction_horizon
                             end_idx = start_idx + self.prediction_horizon
 
-                            # Inverse transform all horizons together using single scaler
+                            # Inverse transform each horizon separately using per-horizon scalers
                             horizons_scaled = predictions_scaled[:, start_idx:end_idx]
-                            horizons_original = self.target_scalers_dict[target_col].inverse_transform(horizons_scaled)
+                            horizons_original = np.zeros_like(horizons_scaled)
+                            for h in range(self.prediction_horizon):
+                                shifted_col = f"{target_col}_target_h{h+1}"
+                                horizon_scaled = horizons_scaled[:, h].reshape(-1, 1)
+                                horizons_original[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(horizon_scaled).flatten()
 
                             # Stack into (n_samples, horizons) for this target
                             predictions_dict[target_col] = horizons_original
@@ -1556,13 +1428,20 @@ class TimeSeriesPredictor:
 
                 elif self.prediction_horizon == 1:
                     # Single-target, single horizon: reshape to (n_samples, 1) for inverse transform
+                    target_col = self.target_columns[0]
+                    shifted_col = f"{target_col}_target_h1"
                     predictions_scaled = predictions_scaled.reshape(-1, 1)
-                    predictions = self.target_scaler.inverse_transform(predictions_scaled)
+                    predictions = self.target_scalers_dict[shifted_col].inverse_transform(predictions_scaled)
                     return predictions.flatten()
                 else:
                     # Single-target, multi-horizon: predictions_scaled shape is (n_samples, horizons)
-                    # Inverse transform all horizons together using single scaler
-                    predictions = self.target_scaler.inverse_transform(predictions_scaled)
+                    # Inverse transform each horizon separately using per-horizon scalers
+                    target_col = self.target_columns[0]
+                    predictions = np.zeros_like(predictions_scaled)
+                    for h in range(self.prediction_horizon):
+                        shifted_col = f"{target_col}_target_h{h+1}"
+                        horizon_scaled = predictions_scaled[:, h].reshape(-1, 1)
+                        predictions[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(horizon_scaled).flatten()
                     return predictions
 
     def predict_from_features(self, df_processed: pd.DataFrame) -> np.ndarray:
@@ -1606,15 +1485,21 @@ class TimeSeriesPredictor:
             predictions_scaled = predictions_scaled.cpu().numpy()
 
             # Handle single vs multi-horizon predictions
+            target_col = self.target_columns[0]  # Single-target mode (no multi-target support in this method)
             if self.prediction_horizon == 1:
                 # Single horizon: reshape to (n_samples, 1) for inverse transform
+                shifted_col = f"{target_col}_target_h1"
                 predictions_scaled = predictions_scaled.reshape(-1, 1)
-                predictions = self.target_scaler.inverse_transform(predictions_scaled)
+                predictions = self.target_scalers_dict[shifted_col].inverse_transform(predictions_scaled)
                 return predictions.flatten()
             else:
                 # Multi-horizon: predictions_scaled shape is (n_samples, horizons)
-                # Inverse transform all horizons together using single scaler
-                predictions = self.target_scaler.inverse_transform(predictions_scaled)
+                # Inverse transform each horizon separately using per-horizon scalers
+                predictions = np.zeros_like(predictions_scaled)
+                for h in range(self.prediction_horizon):
+                    shifted_col = f"{target_col}_target_h{h+1}"
+                    horizon_scaled = predictions_scaled[:, h].reshape(-1, 1)
+                    predictions[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(horizon_scaled).flatten()
                 return predictions
 
     def evaluate(self, df: pd.DataFrame, per_group: bool = False) -> Dict:
@@ -2090,13 +1975,8 @@ class TimeSeriesPredictor:
             'group_target_scalers': self.group_target_scalers
         }
 
-        # Add target scalers based on mode
-        if not self.is_multi_target:
-            # Single-target scalers
-            state['target_scaler'] = self.target_scaler
-        else:
-            # Multi-target scalers dict
-            state['target_scalers_dict'] = self.target_scalers_dict
+        # Add per-horizon target scalers (used for both single and multi-target)
+        state['target_scalers_dict'] = self.target_scalers_dict
 
         torch.save(state, path)
         print(f"Model saved to {path}")
@@ -2125,12 +2005,8 @@ class TimeSeriesPredictor:
         predictor.numerical_columns = state['numerical_columns']
         predictor.history = state['history']
 
-        # Restore target scalers based on mode
-        if predictor.is_multi_target:
-            predictor.target_scalers_dict = state['target_scalers_dict']
-        else:
-            predictor.target_scaler = state['target_scaler']
-            predictor.target_scalers = state['target_scalers']
+        # Restore per-horizon target scalers (now used for both single and multi-target)
+        predictor.target_scalers_dict = state['target_scalers_dict']
 
         # Restore group scalers
         predictor.group_feature_scalers = state['group_feature_scalers']

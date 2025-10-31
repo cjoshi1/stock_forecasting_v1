@@ -14,7 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from daily_stock_forecasting.predictor import StockPredictor
-from daily_stock_forecasting.preprocessing.stock_features import create_stock_features, create_technical_indicators
+from daily_stock_forecasting.preprocessing.stock_features import create_stock_features
 from daily_stock_forecasting.preprocessing.market_data import (
     load_stock_data, validate_stock_data, create_sample_stock_data
 )
@@ -105,91 +105,40 @@ class TestStockFeatures:
     """Test stock-specific feature engineering."""
     
     def test_create_stock_features(self):
-        """Test comprehensive stock feature creation."""
+        """Test stock-specific feature creation (vwap)."""
         df = create_sample_stock_data(n_samples=50)
-        df_features = create_stock_features(df, target_column='close', verbose=False)
-        
-        # Check that features were added
-        assert len(df_features.columns) > len(df.columns)
-        
-        # Check for specific feature categories
-        feature_names = df_features.columns.tolist()
-        
-        # Date features (if date column exists)
-        if 'date' in df.columns:
-            assert 'year' in feature_names
-            assert 'month' in feature_names
-            assert 'dayofweek' in feature_names
-        
-        # Price-based features
-        if 'close' in df.columns:
-            assert 'returns' in feature_names
-            assert 'log_returns' in feature_names
-            
-            # Percentage change features
-            for period in [1, 3, 5, 10]:
-                if f'pct_change_{period}d' not in feature_names:
-                    print(f"   Warning: Missing pct_change_{period}d feature")
-            
-            # Technical indicators
-            if len(df) >= 10:
-                assert 'volatility_10d' in feature_names
-            if len(df) >= 5:
-                assert 'momentum_5d' in feature_names
-        
-        # Price ratios
-        if all(col in df.columns for col in ['high', 'low', 'open', 'close']):
-            assert 'high_low_ratio' in feature_names
-            assert 'close_open_ratio' in feature_names
-        
-        # Volume features
-        if 'volume' in df.columns:
-            assert 'volume_ratio' in feature_names
-        
+        df_features = create_stock_features(df, verbose=False)
+
+        # Check that vwap was added
+        assert 'vwap' in df_features.columns
+
+        # Check vwap calculation
+        expected_vwap = (df['high'] + df['low'] + df['close']) / 3
+        assert np.allclose(df_features['vwap'].values, expected_vwap.values, rtol=1e-5)
+
         # Check for NaN handling
         assert not df_features.isnull().any().any(), "Features contain NaN values"
-    
+
     def test_create_stock_features_different_targets(self):
-        """Test stock feature creation with different target columns."""
+        """Test stock feature creation preserves original columns."""
         df = create_sample_stock_data(n_samples=30)
-        
-        # Test with different targets
-        targets = ['close', 'open', 'high', 'low']
-        for target in targets:
-            if target in df.columns:
-                df_features = create_stock_features(df, target_column=target, verbose=False)
-                
-                # Check that target is preserved
-                assert target in df_features.columns
-                
-                # Check that feature engineering worked
-                assert len(df_features.columns) > len(df.columns)
-    
+        df_features = create_stock_features(df, verbose=False)
+
+        # Check that original columns are preserved
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            assert col in df_features.columns
+
+        # Check that vwap was added
+        assert 'vwap' in df_features.columns
+
     def test_create_technical_indicators(self):
-        """Test advanced technical indicators."""
-        df = create_sample_stock_data(n_samples=100)  # Larger dataset for technical indicators
-        df_tech = create_technical_indicators(df)
-        
-        # Check for technical indicators
-        if 'close' in df.columns:
-            tech_features = df_tech.columns.tolist()
-            
-            # RSI
-            if 'rsi' in tech_features:
-                rsi_values = df_tech['rsi'].dropna()
-                assert (rsi_values >= 0).all() and (rsi_values <= 100).all(), "RSI values should be between 0 and 100"
-            
-            # MACD
-            expected_macd = ['macd', 'macd_signal', 'macd_histogram']
-            for indicator in expected_macd:
-                if indicator in tech_features:
-                    assert pd.api.types.is_numeric_dtype(df_tech[indicator])
-            
-            # Bollinger Bands
-            expected_bb = ['bb_upper', 'bb_lower', 'bb_width', 'bb_position']
-            for indicator in expected_bb:
-                if indicator in tech_features:
-                    assert pd.api.types.is_numeric_dtype(df_tech[indicator])
+        """Test that create_stock_features handles OHLC data correctly."""
+        df = create_sample_stock_data(n_samples=100)
+        df_tech = create_stock_features(df, verbose=False)
+
+        # Just check that vwap was created and is numeric
+        assert 'vwap' in df_tech.columns
+        assert pd.api.types.is_numeric_dtype(df_tech['vwap'])
 
 
 class TestStockPredictor:
@@ -199,9 +148,9 @@ class TestStockPredictor:
         """Test StockPredictor initialization."""
         predictor = StockPredictor(target_column='close', sequence_length=5)
 
-        # For single horizon, target_column becomes 'close_target_h1' but original_target_column is 'close'
+        # Check initialization
         assert predictor.original_target_column == 'close'
-        assert predictor.target_column == 'close_target_h1'  # Transformed for single horizon
+        assert predictor.target_columns == ['close']  # Normalized to list
         assert predictor.sequence_length == 5
         assert predictor.model is None
     
@@ -209,19 +158,21 @@ class TestStockPredictor:
         """Test StockPredictor feature creation."""
         predictor = StockPredictor(target_column='close', sequence_length=5, verbose=False)
         df = create_sample_stock_data(n_samples=50)
-        
-        df_features = predictor.create_features(df)
-        
-        # Check that stock-specific features were created
-        assert len(df_features.columns) > len(df.columns)
-        
-        # Check for key features
+
+        df_features = predictor._create_base_features(df)
+
+        # Check that stock-specific features were created (vwap)
+        assert 'vwap' in df_features.columns
+
+        # Check that time-series features were created
         feature_names = df_features.columns.tolist()
-        assert 'returns' in feature_names
-        assert 'high_low_ratio' in feature_names
-        
+        assert 'month_sin' in feature_names
+        assert 'month_cos' in feature_names
+        assert 'dayofweek_sin' in feature_names
+        assert 'dayofweek_cos' in feature_names
+
         # Check data types
-        numeric_features = [col for col in df_features.columns 
+        numeric_features = [col for col in df_features.columns
                           if col != 'date' and pd.api.types.is_numeric_dtype(df_features[col])]
         assert len(numeric_features) > 0
     
@@ -291,18 +242,18 @@ class TestStockPredictor:
             os.unlink(tmp.name)
     
     def test_percentage_change_targets(self):
-        """Test predicting percentage change targets."""
+        """Test predicting volume target."""
         df = create_sample_stock_data(n_samples=50)
-        
-        # Test with custom percentage change target
+
+        # Test with volume target
         predictor = StockPredictor(
-            target_column='pct_change_1d', 
+            target_column='volume',
             sequence_length=5,
             verbose=False
         )
-        
+
         # This should work without errors
-        X, y = predictor.prepare_data(df, fit_scaler=True)
+        X, y = predictor.prepare_data(df, fit_scaler=True, store_for_evaluation=False)
         assert X.shape[0] > 0
         assert y.shape[0] > 0
 

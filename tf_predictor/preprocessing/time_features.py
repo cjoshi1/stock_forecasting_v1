@@ -80,16 +80,28 @@ def create_cyclical_features(df: pd.DataFrame, datetime_col: str,
 
 def create_date_features(df: pd.DataFrame, date_column: str, group_column: str = None) -> pd.DataFrame:
     """
-    Create temporal features from a date column.
+    Create cyclical temporal features from a date/datetime column.
+
+    This function:
+    1. Sorts data chronologically (by group if specified)
+    2. Detects temporal components (date vs datetime with hour/minute)
+    3. Creates cyclical encodings (sin/cos) for detected components
+    4. Drops original non-cyclical temporal columns
+
+    Cyclical features created:
+    - Always: month_sin, month_cos, day_sin, day_cos, dayofweek_sin, dayofweek_cos, is_weekend
+    - If datetime has time: hour_sin, hour_cos, minute_sin, minute_cos
+
+    Dropped after encoding: year, month, day, quarter, dayofweek, hour, minute
 
     Args:
-        df: DataFrame with date column
-        date_column: Name of the date column
+        df: DataFrame with date/datetime column
+        date_column: Name of the date/datetime column
         group_column: Optional column for group-based sorting (e.g., 'symbol' for multi-stock datasets)
                      When provided, data is sorted by group first, then by date within each group
 
     Returns:
-        df: DataFrame with additional date features
+        df: DataFrame with cyclical temporal features (original temporal columns dropped)
     """
     df = df.copy()
 
@@ -118,14 +130,27 @@ def create_date_features(df: pd.DataFrame, date_column: str, group_column: str =
         else:
             print(f"   Data already chronologically sorted: {df[date_column].iloc[0]} to {df[date_column].iloc[-1]}")
 
-    # Extract basic date features
-    df['year'] = df[date_column].dt.year
-    df['month'] = df[date_column].dt.month
-    df['day'] = df[date_column].dt.day
-    df['quarter'] = df[date_column].dt.quarter
+    # Detect which temporal components exist in the datetime
+    # Check if datetime has time component (hour, minute)
+    has_time = (df[date_column].dt.hour != 0).any() or (df[date_column].dt.minute != 0).any()
 
-    # Use the new cyclical encoding function (includes dayofweek and is_weekend)
-    df = create_cyclical_features(df, date_column, ['month', 'dayofweek'])
+    # Determine which cyclical features to create
+    features_to_encode = ['month', 'day', 'dayofweek']
+    if has_time:
+        features_to_encode.extend(['hour', 'minute'])
+
+    # Create cyclical encodings
+    df = create_cyclical_features(df, date_column, features_to_encode)
+
+    # Drop non-cyclical temporal features (keep only cyclical encodings)
+    # These original columns are redundant and don't capture cyclical nature
+    temporal_cols_to_drop = ['year', 'month', 'day', 'quarter', 'dayofweek', 'hour', 'minute']
+    # Only drop columns that exist
+    cols_to_drop = [col for col in temporal_cols_to_drop if col in df.columns]
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+        print(f"   Dropped non-cyclical temporal features: {cols_to_drop}")
+        print(f"   Kept cyclical features: {[col for col in df.columns if '_sin' in col or '_cos' in col or col == 'is_weekend']}")
 
     return df
 

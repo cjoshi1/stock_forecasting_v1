@@ -245,13 +245,16 @@ class TestIntradayFeatures(unittest.TestCase):
         """Test comprehensive feature creation."""
         for country in ['US', 'INDIA']:
             with self.subTest(country=country):
-                df_features = create_intraday_features(self.df, country=country, verbose=False)
-                
-                # Should have significantly more features than original
-                original_features = len(self.df.columns)
-                new_features = len(df_features.columns)
-                self.assertGreater(new_features, original_features * 5)
-                
+                df_features = create_intraday_features(
+                    self.df,
+                    timestamp_col='timestamp',
+                    country=country,
+                    verbose=False
+                )
+
+                # Should have vwap added
+                self.assertIn('vwap', df_features.columns)
+
                 # Should not have NaN values
                 self.assertEqual(df_features.isnull().sum().sum(), 0)
 
@@ -306,10 +309,12 @@ class TestIntradayPredictor(unittest.TestCase):
         self.assertEqual(info['timeframe'], '5min')
         self.assertEqual(info['country'], 'US')
     
-    def test_create_features(self):
+    def test_create_base_features(self):
         """Test feature creation through predictor."""
-        df_features = self.predictor.create_features(self.train_df, fit_scaler=True)
-        
+        # Test _create_base_features (protected method)
+        df_features = self.predictor._create_base_features(self.train_df)
+
+        # Should have time-series features added
         self.assertGreater(len(df_features.columns), len(self.train_df.columns))
         self.assertEqual(len(df_features), len(self.train_df))
     

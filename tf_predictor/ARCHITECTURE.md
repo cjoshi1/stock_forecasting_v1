@@ -26,7 +26,7 @@
 
 ---
 
-## 🔄 Complete Data Flow
+## 🔄 Complete Data Flow (REFACTORED - Oct 2025)
 
 ### Training Flow (fit)
 
@@ -35,44 +35,46 @@ User Data (Raw DataFrame)
     │
     ▼
 ┌───────────────────────────────────────────────────────┐
-│ 1. prepare_features() - Feature Engineering          │
-│    • Calls custom create_features() (user-defined)    │
-│    • Adds date/time features                          │
-│    • Creates shifted targets (Y)                      │
-│    • Sorts by group+time if group_column exists       │
+│ 1. prepare_data(fit_scaler=True, store=False)       │
 └───────────────────────────────────────────────────────┘
+    │
+    ├─► Step 1: _create_base_features()
+    │   • Domain-specific features (overridable)
+    │   • Time-series features (automatic cyclical encoding)
+    │   • Sorts by group+time if group_column exists
+    │
+    ├─► Step 2: create_shifted_targets()
+    │   • Creates target_h1, target_h2, ..., target_hN
+    │   • Removes rows with NaN
+    │
+    ├─► Step 3: SKIP STORAGE (store_for_evaluation=False)
+    │
+    ├─► Step 4: _encode_categorical_features()
+    │   • Label encoding for categorical columns
+    │
+    ├─► Step 5: _determine_numerical_columns()
+    │   • Auto-detect feature columns
+    │   • Exclude targets, categoricals, shifted targets
+    │
+    ├─► Step 6: _scale_features_single/grouped()
+    │   • Feature scaling: One scaler for all features
+    │   • Target scaling: PER-HORIZON ⭐
+    │     - close_target_h1 → StandardScaler #1
+    │     - close_target_h2 → StandardScaler #2
+    │     - close_target_h3 → StandardScaler #3
+    │
+    └─► Step 7: _create_sequences()
+        • Sliding window sequences
+        • Separate numerical (3D) and categorical (2D) tensors
     │
     ▼
 ┌───────────────────────────────────────────────────────┐
-│ 2. Scaling - _scale_features_single/grouped()        │
-│    • Scales input features (X)                        │
-│    • Single-group: One scaler for all data            │
-│    • Multi-group: One scaler per group                │
-└───────────────────────────────────────────────────────┘
-    │
-    ▼
-┌───────────────────────────────────────────────────────┐
-│ 3. prepare_data() - Create Sequences & Scale Targets │
-│    • Calls create_input_variable_sequence()           │
-│    • Creates sliding windows (X)                      │
-│    • Extracts and scales targets (Y)                  │
-│    • Returns (X_tensor, Y_tensor)                     │
-└───────────────────────────────────────────────────────┘
-    │
-    ├─────────────────────┬────────────────────┐
-    ▼                     ▼                    ▼
-Single-target      Multi-target         Group-based
-Single-horizon     Multi-horizon        Operations
-    │                     │                    │
-    └─────────────────────┴────────────────────┘
-                          │
-                          ▼
-┌───────────────────────────────────────────────────────┐
-│ 4. Training Loop in fit()                            │
+│ 2. Training Loop in fit()                            │
 │    • Mini-batch training                              │
 │    • Forward pass → Loss → Backward → Update          │
 │    • Validation after each epoch                      │
 │    • Early stopping monitoring                        │
+│    • Per-horizon inverse transform for metrics        │
 └───────────────────────────────────────────────────────┘
     │
     ▼
@@ -86,18 +88,36 @@ New Data (Raw DataFrame)
     │
     ▼
 ┌───────────────────────────────────────────────────────┐
-│ 1. prepare_features(fit_scaler=False)                │
-│    • Uses same feature engineering                    │
-│    • Uses EXISTING scalers (no fitting)               │
+│ 1. prepare_data(fit_scaler=False, store=True) ⭐     │
 └───────────────────────────────────────────────────────┘
+    │
+    ├─► Step 1: _create_base_features()
+    │   • Same feature engineering as training
+    │
+    ├─► Step 2: create_shifted_targets()
+    │   • Creates shifted targets
+    │
+    ├─► Step 3: STORE FOR EVALUATION ⭐⭐⭐
+    │   • Store df with UNENCODED categorical values
+    │   • Store df with UNSCALED numerical values
+    │   • Store df with shifted target columns
+    │   • This is used for extracting actuals during evaluation
+    │   • Fixes 100% MAPE bug (dataframe alignment issue)
+    │
+    ├─► Step 4: _encode_categorical_features()
+    │   • Uses EXISTING encoders (no fitting)
+    │
+    ├─► Step 5: _determine_numerical_columns()
+    │   • Uses cached column lists
+    │
+    ├─► Step 6: _scale_features_single/grouped()
+    │   • Uses EXISTING scalers (no fitting)
+    │   • Per-horizon target scalers
+    │
+    └─► Step 7: _create_sequences()
+        • Same sequence structure as training
     │
     ▼
-┌───────────────────────────────────────────────────────┐
-│ 2. Create sequences (no target scaling needed)       │
-│    • create_input_variable_sequence()                 │
-│    • Same sequence structure as training              │
-└───────────────────────────────────────────────────────┘
-    │
     ▼
 ┌───────────────────────────────────────────────────────┐
 │ 3. Model Forward Pass                                │

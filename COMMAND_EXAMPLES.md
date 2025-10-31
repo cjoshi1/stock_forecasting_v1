@@ -1,195 +1,303 @@
-# Complete Command Reference
+# Command Reference
 
-## Quick Start Examples
+**Version:** 2.0.0 (Updated: 2025-10-31)
 
-### Daily Stock Forecasting - Quick Examples
+> **📢 Version 2.0.0 Improvements:**
+> - Per-horizon target scaling (each horizon gets its own scaler)
+> - Automatic cyclical encoding for temporal features
+> - Fixed 100% MAPE evaluation bug
+> - All commands are backward compatible
+>
+> See `PIPELINE_REFACTORING_SUMMARY.md` for technical details.
+
+---
+
+## Quick Start
+
+### Daily Stock Forecasting
 
 ```bash
-# Basic single-target prediction with sample data
-python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type stock --epochs 50
+# Single-target, single-horizon (simplest)
+python daily_stock_forecasting/main.py --use_sample_data --target close --epochs 50
 
-# Multi-target prediction (predict close AND volume together)
-python daily_stock_forecasting/main.py --use_sample_data --target "close,volume" --asset_type stock --epochs 50
+# Multi-target (predict close AND volume)
+python daily_stock_forecasting/main.py --use_sample_data --target "close,volume" --epochs 50
 
-# Multi-horizon prediction (predict 3 days ahead)
-python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type stock --prediction_horizon 3 --epochs 50
+# Multi-horizon (predict 3 days ahead)
+python daily_stock_forecasting/main.py --use_sample_data --target close --prediction_horizon 3 --epochs 50
 
-# Portfolio with group-based scaling (multiple stocks)
-python daily_stock_forecasting/main.py --data_path portfolio.csv --target close --asset_type stock --group_columns symbol --epochs 100
+# Multi-target + Multi-horizon
+python daily_stock_forecasting/main.py --use_sample_data --target "close,volume" --prediction_horizon 3 --epochs 50
 
-# Crypto prediction (7-day week, includes weekends)
+# Portfolio with group-based scaling
+python daily_stock_forecasting/main.py --data_path portfolio.csv --target close --group_columns symbol --epochs 100
+
+# Crypto (7-day week)
 python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
 ```
 
-### Intraday Forecasting - Quick Examples
+### Intraday Forecasting
 
 ```bash
-# Basic US market 5-minute prediction
+# US market 5-minute
 python intraday_forecasting/main.py --use_sample_data --timeframe 5min --country US --epochs 30
 
-# Multi-target intraday (predict close AND volume)
-python intraday_forecasting/main.py --use_sample_data --target "close,volume" --timeframe 5min --country US --epochs 30
+# Multi-target intraday
+python intraday_forecasting/main.py --use_sample_data --target "close,volume" --timeframe 5min --epochs 30
 
-# Multi-symbol portfolio with group scaling
-python intraday_forecasting/main.py --data_path multi_symbol.csv --timeframe 5min --country US --group_columns symbol --epochs 50
-
-# Indian market prediction
-python intraday_forecasting/main.py --use_sample_data --timeframe 5min --country INDIA --epochs 30
+# Multi-symbol portfolio
+python intraday_forecasting/main.py --data_path multi_symbol.csv --group_columns symbol --timeframe 5min --epochs 50
 
 # Crypto 24/7 trading
 python intraday_forecasting/main.py --use_sample_data --timeframe 1h --country CRYPTO --epochs 30
-
-# 1-minute scalping with future predictions
-python intraday_forecasting/main.py --use_sample_data --timeframe 1min --country US --future_predictions 10 --epochs 30
 ```
 
-## Comprehensive Commands
+---
 
-This section provides a complete command example for both intraday and daily forecasting, including every possible parameter. Explanations for each parameter are provided in the tables below.
+## Complete Parameter Reference
 
-### Intraday Forecasting - Full Command Example
-
-```bash
-python intraday_forecasting/main.py \
-  --data_path /path/to/intraday_data.csv \
-  --target "close,volume" \
-  --timeframe 5min \
-  --model_type ft_transformer_cls \
-  --country US \
-  --group_columns symbol \
-  --categorical_columns symbol \
-  --scaler_type standard \
-  --use_lagged_target_features \
-  --sequence_length 60 \
-  --prediction_horizon 5 \
-  --d_model 128 \
-  --num_layers 3 \
-  --num_heads 8 \
-  --dropout 0.1 \
-  --per_group_metrics \
-  --epochs 50 \
-  --batch_size 32 \
-  --learning_rate 0.001 \
-  --patience 10 \
-  --test_size 200 \
-  --val_size 100 \
-  --future_predictions 10 \
-  --model_path outputs/models/intraday_model.pt \
-  --no_plots \
-  --verbose
-
-# Use sample data instead of real data
-python intraday_forecasting/main.py \
-  --use_sample_data \
-  --sample_days 10 \
-  --target close \
-  --timeframe 5min \
-  --country US \
-  --epochs 30
-```
-
-### Daily Stock Forecasting - Full Command Example
+### Daily Stock Forecasting
 
 ```bash
 python daily_stock_forecasting/main.py \
-  --data_path /path/to/stock_data.csv \
-  --target "close,volume" \
-  --asset_type stock \
-  --model_type ft_transformer_cls \
-  --group_columns symbol \
-  --categorical_columns symbol \
-  --scaler_type standard \
-  --use_lagged_target_features \
-  --sequence_length 50 \
+  --data_path /path/to/data.csv \           # Or use --use_sample_data
+  --target "close,volume" \                  # Comma-separated targets
+  --asset_type stock \                       # stock or crypto
+  --sequence_length 50 \                     # Historical days
+  --prediction_horizon 3 \                   # Steps ahead to predict
+  --model_type ft_transformer_cls \          # ft_transformer_cls or csn_transformer_cls
+  --group_columns symbol \                   # For multi-asset portfolios
+  --categorical_columns symbol \             # Categorical features
+  --scaler_type standard \                   # standard, minmax, robust, maxabs, onlymax
+  --use_lagged_target_features \             # Include targets in sequences
+  --d_model 128 \                            # Embedding dimension
+  --num_layers 3 \                           # Transformer layers
+  --num_heads 8 \                            # Attention heads
+  --dropout 0.1 \                            # Dropout rate
+  --epochs 100 \                             # Training epochs
+  --batch_size 32 \                          # Batch size
+  --learning_rate 0.001 \                    # Learning rate
+  --patience 15 \                            # Early stopping patience
+  --test_size 30 \                           # Test samples
+  --val_size 20 \                            # Validation samples
+  --per_group_metrics \                      # Show per-group metrics
+  --model_path outputs/models/model.pt \     # Save path
+  --no_plots \                               # Skip plots
+  --verbose                                  # Detailed output
+```
+
+### Intraday Forecasting
+
+```bash
+python intraday_forecasting/main.py \
+  --data_path /path/to/data.csv \           # Or use --use_sample_data
+  --target "close,volume" \                  # Comma-separated targets
+  --timeframe 5min \                         # 1min, 5min, 15min, 1h
+  --country US \                             # US, INDIA, CRYPTO
+  --sequence_length 60 \                     # Historical periods
+  --prediction_horizon 5 \                   # Steps ahead to predict
+  --model_type ft_transformer_cls \          # ft_transformer_cls or csn_transformer_cls
+  --group_columns symbol \                   # For multi-symbol data
+  --categorical_columns symbol \             # Categorical features
+  --scaler_type standard \                   # Scaler type
+  --use_lagged_target_features \             # Include targets in sequences
+  --d_model 128 \                            # Embedding dimension
+  --num_layers 3 \                           # Transformer layers
+  --num_heads 8 \                            # Attention heads
+  --dropout 0.1 \                            # Dropout rate
+  --epochs 50 \                              # Training epochs
+  --batch_size 32 \                          # Batch size
+  --learning_rate 0.001 \                    # Learning rate
+  --patience 10 \                            # Early stopping patience
+  --test_size 200 \                          # Test samples
+  --val_size 100 \                           # Validation samples
+  --future_predictions 10 \                  # Future periods to predict
+  --sample_days 10 \                         # For --use_sample_data
+  --per_group_metrics \                      # Show per-group metrics
+  --model_path outputs/models/model.pt \     # Save path
+  --no_plots \                               # Skip plots
+  --verbose                                  # Detailed output
+```
+
+---
+
+## Parameter Descriptions
+
+### Core Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--data_path` | str | None | Path to CSV with OHLCV data (required unless `--use_sample_data`) |
+| `--target` | str | "close" | Target column(s). Multi-target: `"close,volume"` (use quotes) |
+| `--use_sample_data` | flag | False | Use synthetic data for testing |
+| `--prediction_horizon` | int | 1 | Steps ahead to predict (1=single, >1=multi-horizon) |
+| `--sequence_length` | int | 5/auto | Historical periods for input |
+
+### Scaling & Grouping
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--group_columns` | str | None | Group-based scaling (e.g., `symbol` for multi-asset) |
+| `--categorical_columns` | str | None | Categorical features to encode |
+| `--scaler_type` | str | "standard" | `standard`, `minmax`, `robust`, `maxabs`, `onlymax` |
+| `--use_lagged_target_features` | flag | False | Include target in input sequences |
+| `--per_group_metrics` | flag | False | Show per-group evaluation metrics |
+
+### Model Architecture
+
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `--model_type` | str | "ft_transformer_cls" | - | `ft_transformer_cls` or `csn_transformer_cls` |
+| `--d_model` | int | 128 | 64-512 | Token embedding dimension |
+| `--num_layers` | int | 3 | 2-8 | Number of transformer layers |
+| `--num_heads` | int | 8 | 4-16 | Number of attention heads |
+| `--dropout` | float | 0.1 | 0.05-0.3 | Dropout rate |
+
+### Training
+
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `--epochs` | int | 50/100 | 50-300 | Training epochs |
+| `--batch_size` | int | 32 | 16-128 | Batch size |
+| `--learning_rate` | float | 0.001 | 0.0001-0.01 | Learning rate |
+| `--patience` | int | 10/15 | 10-30 | Early stopping patience |
+
+### Data Splits
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--test_size` | int | 30/200 | Test set size (absolute samples) |
+| `--val_size` | int | 20/100 | Validation set size (absolute samples) |
+
+### Asset/Market Specific
+
+| Parameter | Type | Default | Options | Description |
+|-----------|------|---------|---------|-------------|
+| `--asset_type` | str | "stock" | stock, crypto | Daily only: trading schedule |
+| `--timeframe` | str | "5min" | 1min, 5min, 15min, 1h | Intraday only: timeframe |
+| `--country` | str | "US" | US, INDIA, CRYPTO | Intraday only: market type |
+| `--future_predictions` | int | 0 | 0-N | Intraday only: future periods |
+| `--sample_days` | int | 5 | 1-30 | For `--use_sample_data` |
+
+### Output
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--model_path` | str | outputs/models/*.pt | Path to save trained model |
+| `--no_plots` | flag | False | Skip plot generation |
+| `--verbose` | flag | True | Detailed output |
+| `--quiet` | flag | False | Disable verbose (overrides `--verbose`) |
+
+---
+
+## New Features in v2.0.0
+
+### Per-Horizon Scaling
+
+Each prediction horizon now has its own scaler for optimal calibration:
+
+```bash
+# With prediction_horizon=3, creates:
+# - close_target_h1 → StandardScaler #1
+# - close_target_h2 → StandardScaler #2
+# - close_target_h3 → StandardScaler #3
+
+python daily_stock_forecasting/main.py \
+  --use_sample_data \
+  --target close \
   --prediction_horizon 3 \
-  --d_model 128 \
-  --num_layers 3 \
-  --num_heads 8 \
-  --dropout 0.1 \
-  --per_group_metrics \
-  --epochs 100 \
-  --batch_size 32 \
-  --learning_rate 0.001 \
-  --patience 15 \
-  --test_size 30 \
-  --val_size 20 \
-  --model_path outputs/models/stock_model.pt \
-  --no_plots
-
-# Use sample data instead of real data
-python daily_stock_forecasting/main.py \
-  --use_sample_data \
-  --target close \
-  --asset_type stock \
   --epochs 50
 ```
 
---- 
+**Benefits:**
+- Better accuracy per horizon
+- Improved MAPE metrics
+- Optimal scaling for each time step
 
-## Parameter Explanations
+### Automatic Cyclical Encoding
 
-### Data Parameters
+Temporal features automatically encoded as sin/cos pairs:
 
-| Parameter | Type | Description | Default | Notes |
-|-----------|------|-------------|---------|-------|
-| `--data_path` | string | Path to CSV file with OHLCV data | None | Required unless using `--use_sample_data` |
-| `--target` | string | Column(s) to predict | close | Single: `close` or Multi: `"close,volume"` (comma-separated, use quotes) |
-| `--group_columns` | string | Column(s) for group-based scaling | None | Use 'symbol' for multi-asset datasets. Multiple: `"symbol,sector"` |
-| `--categorical_columns` | string | Column(s) to encode as categorical features | None | Multiple: `"symbol,sector"` |
-| `--scaler_type` | string | Type of scaler for normalization | standard | Options: standard, minmax, robust, maxabs, onlymax |
-| `--use_sample_data` | flag | Use synthetic sample data | False | For testing without real data |
-| `--per_group_metrics` | flag | Show per-group evaluation metrics | False | Only with `--group_columns` |
-| `--use_lagged_target_features` | flag | Include target columns in input sequences for autoregressive modeling | False | Includes target values in the sequence window |
+**Created features:**
+- `month_sin`, `month_cos`, `day_sin`, `day_cos`
+- `dayofweek_sin`, `dayofweek_cos`, `is_weekend`
+- Intraday: `hour_sin`, `hour_cos`, `minute_sin`, `minute_cos`
 
-### Market-Specific Parameters (Intraday Only)
+**Removed features:**
+- `year`, `month`, `day`, `quarter`, `dayofweek`
+- Intraday: `hour`, `minute`
 
-| Parameter | Type | Description | Default | Options |
-|-----------|------|-------------|---------|---------|
-| `--timeframe` | string | Trading timeframe | 5min | 1min, 5min, 15min, 1h |
-| `--country` | string | Market type | US | US, INDIA, CRYPTO |
-| `--model_type` | string | Model architecture | ft_transformer_cls | ft_transformer_cls (FT-Transformer), csn_transformer_cls (CSN-Transformer) |
-| `--sample_days` | int | Days for sample data | 5 | Used with `--use_sample_data` |
-| `--future_predictions` | int | Future periods to predict | 0 | 0 = no future predictions |
+No configuration needed - happens automatically with date columns.
 
-### Asset-Specific Parameters (Daily Only)
+### Evaluation Improvements
 
-| Parameter | Type | Description | Default | Options |
-|-----------|------|-------------|---------|---------|
-| `--asset_type` | string | Asset type | stock | stock (5-day week), crypto (7-day week) |
+Per-horizon metrics now available:
 
-### Model Architecture Parameters
+```bash
+python daily_stock_forecasting/main.py \
+  --use_sample_data \
+  --target close \
+  --prediction_horizon 3 \
+  --epochs 50
 
-| Parameter | Type | Description | Default | Recommended Range |
-|-----------|------|-------------|---------|-------------------|
-| `--sequence_length` | int | Historical periods for input | 5 (daily), auto (intraday) | 5-60 |
-| `--prediction_horizon` | int | Steps ahead to predict | 1 | 1=single step, >1=multi-horizon |
-| `--model_type` | string | Model architecture | ft_transformer_cls | ft_transformer_cls (FT-Transformer), csn_transformer_cls (CSN-Transformer) |
-| `--d_model` | int | Token embedding dimension | 128 | 64-512 |
-| `--num_layers` | int | Number of transformer layers | 3 | 2-8 |
-| `--num_heads` | int | Number of attention heads | 8 | 4-16 |
-| `--dropout` | float | Dropout rate | 0.1 | 0.05-0.3 |
+# Output includes:
+# - Overall: MAE, MAPE, RMSE, R2, Directional_Accuracy
+# - horizon_1: metrics for 1-step ahead
+# - horizon_2: metrics for 2-steps ahead
+# - horizon_3: metrics for 3-steps ahead
+```
 
-### Training Parameters
+---
 
-| Parameter | Type | Description | Default | Recommended Range |
-|-----------|------|-------------|---------|-------------------|
-| `--epochs` | int | Training epochs | 50/100 | 50-300 |
-| `--batch_size` | int | Training batch size | 32 | 16-128 |
-| `--learning_rate` | float | Learning rate | 0.001 | 0.0001-0.01 |
-| `--patience` | int | Early stopping patience | 10/15 | 10-30 |
+## Troubleshooting
 
-### Data Split Parameters
+### High MAPE (>20%)
 
-| Parameter | Type | Description | Default | Notes |
-|-----------|------|-------------|---------|-------|
-| `--test_size` | int | Test set size (samples) | 200/30 | Absolute number of samples |
-| `--val_size` | int | Validation set size | 100/20 | Absolute number of samples |
+Try these adjustments:
+```bash
+# More training data and epochs
+--epochs 100
 
-### Output Parameters
+# Different scaler
+--scaler_type minmax
 
-| Parameter | Type | Description | Default | Notes |
-|-----------|------|-------------|---------|-------|
-| `--model_path` | string | Path to save trained model | outputs/models/*.pt | Creates directory if needed |
-| `--no_plots` | flag | Skip plot generation | False | Useful for batch training |
-| `--verbose` | flag | Enable verbose output | True | Shows detailed progress |
-| `--quiet` | flag | Disable verbose output | False | Overrides `--verbose` |
+# More context
+--sequence_length 30
+
+# Adjust model size
+--d_model 256 --num_layers 4
+```
+
+### Out of Memory
+
+Reduce resource usage:
+```bash
+--batch_size 16
+--d_model 64
+--num_layers 2
+--sequence_length 10
+```
+
+### Poor Multi-Horizon Performance
+
+Improve multi-horizon predictions:
+```bash
+--prediction_horizon 3
+--epochs 100
+--sequence_length 30
+--per_group_metrics  # For portfolios
+```
+
+---
+
+## Additional Resources
+
+- **Quick Reference:** `PIPELINE_QUICK_REFERENCE.md`
+- **Full Details:** `PIPELINE_REFACTORING_SUMMARY.md`
+- **Changelog:** `CHANGELOG.md`
+- **Architecture:** `tf_predictor/ARCHITECTURE.md`
+- **Testing:** `test_pipeline_stages.py`
+
+---
+
+**Last Updated:** 2025-10-31 (v2.0.0)

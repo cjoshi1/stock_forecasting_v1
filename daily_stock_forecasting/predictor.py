@@ -87,75 +87,24 @@ class StockPredictor(TimeSeriesPredictor):
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         return logging.getLogger(__name__)
 
-    def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
+    def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Prepare features by creating stock-specific features and time-series features.
+        Override base class to add stock-specific features (vwap) before time-series features.
 
         Args:
             df: DataFrame with OHLCV data and optional date column
-            fit_scaler: Whether to fit the scaler (True for training data)
 
         Returns:
-            processed_df: DataFrame with engineered features
+            processed_df: DataFrame with stock-specific and time-series features
         """
-        # First create stock-specific features (technical indicators, etc.)
-        # Note: group_columns could be a list, but create_stock_features expects single column or None
-        # Pass first group column if available, otherwise None
-        group_col_for_features = None
-        if self.group_columns:
-            group_col_for_features = self.group_columns[0] if isinstance(self.group_columns, list) else self.group_columns
-
+        # First add stock-specific features (vwap)
         df_with_stock_features = create_stock_features(
             df=df,
-            target_column=self.original_target_column,
-            verbose=self.verbose,
-            prediction_horizon=self.prediction_horizon,
-            asset_type=self.asset_type,
-            group_column=group_col_for_features
+            verbose=self.verbose
         )
 
-        # Then call parent's prepare_features to add time-series features
-        return super().prepare_features(df_with_stock_features, fit_scaler)
-
-    def predict(self, df: pd.DataFrame, return_group_info: bool = False):
-        """
-        Override predict to store properly preprocessed dataframe for evaluation.
-
-        The issue: StockPredictor.prepare_features() calls create_stock_features()
-        which creates shifted targets, but then prepare_data() calls
-        create_shifted_targets() AGAIN. We need to store the FINAL processed
-        dataframe (after both preprocessing steps) for evaluation alignment.
-
-        Args:
-            df: DataFrame with raw stock data
-            return_group_info: If True, return (predictions, group_indices)
-
-        Returns:
-            predictions: Array or dict of predictions (same as parent)
-            group_indices: List of group values (only if return_group_info=True)
-        """
-        # Preprocess exactly as prepare_data() does it
-        # Step 1: Call prepare_features (applies stock features + base features)
-        df_processed = self.prepare_features(df.copy(), fit_scaler=False)
-
-        # Step 2: Apply the same target shifting that prepare_data() does
-        # This is critical - prepare_data() calls create_shifted_targets() which
-        # overwrites the targets created by create_stock_features()
-        from tf_predictor.preprocessing.time_features import create_shifted_targets
-        group_col_for_shift = self.categorical_columns if self.categorical_columns else self.group_columns
-        df_processed = create_shifted_targets(
-            df_processed,
-            target_column=self.target_columns,
-            prediction_horizon=self.prediction_horizon,
-            group_column=group_col_for_shift,
-            verbose=False
-        )
-
-        # Store for evaluation - this now matches what prepare_data() produces
-        self._last_processed_df = df_processed
-
-        # Call parent predict (which will call prepare_data internally)
-        return super().predict(df, return_group_info)
+        # Then call parent's _create_base_features to add time-series features
+        return super()._create_base_features(df_with_stock_features)
 
     def predict_next_bars(self, df: pd.DataFrame, n_predictions: int = 1) -> pd.DataFrame:
         """

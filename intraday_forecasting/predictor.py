@@ -130,37 +130,34 @@ class IntradayPredictor(TimeSeriesPredictor):
             print(f"  - Sequence length: {sequence_length} {timeframe} bars")
             print(f"  - Model: {d_model}d x {num_layers}L x {num_heads}H")
 
-    def prepare_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
+    def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Prepare features by creating intraday-specific features and time-series features.
+        Override to add intraday-specific features (vwap, volume) before time-series features.
 
         Args:
             df: DataFrame with intraday OHLCV data
-            fit_scaler: Whether to fit the feature scaler
 
         Returns:
-            DataFrame with engineered features
+            processed_df: DataFrame with intraday-specific and time-series features
         """
-        # First create intraday-specific features (microstructure, time-of-day effects, etc.)
+        # First create intraday-specific features (volume, vwap)
         # Note: group_columns could be a list, but create_intraday_features expects single column or None
         # Pass first group column if available, otherwise None
         group_col_for_features = None
         if self.group_columns:
             group_col_for_features = self.group_columns[0] if isinstance(self.group_columns, list) else self.group_columns
 
-        df_with_intraday_features = create_intraday_features(
+        df_with_intraday = create_intraday_features(
             df=df,
-            target_column=self.original_target_column,  # Use original, not shifted
             timestamp_col=self.timestamp_col,
             country=self.country,
             timeframe=self.timeframe,
-            prediction_horizon=self.prediction_horizon,
             verbose=self.verbose,
             group_column=group_col_for_features  # Pass group_column to preserve it
         )
 
-        # Then call parent's prepare_features to add time-series features
-        return super().prepare_features(df_with_intraday_features, fit_scaler)
+        # Then call parent's _create_base_features to add time-series features
+        return super()._create_base_features(df_with_intraday)
     
     def get_timeframe_info(self) -> dict:
         """

@@ -1,15 +1,26 @@
 # 🧠 TF Predictor: Generic Time Series Forecasting Library
 
+**Version:** 2.0.0 (Updated: 2025-10-31)
+
 A reusable Python library for time series forecasting using the FT-Transformer (Feature Tokenizer Transformer) architecture. This library provides a clean, extensible foundation for building domain-specific time series prediction applications.
 
 ## 🎯 Features
 
-- **Multi-Target Prediction** ⭐ NEW: Predict multiple variables simultaneously with one unified model
+### Version 2.0.0 Highlights ⭐ NEW
+- **Per-Horizon Target Scaling**: Each prediction horizon gets its own scaler for optimal accuracy
+- **Automatic Cyclical Encoding**: Temporal features automatically encoded as sin/cos with original features dropped
+- **Evaluation Alignment Fixed**: Proper dataframe storage resolves 100% MAPE bug
+- **Clean Architecture**: 7-stage preprocessing pipeline with clear separation of concerns
+- **Simplified API**: `_create_base_features()` replaces `prepare_features()` for cleaner inheritance
+
+### Core Features
+- **Multi-Target Prediction**: Predict multiple variables simultaneously with one unified model
+- **Multi-Horizon Forecasting**: Predict 1 to N steps ahead with per-horizon scaling
 - **Generic Time Series Predictor**: Abstract base class for any time series domain
 - **State-of-the-art Architecture**: FT-Transformer with attention mechanisms
-- **Group-Based Scaling** ⭐ NEW: Independent scaling per group (e.g., per entity/symbol) while training unified models
-- **Automatic Temporal Ordering** ⭐ NEW: Data automatically sorted to maintain correct time sequences
-- **Flexible Feature Engineering**: Extensible preprocessing pipeline
+- **Group-Based Scaling**: Independent scaling per group (e.g., per entity/symbol) while training unified models
+- **Automatic Temporal Ordering**: Data automatically sorted to maintain correct time sequences
+- **Flexible Feature Engineering**: Extensible preprocessing pipeline with clean separation
 - **Sequence Modeling**: Built-in support for multi-step temporal sequences
 - **Production Ready**: Model persistence, evaluation metrics, and utilities
 
@@ -23,29 +34,33 @@ The library follows a clean architectural pattern:
 
 ## 🚀 Quick Start
 
-### 1. Create Your Custom Predictor
+### 1. Create Your Custom Predictor (v2.0.0 API)
 
 ```python
 from tf_predictor.core.predictor import TimeSeriesPredictor
-from tf_predictor.preprocessing.time_features import create_date_features, create_lag_features
 
 class MyPredictor(TimeSeriesPredictor):
-    def create_features(self, df, fit_scaler=False):
-        # Your domain-specific feature engineering
+    def _create_base_features(self, df):
+        """
+        Override to add domain-specific features.
+        Time-series features (cyclical encoding) are added automatically by parent.
+
+        IMPORTANT (v2.0.0):
+        - Only add domain-specific features here (no scaling, no encoding)
+        - Call super()._create_base_features() to add time-series features
+        - Target shifting happens automatically in pipeline stage 2
+        - Scaling happens automatically in pipeline stage 6
+        """
         df_processed = df.copy()
-        
-        # Add date features
-        if 'date' in df_processed.columns:
-            df_processed = create_date_features(df_processed, 'date')
-            
-        # Add lag features
-        df_processed = create_lag_features(df_processed, 'value', [1, 2, 7])
-        
-        # Add any domain-specific features here
-        # ...
-        
+
+        # Add your domain-specific features
+        df_processed['custom_feature'] = df_processed['value'] * 2
+
+        # Fill NaN values
         df_processed = df_processed.fillna(0)
-        return df_processed
+
+        # Call parent to add time-series features (automatic cyclical encoding)
+        return super()._create_base_features(df_processed)
 ```
 
 ### 2. Use Your Predictor
@@ -53,13 +68,15 @@ class MyPredictor(TimeSeriesPredictor):
 ```python
 from tf_predictor.core.utils import split_time_series
 
-# Initialize your custom predictor
+# Initialize your custom predictor (v2.0.0 parameter names)
 predictor = MyPredictor(
     target_column='value',
     sequence_length=7,
-    d_token=128,
-    n_layers=3,
-    n_heads=8
+    prediction_horizon=1,  # Number of steps ahead (default: 1)
+    model_type='ft_transformer_cls',  # 'ft_transformer_cls' or 'csn_transformer_cls'
+    d_model=128,  # Renamed from d_token in v2.0.0
+    num_layers=3,  # Renamed from n_layers in v2.0.0
+    num_heads=8    # Renamed from n_heads in v2.0.0
 )
 
 # Split your time series data
@@ -221,17 +238,37 @@ The heart of the library - extend this for your domain:
 
 ```python
 class TimeSeriesPredictor(ABC):
-    @abstractmethod
-    def create_features(self, df: pd.DataFrame, fit_scaler: bool = False) -> pd.DataFrame:
-        """Implement your domain-specific feature engineering here."""
+    def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Override to add domain-specific features (v2.0.0 API).
+
+        Only add feature engineering here - no scaling or encoding.
+        Call super()._create_base_features() to add time-series features.
+
+        DEPRECATED: prepare_features() method removed in v2.0.0
+        """
+        # Add automatic cyclical encoding for date/datetime columns
+        # ... (handled by base class)
         pass
 ```
 
 Key methods:
 - `fit()`: Train the model with your data
 - `predict()`: Generate predictions
-- `evaluate()`: Calculate comprehensive metrics
+- `evaluate()`: Calculate comprehensive metrics with per-horizon breakdown
 - `save()` / `load()`: Model persistence
+
+### v2.0.0 Pipeline Stages
+
+The preprocessing pipeline runs in 7 stages:
+
+1. **_create_base_features()**: Domain features + cyclical encoding
+2. **create_shifted_targets()**: Create target_h1, target_h2, ... columns
+3. **Storage** (if store_for_evaluation=True): Store unscaled/unencoded dataframe
+4. **_encode_categorical_features()**: Label encoding for categoricals
+5. **_determine_numerical_columns()**: Auto-detect feature columns
+6. **_scale_features()**: Per-horizon target scaling + feature scaling
+7. **_create_sequences()**: Create sliding window sequences
 
 ### Model Architecture
 
@@ -268,14 +305,18 @@ from tf_predictor.core.utils import (
 
 ## 🛠️ Configuration
 
-### Model Parameters
+### Model Parameters (v2.0.0)
 - `target_column`: Column(s) to predict - str for single-target or list for multi-target (e.g., 'value' or ['value1', 'value2'])
 - `sequence_length`: Number of time steps to use as input (default: 5)
-- `prediction_horizon`: Number of steps ahead to predict (default: 1, >1 for multi-horizon)
-- `group_column`: Column for group-based scaling (default: None)
-- `d_token`: Token embedding dimension (default: 192)
-- `n_layers`: Number of transformer layers (default: 3)
-- `n_heads`: Number of attention heads (default: 8)
+- `prediction_horizon`: Number of steps ahead to predict (default: 1, >1 for multi-horizon with per-horizon scaling)
+- `model_type`: Model architecture ('ft_transformer_cls' or 'csn_transformer_cls')
+- `group_columns`: Column(s) for group-based scaling - str or list (default: None)
+- `categorical_columns`: Categorical features to encode - str or list (default: None)
+- `scaler_type`: Scaler type ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
+- `use_lagged_target_features`: Include target in input sequences (bool, default: False)
+- `d_model`: Token embedding dimension (default: 128) - **renamed from `d_token` in v2.0.0**
+- `num_layers`: Number of transformer layers (default: 3) - **renamed from `n_layers` in v2.0.0**
+- `num_heads`: Number of attention heads (default: 8) - **renamed from `n_heads` in v2.0.0**
 - `dropout`: Dropout rate (default: 0.1)
 
 ### Training Parameters  
@@ -286,12 +327,14 @@ from tf_predictor.core.utils import (
 
 ## 🔧 Feature Engineering Guide
 
-### Date Features
+### Date Features (v2.0.0)
 ```python
-# Extract comprehensive date features
+# Extract cyclical date features (automatic in _create_base_features)
 df_processed = create_date_features(df, 'date')
-# Adds: year, month, day, dayofweek, quarter, is_weekend
-# Plus cyclical encodings: month_sin, month_cos, dayofweek_sin, dayofweek_cos
+# Adds cyclical encodings: month_sin, month_cos, day_sin, day_cos,
+#                          dayofweek_sin, dayofweek_cos, is_weekend
+# For datetime with time: hour_sin, hour_cos, minute_sin, minute_cos
+# Drops: year, month, day, quarter, dayofweek, hour, minute (non-cyclical)
 ```
 
 ### Lag Features
