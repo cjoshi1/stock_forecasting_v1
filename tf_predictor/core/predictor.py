@@ -698,7 +698,8 @@ class TimeSeriesPredictor:
                 for h in range(1, self.prediction_horizon + 1):
                     shifted_col = f"{target_col}_target_h{h}"
                     # Extract values after sequence offset (already scaled)
-                    target_values = group_df[shifted_col].values[self.sequence_length:]
+                    # Updated offset: sequence_length - 1 due to new sequence creation logic
+                    target_values = group_df[shifted_col].values[self.sequence_length - 1:]
                     y_list.append(target_values)
 
             # Combine targets
@@ -853,7 +854,8 @@ class TimeSeriesPredictor:
                 if shifted_col not in df_scaled.columns:
                     raise ValueError(f"Target column '{shifted_col}' not found")
                 # Extract values after sequence offset
-                target_values = df_scaled[shifted_col].values[self.sequence_length:]
+                # Updated offset: sequence_length - 1 due to new sequence creation logic
+                target_values = df_scaled[shifted_col].values[self.sequence_length - 1:]
                 y_list.append(target_values)
 
         # Combine targets
@@ -1558,89 +1560,131 @@ class TimeSeriesPredictor:
         # Check if multi-target
         if self.is_multi_target:
             # Multi-target evaluation: return metrics per target
-            from ..core.utils import calculate_metrics, calculate_metrics_multi_horizon
+            from ..core.utils import calculate_metrics
+
+            # Use stored processed dataframe (has shifted target columns)
+            if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
+                raise RuntimeError(
+                    "_last_processed_df not available for evaluation. "
+                    "This is a bug - predict() should have set _last_processed_df."
+                )
+
+            # New offset: sequence_length - 1 (due to new sequence creation logic)
+            offset = self.sequence_length - 1
 
             metrics_dict = {}
 
             for target_col in self.target_columns:
-                # Get actual values for this target from raw dataframe
-                if self.sequence_length > 1:
-                    actual = df[target_col].values[self.sequence_length:]
-                else:
-                    actual = df[target_col].values
-
-                target_predictions = predictions[target_col]
+                target_predictions = predictions[target_col]  # Dict of predictions
 
                 # Handle single vs multi-horizon
                 if self.prediction_horizon == 1:
-                    # Single-horizon
-                    min_len = min(len(actual), len(target_predictions))
-                    actual = actual[:min_len]
-                    target_predictions = target_predictions[:min_len]
+                    # Single-horizon: extract from shifted target column
+                    shifted_col = f"{target_col}_target_h1"
+                    actual = self._last_processed_df[shifted_col].values[offset:]
+
+                    # Validate alignment
+                    if len(actual) != len(target_predictions):
+                        raise ValueError(
+                            f"Alignment error for {target_col}: "
+                            f"{len(actual)} actuals vs {len(target_predictions)} predictions"
+                        )
 
                     metrics_dict[target_col] = calculate_metrics(actual, target_predictions)
                 else:
-                    # Multi-horizon
-                    # For multi-horizon, we need predictions.shape[0] actual future values
-                    # where each prediction uses up to prediction_horizon future values
-                    num_preds = target_predictions.shape[0]
-                    # Calculate how many actual values we need
-                    needed_actual_len = num_preds + self.prediction_horizon - 1
-                    # Only use predictions for which we have enough actual values
-                    if len(actual) < needed_actual_len:
-                        # Not enough actual values - trim predictions
-                        valid_pred_count = len(actual) - self.prediction_horizon + 1
-                        if valid_pred_count <= 0:
-                            # Skip this target if we don't have enough data
-                            continue
-                        num_preds = valid_pred_count
+                    # Multi-horizon: extract each horizon separately
+                    horizon_metrics = {}
 
-                    actual_aligned = actual[:num_preds + self.prediction_horizon - 1]
-                    predictions_aligned = target_predictions[:num_preds]
+                    for h in range(1, self.prediction_horizon + 1):
+                        shifted_col = f"{target_col}_target_h{h}"
+                        horizon_actual = self._last_processed_df[shifted_col].values[offset:]
+                        horizon_pred = target_predictions[:, h-1]
 
-                    metrics_dict[target_col] = calculate_metrics_multi_horizon(
-                        actual_aligned,
-                        predictions_aligned,
-                        self.prediction_horizon
-                    )
+                        # Validate alignment
+                        if len(horizon_actual) != len(horizon_pred):
+                            raise ValueError(
+                                f"Alignment error for {target_col}, horizon {h}: "
+                                f"{len(horizon_actual)} actuals vs {len(horizon_pred)} predictions"
+                            )
+
+                        horizon_metrics[f'horizon_{h}'] = calculate_metrics(horizon_actual, horizon_pred)
+
+                    # Overall for this target across all horizons
+                    all_actual = np.concatenate([
+                        self._last_processed_df[f"{target_col}_target_h{h}"].values[offset:]
+                        for h in range(1, self.prediction_horizon + 1)
+                    ])
+                    all_pred = target_predictions.flatten()
+                    horizon_metrics['overall'] = calculate_metrics(all_actual, all_pred)
+
+                    metrics_dict[target_col] = horizon_metrics
 
             return metrics_dict
 
         else:
             # Single-target evaluation
-            # For sequences, we need to align the actual values with predictions
+            # Use stored processed dataframe (has shifted target columns)
+            if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
+                raise RuntimeError(
+                    "_last_processed_df not available for evaluation. "
+                    "This is a bug - predict() should have set _last_processed_df."
+                )
+
             target_col = self.target_columns[0]
-            if self.sequence_length > 1:
-                actual = df[target_col].values[self.sequence_length:]
-            else:
-                actual = df[target_col].values
+
+            # New offset: sequence_length - 1 (due to new sequence creation logic)
+            offset = self.sequence_length - 1
 
             # Handle single vs multi-horizon evaluation
             if self.prediction_horizon == 1:
-                # Single-horizon: return simple metrics dict
+                # Single-horizon: extract from shifted target column
                 from ..core.utils import calculate_metrics
 
-                # Ensure same length
-                min_len = min(len(actual), len(predictions))
-                actual = actual[:min_len]
-                predictions = predictions[:min_len]
+                shifted_col = f"{target_col}_target_h1"
+                actual = self._last_processed_df[shifted_col].values[offset:]
+
+                # Validate alignment
+                if len(actual) != len(predictions):
+                    raise ValueError(
+                        f"Alignment error: {len(actual)} actuals vs {len(predictions)} predictions. "
+                        f"This indicates a bug in the evaluation pipeline."
+                    )
 
                 return calculate_metrics(actual, predictions)
             else:
-                # Multi-horizon: return nested dict with per-horizon metrics
-                from ..core.utils import calculate_metrics_multi_horizon
+                # Multi-horizon: extract each horizon from shifted columns
+                from ..core.utils import calculate_metrics
 
-                # For multi-horizon, predictions is 2D: (n_samples, horizons)
-                # Align actual values - we need enough actual values for all horizons
-                min_len = min(len(actual), predictions.shape[0])
-                actual_aligned = actual[:min_len + self.prediction_horizon - 1]  # Extra values for future horizons
-                predictions_aligned = predictions[:min_len]
+                horizons_actuals = []
+                for h in range(1, self.prediction_horizon + 1):
+                    shifted_col = f"{target_col}_target_h{h}"
+                    horizon_actual = self._last_processed_df[shifted_col].values[offset:]
+                    horizons_actuals.append(horizon_actual)
 
-                return calculate_metrics_multi_horizon(
-                    actual_aligned,
-                    predictions_aligned,
-                    self.prediction_horizon
-                )
+                # Stack into 2D: (n_samples, horizons)
+                actual_2d = np.column_stack(horizons_actuals)
+
+                # Validate alignment
+                if actual_2d.shape != predictions.shape:
+                    raise ValueError(
+                        f"Shape mismatch: actuals {actual_2d.shape} vs predictions {predictions.shape}. "
+                        f"This indicates a bug in the evaluation pipeline."
+                    )
+
+                # Calculate metrics - simple per-horizon approach
+                metrics = {}
+
+                # Overall metrics (flatten all horizons)
+                all_actual = actual_2d.flatten()
+                all_pred = predictions.flatten()
+                metrics['overall'] = calculate_metrics(all_actual, all_pred)
+
+                # Per-horizon metrics
+                for h in range(self.prediction_horizon):
+                    horizon_key = f'horizon_{h+1}'
+                    metrics[horizon_key] = calculate_metrics(actual_2d[:, h], predictions[:, h])
+
+                return metrics
 
     def _evaluate_per_group(self, df: pd.DataFrame) -> Dict:
         """
@@ -1648,7 +1692,7 @@ class TimeSeriesPredictor:
 
         Returns nested dict with overall metrics plus per-group breakdown.
         """
-        from ..core.utils import calculate_metrics, calculate_metrics_multi_horizon
+        from ..core.utils import calculate_metrics
 
         # Get predictions with group information - predict() handles all preprocessing
         predictions, group_indices = self.predict(df, return_group_info=True)
@@ -1657,7 +1701,6 @@ class TimeSeriesPredictor:
         unique_groups = sorted(set(group_indices))
 
         # We need to map group_value (label encoded int) back to original group column values
-        # First, decode the group values using the categorical encoder
         if self.group_columns:
             # Get the group column name
             group_col_name = self.group_columns[0]  # Assuming single group column for now
@@ -1673,14 +1716,19 @@ class TimeSeriesPredictor:
         else:
             group_value_to_name = {gv: gv for gv in unique_groups}
 
+        # Check if _last_processed_df is available
+        if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
+            raise RuntimeError(
+                "Processed dataframe not available for evaluation. "
+                "This is a bug - predict() should have set _last_processed_df."
+            )
+
+        # New offset: sequence_length - 1 (due to new sequence creation logic)
+        offset = self.sequence_length - 1
+
         # Check if multi-target
         if self.is_multi_target:
             # Multi-target per-group evaluation
-            # Structure: {
-            #   'overall': {target: metrics_dict, ...},
-            #   'group1': {target: metrics_dict, ...},
-            #   ...
-            # }
             all_metrics = {}
 
             for target_col in self.target_columns:
@@ -1688,68 +1736,62 @@ class TimeSeriesPredictor:
 
                 # Calculate per-group metrics for this target
                 for group_value in unique_groups:
-                    # Get the original group name
                     group_name = group_value_to_name[group_value]
-
-                    # Use processed dataframe to ensure alignment with predictions
-                    # This fixes the bug where raw df rows don't match processed df rows
-                    if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
-                        raise RuntimeError(
-                            "Processed dataframe not available for evaluation. "
-                            "This is a bug - predict() should have set _last_processed_df. "
-                            "Please report this issue."
-                        )
 
                     # Get processed data for this group
                     group_df_processed = self._last_processed_df[
                         self._last_processed_df[group_col_name] == group_name
                     ].copy()
 
-                    # Extract actual values with sequence_length offset
-                    if self.sequence_length > 1:
-                        group_actual_full = group_df_processed[target_col].values[self.sequence_length:]
-                    else:
-                        group_actual_full = group_df_processed[target_col].values
-
                     # Get predictions for this group
                     group_mask = np.array([g == group_value for g in group_indices])
 
                     if self.prediction_horizon == 1:
                         # Single-horizon
+                        shifted_col = f"{target_col}_target_h1"
+                        group_actual = group_df_processed[shifted_col].values[offset:]
                         group_preds = target_predictions[group_mask]
 
-                        # Align actual values with predictions
-                        min_len = min(len(group_actual_full), len(group_preds))
-                        group_actual = group_actual_full[:min_len]
-                        group_preds = group_preds[:min_len]
+                        # Validate alignment
+                        if len(group_actual) != len(group_preds):
+                            raise ValueError(
+                                f"Alignment error for group {group_name}, {shifted_col}: "
+                                f"Expected {len(group_preds)} actuals but found {len(group_actual)}"
+                            )
 
                         group_metrics = calculate_metrics(group_actual, group_preds)
                     else:
                         # Multi-horizon
                         group_preds = target_predictions[group_mask, :]
+                        horizon_metrics = {}
 
-                        # For multi-horizon, we need enough actual values to cover all horizons
-                        # Each prediction at index i needs actuals[i:i+prediction_horizon]
-                        num_preds = group_preds.shape[0]
-                        needed_actuals = num_preds + self.prediction_horizon - 1
+                        for h in range(1, self.prediction_horizon + 1):
+                            shifted_col = f"{target_col}_target_h{h}"
+                            horizon_actual = group_df_processed[shifted_col].values[offset:]
+                            horizon_pred = group_preds[:, h-1]
 
-                        if len(group_actual_full) >= needed_actuals:
-                            group_actual_aligned = group_actual_full[:needed_actuals]
-                        else:
-                            # Not enough actuals - trim predictions
-                            num_preds = max(0, len(group_actual_full) - self.prediction_horizon + 1)
-                            group_actual_aligned = group_actual_full
-                            group_preds = group_preds[:num_preds] if num_preds > 0 else group_preds[:0]
+                            # Validate alignment
+                            if len(horizon_actual) != len(horizon_pred):
+                                raise ValueError(
+                                    f"Alignment error for group {group_name}, {shifted_col}: "
+                                    f"Expected {len(horizon_pred)} actuals but found {len(horizon_actual)}"
+                                )
 
-                        if len(group_preds) > 0:
-                            group_metrics = calculate_metrics_multi_horizon(
-                                group_actual_aligned,
-                                group_preds,
-                                self.prediction_horizon
-                            )
-                        else:
-                            # Skip if no valid predictions
-                            continue
+                            horizon_metrics[f'horizon_{h}'] = calculate_metrics(horizon_actual, horizon_pred)
+
+                        # Overall metrics for this group across all horizons
+                        all_horizons_actual = []
+                        all_horizons_pred = []
+                        for h in range(1, self.prediction_horizon + 1):
+                            shifted_col = f"{target_col}_target_h{h}"
+                            all_horizons_actual.append(group_df_processed[shifted_col].values[offset:])
+                            all_horizons_pred.append(group_preds[:, h-1])
+
+                        all_actual_flat = np.concatenate(all_horizons_actual)
+                        all_pred_flat = np.concatenate(all_horizons_pred)
+                        horizon_metrics['overall'] = calculate_metrics(all_actual_flat, all_pred_flat)
+
+                        group_metrics = horizon_metrics
 
                     # Store metrics in nested structure
                     group_key = str(group_value)
@@ -1757,43 +1799,81 @@ class TimeSeriesPredictor:
                         all_metrics[group_key] = {}
                     all_metrics[group_key][target_col] = group_metrics
 
-                # Calculate overall metrics for this target (using all groups combined)
-                # Use processed dataframe for alignment
-                if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
-                    raise RuntimeError(
-                        "Processed dataframe not available for evaluation. "
-                        "This is a bug - predict() should have set _last_processed_df. "
-                        "Please report this issue."
-                    )
-
-                if self.sequence_length > 1:
-                    all_actual = self._last_processed_df[target_col].values[self.sequence_length:]
-                else:
-                    all_actual = self._last_processed_df[target_col].values
-
+                # Calculate overall metrics for this target (across all groups)
+                # For grouped data, extract actuals per-group and concatenate
                 if self.prediction_horizon == 1:
-                    min_len = min(len(all_actual), len(target_predictions))
-                    overall_target_metrics = calculate_metrics(all_actual[:min_len], target_predictions[:min_len])
-                else:
-                    num_preds = target_predictions.shape[0]
-                    needed_actuals = num_preds + self.prediction_horizon - 1
+                    shifted_col = f"{target_col}_target_h1"
 
-                    if len(all_actual) >= needed_actuals:
-                        actual_aligned = all_actual[:needed_actuals]
-                        preds_aligned = target_predictions
-                    else:
-                        num_preds = max(0, len(all_actual) - self.prediction_horizon + 1)
-                        actual_aligned = all_actual
-                        preds_aligned = target_predictions[:num_preds] if num_preds > 0 else target_predictions[:0]
+                    # Extract actuals per group in the correct order
+                    all_actuals_list = []
+                    for group_value in unique_groups:
+                        group_name = group_value_to_name[group_value]
+                        group_df = self._last_processed_df[
+                            self._last_processed_df[group_col_name] == group_name
+                        ]
+                        group_actual = group_df[shifted_col].values[offset:]
+                        all_actuals_list.append(group_actual)
 
-                    if len(preds_aligned) > 0:
-                        overall_target_metrics = calculate_metrics_multi_horizon(
-                            actual_aligned,
-                            preds_aligned,
-                            self.prediction_horizon
+                    all_actual = np.concatenate(all_actuals_list)
+
+                    if len(all_actual) != len(target_predictions):
+                        raise ValueError(
+                            f"Overall alignment error for {target_col}: "
+                            f"{len(all_actual)} actuals vs {len(target_predictions)} predictions"
                         )
-                    else:
-                        continue
+
+                    overall_target_metrics = calculate_metrics(all_actual, target_predictions)
+                else:
+                    horizon_metrics = {}
+
+                    for h in range(1, self.prediction_horizon + 1):
+                        shifted_col = f"{target_col}_target_h{h}"
+
+                        # Extract actuals per group in the correct order
+                        all_actuals_list = []
+                        for group_value in unique_groups:
+                            group_name = group_value_to_name[group_value]
+                            group_df = self._last_processed_df[
+                                self._last_processed_df[group_col_name] == group_name
+                            ]
+                            group_actual = group_df[shifted_col].values[offset:]
+                            all_actuals_list.append(group_actual)
+
+                        horizon_actual = np.concatenate(all_actuals_list)
+                        horizon_pred = target_predictions[:, h-1]
+
+                        if len(horizon_actual) != len(horizon_pred):
+                            raise ValueError(
+                                f"Overall alignment error for {target_col}, horizon {h}: "
+                                f"{len(horizon_actual)} actuals vs {len(horizon_pred)} predictions"
+                            )
+
+                        horizon_metrics[f'horizon_{h}'] = calculate_metrics(horizon_actual, horizon_pred)
+
+                    # Overall across all horizons
+                    all_horizons_actual = []
+                    all_horizons_pred = []
+                    for h in range(1, self.prediction_horizon + 1):
+                        shifted_col = f"{target_col}_target_h{h}"
+
+                        # Extract actuals per group
+                        actuals_for_horizon = []
+                        for group_value in unique_groups:
+                            group_name = group_value_to_name[group_value]
+                            group_df = self._last_processed_df[
+                                self._last_processed_df[group_col_name] == group_name
+                            ]
+                            group_actual = group_df[shifted_col].values[offset:]
+                            actuals_for_horizon.append(group_actual)
+
+                        all_horizons_actual.append(np.concatenate(actuals_for_horizon))
+                        all_horizons_pred.append(target_predictions[:, h-1])
+
+                    all_actual_flat = np.concatenate(all_horizons_actual)
+                    all_pred_flat = np.concatenate(all_horizons_pred)
+                    horizon_metrics['overall'] = calculate_metrics(all_actual_flat, all_pred_flat)
+
+                    overall_target_metrics = horizon_metrics
 
                 # Store overall metrics for this target
                 if 'overall' not in all_metrics:
@@ -1805,114 +1885,152 @@ class TimeSeriesPredictor:
         else:
             # Single-target per-group evaluation
             target_col = self.target_columns[0]
-
-            # Storage for per-group metrics
             all_metrics = {}
 
             # Calculate metrics per group
             for group_value in unique_groups:
-                # Get the original group name
                 group_name = group_value_to_name[group_value]
-
-                # Use processed dataframe to ensure alignment with predictions
-                if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
-                    raise RuntimeError(
-                        "Processed dataframe not available for evaluation. "
-                        "This is a bug - predict() should have set _last_processed_df. "
-                        "Please report this issue."
-                    )
 
                 # Get processed data for this group
                 group_df_processed = self._last_processed_df[
                     self._last_processed_df[group_col_name] == group_name
                 ].copy()
 
-                # Extract actual values with sequence_length offset
-                if self.sequence_length > 1:
-                    group_actual_full = group_df_processed[target_col].values[self.sequence_length:]
-                else:
-                    group_actual_full = group_df_processed[target_col].values
-
                 # Get predictions for this group
                 group_mask = np.array([g == group_value for g in group_indices])
-                group_preds = predictions[group_mask] if self.prediction_horizon == 1 else predictions[group_mask, :]
 
                 if self.prediction_horizon == 1:
                     # Single-horizon
-                    min_len = min(len(group_actual_full), len(group_preds))
-                    group_actual = group_actual_full[:min_len]
-                    group_preds = group_preds[:min_len]
+                    shifted_col = f"{target_col}_target_h1"
+                    group_actual = group_df_processed[shifted_col].values[offset:]
+                    group_preds = predictions[group_mask]
+
+                    # Validate alignment
+                    if len(group_actual) != len(group_preds):
+                        raise ValueError(
+                            f"Alignment error for group {group_name}, {shifted_col}: "
+                            f"Expected {len(group_preds)} actuals but found {len(group_actual)}"
+                        )
 
                     group_metrics = calculate_metrics(group_actual, group_preds)
-                    all_metrics[str(group_value)] = group_metrics
-
                 else:
                     # Multi-horizon
-                    num_preds = group_preds.shape[0]
-                    needed_actuals = num_preds + self.prediction_horizon - 1
+                    group_preds = predictions[group_mask, :]
+                    horizon_metrics = {}
 
-                    if len(group_actual_full) >= needed_actuals:
-                        group_actual_aligned = group_actual_full[:needed_actuals]
-                    else:
-                        # Not enough actuals - trim predictions
-                        num_preds = max(0, len(group_actual_full) - self.prediction_horizon + 1)
-                        group_actual_aligned = group_actual_full
-                        group_preds = group_preds[:num_preds] if num_preds > 0 else group_preds[:0]
+                    # Extract and evaluate each horizon independently
+                    for h in range(1, self.prediction_horizon + 1):
+                        shifted_col = f"{target_col}_target_h{h}"
+                        horizon_actual = group_df_processed[shifted_col].values[offset:]
+                        horizon_pred = group_preds[:, h-1]
 
-                    if len(group_preds) > 0:
-                        group_metrics = calculate_metrics_multi_horizon(
-                            group_actual_aligned,
-                            group_preds,
-                            self.prediction_horizon
-                        )
-                        all_metrics[str(group_value)] = group_metrics
+                        # Validate alignment
+                        if len(horizon_actual) != len(horizon_pred):
+                            raise ValueError(
+                                f"Alignment error for group {group_name}, {shifted_col}: "
+                                f"Expected {len(horizon_pred)} actuals but found {len(horizon_actual)}"
+                            )
+
+                        horizon_metrics[f'horizon_{h}'] = calculate_metrics(horizon_actual, horizon_pred)
+
+                    # Calculate overall metrics across all horizons for this group
+                    all_horizons_actual = []
+                    all_horizons_pred = []
+                    for h in range(1, self.prediction_horizon + 1):
+                        shifted_col = f"{target_col}_target_h{h}"
+                        all_horizons_actual.append(group_df_processed[shifted_col].values[offset:])
+                        all_horizons_pred.append(group_preds[:, h-1])
+
+                    all_actual_flat = np.concatenate(all_horizons_actual)
+                    all_pred_flat = np.concatenate(all_horizons_pred)
+                    horizon_metrics['overall'] = calculate_metrics(all_actual_flat, all_pred_flat)
+
+                    group_metrics = horizon_metrics
+
+                all_metrics[str(group_value)] = group_metrics
 
             # Calculate overall metrics across all groups
-            # Use processed dataframe for alignment
-            if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
-                raise RuntimeError(
-                    "Processed dataframe not available for evaluation. "
-                    "This is a bug - predict() should have set _last_processed_df. "
-                    "Please report this issue."
-                )
-
-            if self.sequence_length > 1:
-                all_actual = self._last_processed_df[target_col].values[self.sequence_length:]
-            else:
-                all_actual = self._last_processed_df[target_col].values
-
+            # For grouped data, we must extract actuals per-group and concatenate in the same order as predictions
+            # Predictions are ordered: [group0_samples, group1_samples, ...]
             if self.prediction_horizon == 1:
-                # Single-horizon overall
-                min_len = min(len(all_actual), len(predictions))
-                overall_metrics = calculate_metrics(all_actual[:min_len], predictions[:min_len])
+                shifted_col = f"{target_col}_target_h1"
+
+                # Extract actuals per group in the correct order
+                all_actuals_list = []
+                for group_value in unique_groups:
+                    group_name = group_value_to_name[group_value]
+                    group_df = self._last_processed_df[
+                        self._last_processed_df[group_col_name] == group_name
+                    ]
+                    group_actual = group_df[shifted_col].values[offset:]
+                    all_actuals_list.append(group_actual)
+
+                all_actual = np.concatenate(all_actuals_list)
+
+                if len(all_actual) != len(predictions):
+                    raise ValueError(
+                        f"Overall alignment error: {len(all_actual)} actuals vs {len(predictions)} predictions"
+                    )
+
+                overall_metrics = calculate_metrics(all_actual, predictions)
             else:
                 # Multi-horizon overall
-                num_preds = predictions.shape[0]
-                needed_actuals = num_preds + self.prediction_horizon - 1
+                horizon_metrics = {}
 
-                if len(all_actual) >= needed_actuals:
-                    actual_aligned = all_actual[:needed_actuals]
-                    preds_aligned = predictions
-                else:
-                    num_preds = max(0, len(all_actual) - self.prediction_horizon + 1)
-                    actual_aligned = all_actual
-                    preds_aligned = predictions[:num_preds] if num_preds > 0 else predictions[:0]
+                for h in range(1, self.prediction_horizon + 1):
+                    shifted_col = f"{target_col}_target_h{h}"
 
-                if len(preds_aligned) > 0:
-                    overall_metrics = calculate_metrics_multi_horizon(
-                        actual_aligned,
-                        preds_aligned,
-                        self.prediction_horizon
-                    )
-                else:
-                    overall_metrics = {}
+                    # Extract actuals per group in the correct order
+                    all_actuals_list = []
+                    for group_value in unique_groups:
+                        group_name = group_value_to_name[group_value]
+                        group_df = self._last_processed_df[
+                            self._last_processed_df[group_col_name] == group_name
+                        ]
+                        group_actual = group_df[shifted_col].values[offset:]
+                        all_actuals_list.append(group_actual)
 
-            # Combine into final structure
+                    horizon_actual = np.concatenate(all_actuals_list)
+                    horizon_pred = predictions[:, h-1]
+
+                    if len(horizon_actual) != len(horizon_pred):
+                        raise ValueError(
+                            f"Overall alignment error for {shifted_col}: "
+                            f"{len(horizon_actual)} actuals vs {len(horizon_pred)} predictions"
+                        )
+
+                    horizon_metrics[f'horizon_{h}'] = calculate_metrics(horizon_actual, horizon_pred)
+
+                # Overall across all horizons
+                all_horizons_actual = []
+                all_horizons_pred = []
+                for h in range(1, self.prediction_horizon + 1):
+                    shifted_col = f"{target_col}_target_h{h}"
+
+                    # Extract actuals per group
+                    actuals_for_horizon = []
+                    for group_value in unique_groups:
+                        group_name = group_value_to_name[group_value]
+                        group_df = self._last_processed_df[
+                            self._last_processed_df[group_col_name] == group_name
+                        ]
+                        group_actual = group_df[shifted_col].values[offset:]
+                        actuals_for_horizon.append(group_actual)
+
+                    all_horizons_actual.append(np.concatenate(actuals_for_horizon))
+                    all_horizons_pred.append(predictions[:, h-1])
+
+                all_actual_flat = np.concatenate(all_horizons_actual)
+                all_pred_flat = np.concatenate(all_horizons_pred)
+                horizon_metrics['overall'] = calculate_metrics(all_actual_flat, all_pred_flat)
+
+                overall_metrics = horizon_metrics
+
+            # Combine results
             result = {'overall': overall_metrics}
             result.update(all_metrics)
 
             return result
-
     def evaluate_from_features(self, df_processed: pd.DataFrame) -> Dict[str, float]:
         """
         Evaluate model performance from already-processed features.

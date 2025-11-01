@@ -368,9 +368,12 @@ def create_input_variable_sequence(
     sequences = []
 
     # Create sequences
-    for i in range(sequence_length, len(df)):
+    # Fixed: Start from 0 to use all available data
+    # Creates sequences: [0:seq_len], [1:seq_len+1], ..., [n-seq_len:n]
+    # This gives us (len(df) - sequence_length + 1) sequences instead of (len(df) - sequence_length)
+    for i in range(len(df) - sequence_length + 1):
         # Sequence of features (look back)
-        seq = features[i-sequence_length:i]
+        seq = features[i:i+sequence_length]
         sequences.append(seq)
 
     return np.array(sequences)
