@@ -31,6 +31,7 @@ class TimeSeriesPredictor:
         model_type: str = 'ft_transformer',
         scaler_type: str = 'standard',
         use_lagged_target_features: bool = False,
+        verbose: bool = False,
         **model_kwargs
     ):
         """
@@ -58,6 +59,7 @@ class TimeSeriesPredictor:
             use_lagged_target_features: Whether to include target columns in input sequences
                                        If True, enables autoregressive modeling by including target
                                        values in the sequence window
+            verbose: Whether to print detailed processing information
             **model_kwargs: Model-specific hyperparameters (d_model, num_heads, num_layers, etc.)
         """
         # Normalize target_column to list for uniform handling
@@ -131,7 +133,7 @@ class TimeSeriesPredictor:
 
         # Training history
         self.history = {'train_loss': [], 'val_loss': []}
-        self.verbose = False  # Will be set during training
+        self.verbose = verbose  # Set from constructor parameter
 
         # Feature caching to avoid recomputation
         self._feature_cache = {}

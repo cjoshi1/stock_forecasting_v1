@@ -27,6 +27,7 @@ class StockPredictor(TimeSeriesPredictor):
         categorical_columns: Optional[Union[str, list]] = None,  # Column(s) for categorical features
         scaler_type: str = 'standard',  # Scaler type for normalization
         use_lagged_target_features: bool = False,  # Include target in input sequences
+        verbose: bool = False,  # Whether to print detailed processing information
         d_model: int = 128,  # Token embedding dimension (renamed from d_token)
         num_heads: int = 8,  # Number of attention heads (renamed from n_heads)
         num_layers: int = 3,  # Number of transformer layers (renamed from n_layers)
@@ -46,6 +47,7 @@ class StockPredictor(TimeSeriesPredictor):
             categorical_columns: Optional column(s) to encode and pass as categorical features
             scaler_type: Type of scaler ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
             use_lagged_target_features: Whether to include target columns in input sequences
+            verbose: Whether to print detailed processing information
             d_model: Token embedding dimension
             num_heads: Number of attention heads
             num_layers: Number of transformer layers
@@ -75,6 +77,7 @@ class StockPredictor(TimeSeriesPredictor):
             model_type=model_type,
             scaler_type=scaler_type,
             use_lagged_target_features=use_lagged_target_features,
+            verbose=verbose,
             d_model=d_model,
             num_heads=num_heads,
             num_layers=num_layers,
