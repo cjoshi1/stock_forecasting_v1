@@ -951,6 +951,8 @@ class TimeSeriesPredictor:
         # Create model using factory
         # For _cls models, pass additional categorical parameters
         if self.model_type.endswith('_cls'):
+            # For CLS models, calculate total features for display
+            num_features = num_numerical + num_categorical
             self.model = ModelFactory.create_model(
                 model_type=self.model_type,
                 sequence_length=seq_len,
@@ -1506,7 +1508,7 @@ class TimeSeriesPredictor:
                     predictions[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(horizon_scaled).flatten()
                 return predictions
 
-    def evaluate(self, df: pd.DataFrame, per_group: bool = False) -> Dict:
+    def evaluate(self, df: pd.DataFrame, per_group: bool = False, predictions=None, group_indices=None) -> Dict:
         """
         Evaluate model performance.
 
@@ -1523,6 +1525,8 @@ class TimeSeriesPredictor:
         Args:
             df: DataFrame with raw data (will be processed to extract target)
             per_group: If True and group_column is set, return per-group metrics breakdown
+            predictions: Optional pre-computed predictions to avoid reprocessing (default: None)
+            group_indices: Optional pre-computed group indices to avoid reprocessing (default: None)
 
         Returns:
             metrics: Dictionary of evaluation metrics (structure depends on configuration)
@@ -1542,12 +1546,19 @@ class TimeSeriesPredictor:
             if self.target_columns[0] not in df.columns:
                 raise ValueError(f"Target column '{self.target_columns[0]}' not found in dataframe")
 
+        # Get predictions if not provided (avoids reprocessing if predictions are passed in)
+        if predictions is None:
+            if per_group and self.group_columns:
+                predictions, group_indices = self.predict(df, return_group_info=True)
+            else:
+                predictions = self.predict(df)
+
         # Check if we should do per-group evaluation
         if per_group and self.group_columns:
-            result = self._evaluate_per_group(df)
+            result = self._evaluate_per_group(df, predictions=predictions, group_indices=group_indices)
         else:
             # Standard evaluation - predict() handles all preprocessing
-            result = self._evaluate_standard(df)
+            result = self._evaluate_standard(df, predictions=predictions)
 
         # Clear cached processed dataframe to free memory
         if hasattr(self, '_last_processed_df'):
@@ -1555,9 +1566,17 @@ class TimeSeriesPredictor:
 
         return result
 
-    def _evaluate_standard(self, df: pd.DataFrame) -> Dict:
-        """Standard evaluation without per-group breakdown."""
-        predictions = self.predict(df)  # Returns dict for multi-target, predict() handles all preprocessing
+    def _evaluate_standard(self, df: pd.DataFrame, predictions=None) -> Dict:
+        """
+        Standard evaluation without per-group breakdown.
+
+        Args:
+            df: DataFrame with raw data
+            predictions: Optional pre-computed predictions (if None, will call predict())
+        """
+        # Use provided predictions or compute them
+        if predictions is None:
+            predictions = self.predict(df)  # Returns dict for multi-target, predict() handles all preprocessing
 
         # Check if multi-target
         if self.is_multi_target:
@@ -1688,16 +1707,23 @@ class TimeSeriesPredictor:
 
                 return metrics
 
-    def _evaluate_per_group(self, df: pd.DataFrame) -> Dict:
+    def _evaluate_per_group(self, df: pd.DataFrame, predictions=None, group_indices=None) -> Dict:
         """
         Evaluate performance per group (e.g., per stock symbol).
+
+        Args:
+            df: DataFrame with raw data
+            predictions: Optional pre-computed predictions (if None, will call predict())
+            group_indices: Optional pre-computed group indices (if None, will call predict())
 
         Returns nested dict with overall metrics plus per-group breakdown.
         """
         from ..core.utils import calculate_metrics
 
-        # Get predictions with group information - predict() handles all preprocessing
-        predictions, group_indices = self.predict(df, return_group_info=True)
+        # Use provided predictions or compute them
+        if predictions is None or group_indices is None:
+            # Get predictions with group information - predict() handles all preprocessing
+            predictions, group_indices = self.predict(df, return_group_info=True)
 
         # Get unique groups
         unique_groups = sorted(set(group_indices))
