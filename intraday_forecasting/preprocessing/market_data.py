@@ -18,10 +18,11 @@ from .intraday_features import create_intraday_features
 def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
                       validate: bool = True, group_column: Optional[str] = None) -> pd.DataFrame:
     """
-    Load intraday data from CSV file.
+    Load intraday time series data from CSV file (flexible - works with any numeric columns).
 
     Supports various formats including:
     - Standard OHLCV format with timestamp column
+    - Custom formats with any numeric columns
     - BTC-USD format with Datetime, OHLCV, Dividends, Stock Splits columns
     - Yahoo Finance format
 
@@ -29,9 +30,10 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
         file_path: Path to CSV file with intraday data
         timestamp_col: Name of timestamp column
         validate: Whether to validate data format
+        group_column: Optional group column to preserve (e.g., 'symbol')
 
     Returns:
-        DataFrame with loaded intraday data
+        DataFrame with loaded data and all numeric columns preserved
     """
     if not os.path.exists(file_path):
         logging.error(f"Data file not found: {file_path}")
@@ -58,12 +60,21 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
     df.rename(columns=column_mapping, inplace=True)
 
 
-    # Validate required columns
-    required_cols = [timestamp_col, 'open', 'high', 'low', 'close', 'volume']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        logging.error(f"Missing required columns: {missing_cols}. Available columns: {list(df.columns)}")
-        raise ValueError(f"Missing required columns: {missing_cols}. Available columns: {list(df.columns)}")
+    # Check for typical OHLCV columns (informational only - not required)
+    expected_cols = ['open', 'high', 'low', 'close', 'volume']
+    missing_cols = [col for col in expected_cols if col not in df.columns]
+    present_cols = [col for col in expected_cols if col in df.columns]
+
+    # Inform user about available columns
+    if missing_cols and present_cols:
+        print(f"   Info: Missing typical OHLCV columns: {missing_cols}")
+        print(f"   Found OHLCV columns: {present_cols}")
+    elif not present_cols:
+        print(f"   Info: No typical OHLCV columns found - using custom numeric columns")
+
+    # Ensure timestamp column exists
+    if timestamp_col not in df.columns:
+        raise ValueError(f"Timestamp column '{timestamp_col}' not found. Available columns: {list(df.columns)}")
 
     # Convert timestamp to datetime and handle timezone-aware timestamps
     df[timestamp_col] = pd.to_datetime(df[timestamp_col])
@@ -81,47 +92,55 @@ def load_intraday_data(file_path: str, timestamp_col: str = 'timestamp',
 def validate_intraday_data(df: pd.DataFrame, timestamp_col: str = 'timestamp', group_column: Optional[str] = None) -> pd.DataFrame:
     """
     Validate intraday data quality and format.
-    
+
+    Only validates columns that are present in the DataFrame.
+    Safe to use with partial OHLCV data or custom columns.
+
     Args:
         df: DataFrame with intraday data
         timestamp_col: Name of timestamp column
-        
+        group_column: Optional group column to preserve
+
     Returns:
         Validated and cleaned DataFrame
     """
     df_clean = df.copy()
-    
+
     # Sort by timestamp
     df_clean = df_clean.sort_values(timestamp_col).reset_index(drop=True)
-    
-    # Remove rows with invalid OHLCV data
+
+    # Check which OHLCV columns are present
     numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+    present_numeric_cols = [col for col in numeric_cols if col in df_clean.columns]
     
-    # Check for non-positive prices
+    # Check for non-positive prices (only for columns that exist)
     price_cols = ['open', 'high', 'low', 'close']
     for col in price_cols:
-        invalid_mask = (df_clean[col] <= 0) | (df_clean[col].isna())
-        if invalid_mask.sum() > 0:
-            print(f"Warning: Removing {invalid_mask.sum()} rows with invalid {col} values")
-            df_clean = df_clean[~invalid_mask]
-    
-    # Check for negative volume
-    invalid_volume = (df_clean['volume'] < 0) | (df_clean['volume'].isna())
-    if invalid_volume.sum() > 0:
-        print(f"Warning: Removing {invalid_volume.sum()} rows with invalid volume values")
-        df_clean = df_clean[~invalid_volume]
-    
-    # Validate OHLC relationships
-    invalid_ohlc = (
-        (df_clean['high'] < df_clean['low']) |
-        (df_clean['high'] < df_clean['open']) |
-        (df_clean['high'] < df_clean['close']) |
-        (df_clean['low'] > df_clean['open']) |
-        (df_clean['low'] > df_clean['close'])
-    )
-    if invalid_ohlc.sum() > 0:
-        print(f"Warning: Removing {invalid_ohlc.sum()} rows with invalid OHLC relationships")
-        df_clean = df_clean[~invalid_ohlc]
+        if col in df_clean.columns:
+            invalid_mask = (df_clean[col] <= 0) | (df_clean[col].isna())
+            if invalid_mask.sum() > 0:
+                print(f"Warning: Removing {invalid_mask.sum()} rows with invalid {col} values")
+                df_clean = df_clean[~invalid_mask]
+
+    # Check for negative volume (only if column exists)
+    if 'volume' in df_clean.columns:
+        invalid_volume = (df_clean['volume'] < 0) | (df_clean['volume'].isna())
+        if invalid_volume.sum() > 0:
+            print(f"Warning: Removing {invalid_volume.sum()} rows with invalid volume values")
+            df_clean = df_clean[~invalid_volume]
+
+    # Validate OHLC relationships (only if all OHLC columns exist)
+    if all(col in df_clean.columns for col in ['open', 'high', 'low', 'close']):
+        invalid_ohlc = (
+            (df_clean['high'] < df_clean['low']) |
+            (df_clean['high'] < df_clean['open']) |
+            (df_clean['high'] < df_clean['close']) |
+            (df_clean['low'] > df_clean['open']) |
+            (df_clean['low'] > df_clean['close'])
+        )
+        if invalid_ohlc.sum() > 0:
+            print(f"Warning: Removing {invalid_ohlc.sum()} rows with invalid OHLC relationships")
+            df_clean = df_clean[~invalid_ohlc]
     
     # Remove duplicates
     # If group_column is specified, deduplicate on both timestamp and group_column

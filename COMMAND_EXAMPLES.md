@@ -1,14 +1,16 @@
 # Command Reference
 
-**Version:** 2.0.0 (Updated: 2025-10-31)
+**Version:** 2.0.0 (Updated: 2025-11-01)
 
-> **📢 Version 2.0.0 Improvements:**
+> **📢 Version 2.0.0 Recent Updates:**
+> - **Evaluation alignment fixes** - Correct actuals extraction from shifted target columns
+> - **Sequence creation optimization** - 20% more training data utilized
+> - **verbose parameter support** - Control verbosity at initialization
 > - Per-horizon target scaling (each horizon gets its own scaler)
 > - Automatic cyclical encoding for temporal features
 > - Fixed 100% MAPE evaluation bug
-> - All commands are backward compatible
 >
-> See `PIPELINE_REFACTORING_SUMMARY.md` for technical details.
+> See `IMPLEMENTATION_SUMMARY.md` and `PIPELINE_REFACTORING_SUMMARY.md` for technical details.
 
 ---
 
@@ -300,4 +302,4 @@ Improve multi-horizon predictions:
 
 ---
 
-**Last Updated:** 2025-10-31 (v2.0.0)
+**Last Updated:** 2025-11-01 (v2.0.0)

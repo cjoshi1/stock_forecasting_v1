@@ -230,6 +230,107 @@ predictions = predictor.predict(test_df)
 ```
 ```
 
+## 🎨 Complete Example with All Arguments
+
+Here's a comprehensive example showing **all available parameters** for initializing a TimeSeriesPredictor:
+
+```python
+from tf_predictor.core.predictor import TimeSeriesPredictor
+from tf_predictor.core.utils import split_time_series
+import pandas as pd
+
+# Define your custom predictor
+class MyPredictor(TimeSeriesPredictor):
+    def _create_base_features(self, df):
+        df_processed = df.copy()
+        # Add domain-specific features here
+        df_processed = df_processed.fillna(0)
+        return super()._create_base_features(df_processed)
+
+# Load your data
+df = pd.read_csv('your_data.csv')
+
+# Initialize with ALL available parameters
+predictor = MyPredictor(
+    # === Target Configuration ===
+    target_column='close',                    # or ['col1', 'col2'] for multi-target
+
+    # === Sequence & Horizon ===
+    sequence_length=10,                       # Number of historical timesteps
+    prediction_horizon=3,                     # Number of steps ahead (1=single, >1=multi-horizon)
+
+    # === Model Architecture ===
+    model_type='ft_transformer_cls',          # 'ft_transformer_cls' or 'csn_transformer_cls'
+    d_model=128,                              # Token embedding dimension (renamed from d_token)
+    num_layers=3,                             # Number of transformer layers (renamed from n_layers)
+    num_heads=8,                              # Number of attention heads (renamed from n_heads)
+    dropout=0.1,                              # Dropout rate for regularization
+
+    # === Scaling & Normalization ===
+    scaler_type='standard',                   # 'standard', 'minmax', 'robust', 'maxabs', 'onlymax'
+    group_columns='symbol',                   # or ['col1', 'col2'] for group-based scaling
+
+    # === Feature Configuration ===
+    categorical_columns='sector',             # or ['col1', 'col2'] for categorical encoding
+    use_lagged_target_features=False,         # Include target in input sequences (autoregressive)
+
+    # === Misc ===
+    verbose=True                              # Print detailed processing information
+)
+
+# Split data chronologically
+train_df, val_df, test_df = split_time_series(
+    df,
+    test_size=30,
+    val_size=20,
+    group_column='symbol',      # Optional: ensure splits respect groups
+    time_column='date',          # Optional: specify time column name
+    sequence_length=10           # Optional: ensure minimum samples per split
+)
+
+# Train with all available parameters
+predictor.fit(
+    df=train_df,
+    val_df=val_df,
+    epochs=100,
+    batch_size=32,
+    learning_rate=1e-3,
+    patience=15,                # Early stopping patience
+    verbose=True
+)
+
+# Make predictions
+predictions = predictor.predict(test_df)
+# Single-target, single-horizon: returns array of shape (n_samples,)
+# Single-target, multi-horizon: returns array of shape (n_samples, n_horizons)
+# Multi-target: returns dict {'target1': array, 'target2': array, ...}
+
+# Evaluate performance
+metrics = predictor.evaluate(test_df, per_group=False)
+# If per_group=True and group_columns is set, returns per-group metrics
+
+# Save model
+predictor.save('my_model.pt')
+
+# Load model later
+loaded_predictor = MyPredictor(
+    target_column='close',
+    sequence_length=10,
+    prediction_horizon=3
+)
+loaded_predictor.load('my_model.pt')
+```
+
+### Parameter Groups Explained:
+
+| Category | Parameters | Description |
+|----------|-----------|-------------|
+| **Target** | `target_column` | What to predict (str or list) |
+| **Sequence** | `sequence_length`, `prediction_horizon` | Input length and output horizon |
+| **Architecture** | `model_type`, `d_model`, `num_layers`, `num_heads`, `dropout` | Model structure |
+| **Scaling** | `scaler_type`, `group_columns` | Normalization strategy |
+| **Features** | `categorical_columns`, `use_lagged_target_features` | Feature handling |
+
 ## 📚 Core Components
 
 ### TimeSeriesPredictor (Abstract Base Class)

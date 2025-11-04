@@ -1508,7 +1508,8 @@ class TimeSeriesPredictor:
                     predictions[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(horizon_scaled).flatten()
                 return predictions
 
-    def evaluate(self, df: pd.DataFrame, per_group: bool = False, predictions=None, group_indices=None) -> Dict:
+    def evaluate(self, df: pd.DataFrame, per_group: bool = False, predictions=None, group_indices=None,
+                 export_csv: Optional[str] = None) -> Dict:
         """
         Evaluate model performance.
 
@@ -1527,6 +1528,9 @@ class TimeSeriesPredictor:
             per_group: If True and group_column is set, return per-group metrics breakdown
             predictions: Optional pre-computed predictions to avoid reprocessing (default: None)
             group_indices: Optional pre-computed group indices to avoid reprocessing (default: None)
+            export_csv: Optional path to export predictions and actuals to CSV (default: None)
+                       Format: group,date,dataset,{target}_actual,{target}_pred_h{N},...
+                       Supports multi-group, multi-target, multi-horizon
 
         Returns:
             metrics: Dictionary of evaluation metrics (structure depends on configuration)
@@ -1559,6 +1563,10 @@ class TimeSeriesPredictor:
         else:
             # Standard evaluation - predict() handles all preprocessing
             result = self._evaluate_standard(df, predictions=predictions)
+
+        # Export predictions to CSV if requested (pass metrics for summary section)
+        if export_csv:
+            self._export_predictions_csv(df, predictions, group_indices, export_csv, metrics=result)
 
         # Clear cached processed dataframe to free memory
         if hasattr(self, '_last_processed_df'):
@@ -2092,6 +2100,291 @@ class TimeSeriesPredictor:
 
         from ..core.utils import calculate_metrics
         return calculate_metrics(actual, predictions)
+
+    def _export_predictions_csv(self, df: pd.DataFrame, predictions, group_indices, csv_path: str, metrics: Dict = None):
+        """
+        Export predictions, actuals, and metrics summary to CSV.
+
+        CSV has two sections:
+        1. METRICS SUMMARY (top): dataset, group, target, horizon, metric, value
+        2. PREDICTIONS (bottom): [group], date/timestamp, {target}_actual_h1, {target}_pred_h1, ...
+
+        Sections are separated by a blank row.
+
+        For multi-horizon predictions, each horizon gets its own actual and predicted columns:
+            - {target}_actual_h1: actual value at t+1
+            - {target}_pred_h1: predicted value for t+1
+            - {target}_actual_h2: actual value at t+2
+            - {target}_pred_h2: predicted value for t+2
+            - etc.
+
+        Args:
+            df: Raw input DataFrame
+            predictions: Predictions (array, 2D array, or dict for multi-target)
+            group_indices: Group indices (if using groups)
+            csv_path: Path to save CSV file
+            metrics: Evaluation metrics dict (for summary section)
+        """
+        from pathlib import Path
+        from datetime import datetime
+
+        # Determine time column (prefer 'date', fallback to 'timestamp')
+        time_column = None
+        for col in ['date', 'timestamp', 'time']:
+            if col in df.columns:
+                time_column = col
+                break
+
+        if time_column is None:
+            print(f"   Warning: No date/timestamp column found. CSV will not include time information.")
+
+        # Get configuration
+        has_groups = self.group_columns is not None
+        is_multi_target = self.is_multi_target
+        prediction_horizon = self.prediction_horizon
+        sequence_length = self.sequence_length
+
+        # Get target columns
+        if is_multi_target:
+            target_columns = self.target_columns
+        else:
+            target_columns = [self.target_columns[0] if isinstance(self.target_columns, list) else self.target_columns]
+
+        # Get group column name
+        group_col_name = None
+        if has_groups:
+            if isinstance(self.group_columns, list) and len(self.group_columns) > 0:
+                group_col_name = self.group_columns[0]
+            elif isinstance(self.group_columns, str):
+                group_col_name = self.group_columns
+
+        # Extract time values (offset by sequence_length)
+        if time_column:
+            time_values = df[time_column].values[sequence_length:]
+        else:
+            time_values = None
+
+        # Extract group values (offset by sequence_length)
+        if has_groups and group_col_name and group_col_name in df.columns:
+            group_values = df[group_col_name].values[sequence_length:]
+        else:
+            group_values = None
+
+        # Extract actuals for each target (offset by sequence_length)
+        actuals_dict = {}
+        for target_col in target_columns:
+            if target_col in df.columns:
+                actuals_dict[target_col] = df[target_col].values[sequence_length:]
+            else:
+                actuals_dict[target_col] = None
+
+        # Determine number of samples
+        if is_multi_target:
+            first_target = target_columns[0]
+            n_samples = len(predictions[first_target])
+        else:
+            n_samples = len(predictions) if prediction_horizon == 1 else len(predictions)
+
+        # Build results
+        results = []
+        for i in range(n_samples):
+            row = {}
+
+            # Add group if applicable
+            if group_values is not None and i < len(group_values):
+                row[group_col_name] = group_values[i]
+            elif group_indices is not None and i < len(group_indices):
+                row[group_col_name] = group_indices[i]
+
+            # Add time
+            if time_values is not None and i < len(time_values):
+                row[time_column] = time_values[i]
+
+            # Add actuals and predictions for each target
+            for target_col in target_columns:
+                # Get predictions for this target
+                if is_multi_target:
+                    target_preds = predictions[target_col]
+                else:
+                    target_preds = predictions
+
+                # Add actual values and predictions for each horizon
+                if prediction_horizon == 1:
+                    # Single-horizon: one actual, one prediction
+                    if actuals_dict[target_col] is not None and i < len(actuals_dict[target_col]):
+                        row[f'{target_col}_actual_h1'] = actuals_dict[target_col][i]
+                    else:
+                        row[f'{target_col}_actual_h1'] = None
+
+                    if i < len(target_preds):
+                        row[f'{target_col}_pred_h1'] = target_preds[i]
+                    else:
+                        row[f'{target_col}_pred_h1'] = None
+                else:
+                    # Multi-horizon: separate actual and prediction for each horizon
+                    for h in range(prediction_horizon):
+                        horizon_num = h + 1
+
+                        # Actual for horizon h is at position i + h
+                        # (for sample at time t, h1 actual is at t+1, h2 is at t+2, etc.)
+                        if actuals_dict[target_col] is not None and (i + h) < len(actuals_dict[target_col]):
+                            row[f'{target_col}_actual_h{horizon_num}'] = actuals_dict[target_col][i + h]
+                        else:
+                            row[f'{target_col}_actual_h{horizon_num}'] = None
+
+                        # Prediction for horizon h
+                        if i < len(target_preds):
+                            row[f'{target_col}_pred_h{horizon_num}'] = target_preds[i, h]
+                        else:
+                            row[f'{target_col}_pred_h{horizon_num}'] = None
+
+            results.append(row)
+
+        # Create DataFrame
+        results_df = pd.DataFrame(results)
+
+        # Sort by group (if exists) and time
+        sort_cols = []
+        if group_col_name and group_col_name in results_df.columns:
+            sort_cols.append(group_col_name)
+        if time_column and time_column in results_df.columns:
+            sort_cols.append(time_column)
+
+        if sort_cols:
+            results_df = results_df.sort_values(sort_cols).reset_index(drop=True)
+
+        # Create output directory if needed
+        csv_path_obj = Path(csv_path)
+        csv_path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build metrics summary section
+        metrics_rows = []
+        if metrics:
+            metrics_rows = self._flatten_metrics_for_csv(metrics, dataset='test')
+
+        # Write combined CSV: metrics summary + blank row + predictions
+        with open(csv_path, 'w') as f:
+            if metrics_rows:
+                # Write metrics summary section
+                metrics_df = pd.DataFrame(metrics_rows)
+                metrics_df.to_csv(f, index=False)
+                # Write blank row separator
+                f.write('\n')
+
+            # Write predictions section
+            results_df.to_csv(f, index=False)
+
+        print(f"\n✅ Predictions exported to CSV:")
+        print(f"   File: {csv_path}")
+        if metrics_rows:
+            print(f"   Metrics rows: {len(metrics_rows)}")
+        print(f"   Prediction rows: {len(results_df)}")
+        print(f"   Prediction columns: {len(results_df.columns)}")
+        if group_col_name and group_col_name in results_df.columns:
+            print(f"   Groups: {results_df[group_col_name].nunique()}")
+        print(f"   Targets: {', '.join(target_columns)}")
+        print(f"   Horizons: {prediction_horizon}")
+
+    def _flatten_metrics_for_csv(self, metrics: Dict, dataset: str = 'test') -> list:
+        """
+        Flatten nested metrics dict into rows for CSV export.
+
+        Handles various metric structures:
+        - Single-target, single-horizon: {'MAE': 0.5, 'RMSE': 0.7, ...}
+        - Multi-horizon: {'overall': {...}, 'horizon_1': {...}, ...}
+        - Multi-target: {'close': {...}, 'volume': {...}}
+        - Multi-group: {'overall': {...}, 'AAPL': {...}, ...}
+
+        Returns:
+            List of dicts with columns: dataset, group, target, horizon, metric, value
+        """
+        rows = []
+
+        # Determine if multi-target
+        is_multi_target = self.is_multi_target
+        is_multi_horizon = self.prediction_horizon > 1
+
+        # Check if per-group metrics (keys are group names)
+        has_per_group = False
+        if isinstance(metrics, dict) and 'overall' in metrics and len(metrics) > 1:
+            # Could be multi-horizon or multi-group
+            # If 'overall' value is a dict with 'MAE' etc, it's not multi-group
+            overall_val = metrics['overall']
+            if isinstance(overall_val, dict) and 'MAE' not in overall_val:
+                # Could be multi-horizon overall metrics {'overall': {...}, 'horizon_1': {...}}
+                # Check if other keys are group names or horizon names
+                other_keys = [k for k in metrics.keys() if k != 'overall']
+                if other_keys and not any(k.startswith('horizon_') for k in other_keys[:1]):
+                    has_per_group = True
+
+        if has_per_group:
+            # Multi-group metrics
+            for group_name, group_metrics in metrics.items():
+                if is_multi_target:
+                    # Multi-group, multi-target
+                    for target_name, target_metrics in group_metrics.items():
+                        rows.extend(self._extract_metric_rows(
+                            target_metrics, dataset, group_name, target_name
+                        ))
+                else:
+                    # Multi-group, single-target
+                    target_name = target_columns[0] if len(target_columns) > 0 else self.target_columns[0]
+                    rows.extend(self._extract_metric_rows(
+                        group_metrics, dataset, group_name, target_name
+                    ))
+        elif is_multi_target:
+            # Multi-target (no groups)
+            for target_name, target_metrics in metrics.items():
+                rows.extend(self._extract_metric_rows(
+                    target_metrics, dataset, 'overall', target_name
+                ))
+        else:
+            # Single-target (no groups)
+            target_name = self.target_columns[0] if isinstance(self.target_columns, list) else self.target_columns
+            rows.extend(self._extract_metric_rows(
+                metrics, dataset, 'overall', target_name
+            ))
+
+        return rows
+
+    def _extract_metric_rows(self, metrics_dict: Dict, dataset: str, group: str, target: str) -> list:
+        """
+        Extract metric rows from a single target's metrics dict.
+
+        Handles:
+        - Single-horizon: {'MAE': 0.5, 'RMSE': 0.7, ...}
+        - Multi-horizon: {'overall': {...}, 'horizon_1': {...}, 'horizon_2': {...}}
+        """
+        rows = []
+
+        # Check if multi-horizon structure
+        if 'overall' in metrics_dict and isinstance(metrics_dict['overall'], dict):
+            # Multi-horizon metrics
+            for horizon_key, horizon_metrics in metrics_dict.items():
+                if isinstance(horizon_metrics, dict):
+                    for metric_name, metric_value in horizon_metrics.items():
+                        rows.append({
+                            'dataset': dataset,
+                            'group': group,
+                            'target': target,
+                            'horizon': horizon_key,  # 'overall', 'horizon_1', 'horizon_2', etc.
+                            'metric': metric_name,
+                            'value': metric_value
+                        })
+        else:
+            # Single-horizon metrics (flat dict)
+            for metric_name, metric_value in metrics_dict.items():
+                if isinstance(metric_value, (int, float)):
+                    rows.append({
+                        'dataset': dataset,
+                        'group': group,
+                        'target': target,
+                        'horizon': '1',
+                        'metric': metric_name,
+                        'value': metric_value
+                    })
+
+        return rows
 
     def save(self, path: str):
         """Save the trained model and preprocessors."""

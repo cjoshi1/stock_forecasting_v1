@@ -156,7 +156,7 @@ def test_single_target():
         categorical_columns='symbol',
         model_type='ft_transformer_cls',  # Fixed: use correct model name
         scaler_type='standard',
-        use_lagged_target_features=False,
+        use_lagged_target_features=True,
         d_model=32,
         num_heads=2,
         num_layers=2
@@ -202,7 +202,7 @@ def test_multi_target():
         categorical_columns='symbol',
         model_type='ft_transformer_cls',  # Fixed: use correct model name
         scaler_type='standard',
-        use_lagged_target_features=False,
+        use_lagged_target_features=True,
         d_model=32,
         num_heads=2,
         num_layers=2
@@ -596,6 +596,9 @@ def run_test(predictor, df_raw, test_name):
             offset = predictor.sequence_length - 1
             print(f"\n   Extraction offset: {offset} (sequence_length - 1)")
 
+            # =========================================================================
+            # NEW: Create alignment table for each group
+            # =========================================================================
             for group_value in unique_groups:
                 group_name = group_value_to_name[group_value]
                 print(f"\n--- Group {group_value}: {group_name} ---")
@@ -611,40 +614,111 @@ def run_test(predictor, df_raw, test_name):
                 group_dates = group_df['date'].values if 'date' in group_df.columns else None
                 extracted_dates = group_dates[offset:] if group_dates is not None else None
 
-                # Show what will be extracted for each target and horizon
-                for target_col in predictor.target_columns:
-                    print(f"\n  Target: {target_col}")
-                    for h in range(1, predictor.prediction_horizon + 1):
-                        shifted_col = f"{target_col}_target_h{h}"
-                        if shifted_col in group_df.columns:
-                            # Show full column first
-                            print(f"\n    {shifted_col} column:")
-                            print(f"      Full: {group_df[shifted_col].values}")
+                # Get predictions for this group
+                group_mask = np.array([g == group_value for g in predictor._last_group_indices])
 
-                            # Show what gets extracted with offset
-                            extracted = group_df[shifted_col].values[offset:]
-                            print(f"      After offset [{offset}:]: {extracted}")
-                            print(f"      Length: {len(extracted)}")
+                # Handle both single-target (array) and multi-target (dict) predictions
+                if isinstance(test_predictions, dict):
+                    # Multi-target: test_predictions is a dict with keys like 'close', 'volume'
+                    group_predictions = {}
+                    for target_col in predictor.target_columns:
+                        if target_col in test_predictions:
+                            group_predictions[target_col] = test_predictions[target_col][group_mask]
+                elif hasattr(test_predictions, '__getitem__'):
+                    # Single-target: test_predictions is an array
+                    group_predictions = test_predictions[group_mask]
+                else:
+                    group_predictions = None
 
-                            # ⭐ CRITICAL: Show date-time alignment
-                            if extracted_dates is not None:
-                                print(f"\n    📅 DATE-TIME ALIGNMENT for {shifted_col}:")
-                                print(f"      Extracted dates (for actuals): {extracted_dates}")
-                                print(f"      These dates correspond to prediction indices: {list(range(len(extracted)))}")
-                                print(f"\n      ⚠️  VERIFICATION: Each prediction must match the actual for the SAME date!")
-                                print(f"      Example: prediction[0] for date {extracted_dates[0]} should match")
-                                print(f"               actual from {shifted_col}[offset+0] = {extracted[0]}")
+                # Build the alignment table
+                if extracted_dates is not None and group_predictions is not None:
+                    print(f"\n📊 ALIGNMENT TABLE: Date vs Predictions vs Actuals")
+                    print("="*80)
+
+                    # Create table data
+                    table_data = []
+
+                    for i in range(len(extracted_dates)):
+                        row = {'Date': pd.Timestamp(extracted_dates[i]).strftime('%Y-%m-%d')}
+
+                        # Add predictions and actuals for each target and horizon
+                        if isinstance(group_predictions, dict):
+                            # Multi-target: predictions are organized by target
+                            for target_col in predictor.target_columns:
+                                if target_col in group_predictions:
+                                    target_preds = group_predictions[target_col]
+                                    for h in range(1, predictor.prediction_horizon + 1):
+                                        shifted_col = f"{target_col}_target_h{h}"
+
+                                        # Get prediction for this horizon
+                                        h_idx = h - 1  # 0-indexed
+                                        if i < len(target_preds):
+                                            pred_value = target_preds[i, h_idx] if target_preds.ndim > 1 else target_preds[i]
+                                            row[f'{target_col}_h{h}_pred'] = pred_value
+                                        else:
+                                            row[f'{target_col}_h{h}_pred'] = None
+
+                                        # Get actual
+                                        if shifted_col in group_df.columns:
+                                            actual_values = group_df[shifted_col].values[offset:]
+                                            if i < len(actual_values):
+                                                row[f'{target_col}_h{h}_actual'] = actual_values[i]
+                                            else:
+                                                row[f'{target_col}_h{h}_actual'] = None
+                                        else:
+                                            row[f'{target_col}_h{h}_actual'] = None
+                        else:
+                            # Single-target: predictions are a single array
+                            pred_idx = 0
+                            for target_col in predictor.target_columns:
+                                for h in range(1, predictor.prediction_horizon + 1):
+                                    shifted_col = f"{target_col}_target_h{h}"
+
+                                    # Get prediction
+                                    if i < len(group_predictions):
+                                        pred_value = group_predictions[i, pred_idx] if group_predictions.ndim > 1 else group_predictions[i]
+                                        row[f'{target_col}_h{h}_pred'] = pred_value
+                                    else:
+                                        row[f'{target_col}_h{h}_pred'] = None
+
+                                    # Get actual
+                                    if shifted_col in group_df.columns:
+                                        actual_values = group_df[shifted_col].values[offset:]
+                                        if i < len(actual_values):
+                                            row[f'{target_col}_h{h}_actual'] = actual_values[i]
+                                        else:
+                                            row[f'{target_col}_h{h}_actual'] = None
+                                    else:
+                                        row[f'{target_col}_h{h}_actual'] = None
+
+                                    pred_idx += 1
+
+                        table_data.append(row)
+
+                    # Convert to DataFrame and display
+                    alignment_df = pd.DataFrame(table_data)
+                    print(alignment_df.to_string(index=False))
+                    print("="*80)
 
                 # Show how many predictions this group has
-                group_mask = np.array([g == group_value for g in predictor._last_group_indices])
                 num_group_preds = group_mask.sum()
                 print(f"\n  Number of predictions for this group: {num_group_preds}")
 
                 # Check alignment
-                if len(extracted) == num_group_preds:
-                    print(f"  ✅ PERFECT ALIGNMENT: {len(extracted)} actuals == {num_group_preds} predictions")
-                else:
-                    print(f"  ❌ MISALIGNMENT: {len(extracted)} actuals != {num_group_preds} predictions")
+                if extracted_dates is not None:
+                    # For multi-target, check the length of one of the target predictions
+                    if isinstance(group_predictions, dict):
+                        # Get length from first target's predictions
+                        first_target = predictor.target_columns[0]
+                        actual_pred_count = len(group_predictions[first_target]) if first_target in group_predictions else 0
+                    else:
+                        # Single-target
+                        actual_pred_count = len(group_predictions) if group_predictions is not None else 0
+
+                    if len(extracted_dates) == actual_pred_count:
+                        print(f"  ✅ PERFECT ALIGNMENT: {len(extracted_dates)} actuals == {actual_pred_count} predictions")
+                    else:
+                        print(f"  ❌ MISALIGNMENT: {len(extracted_dates)} actuals != {actual_pred_count} predictions")
 
     # =========================================================================
     # SUMMARY

@@ -132,15 +132,15 @@ class IntradayPredictor(TimeSeriesPredictor):
 
     def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Override to add intraday-specific features (vwap, volume) before time-series features.
+        Override to add intraday-specific preprocessing before time-series features.
 
         Args:
-            df: DataFrame with intraday OHLCV data
+            df: DataFrame with intraday data and timestamp
 
         Returns:
             processed_df: DataFrame with intraday-specific and time-series features
         """
-        # First create intraday-specific features (volume, vwap)
+        # First apply intraday-specific preprocessing (NaN handling)
         # Note: group_columns could be a list, but create_intraday_features expects single column or None
         # Pass first group column if available, otherwise None
         group_col_for_features = None

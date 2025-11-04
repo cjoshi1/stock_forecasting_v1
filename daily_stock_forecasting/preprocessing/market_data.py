@@ -10,7 +10,7 @@ from tf_predictor.core.utils import load_time_series_data
 
 def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str = 'stock', group_column: str = None) -> pd.DataFrame:
     """
-    Load and validate stock or crypto data.
+    Load and validate time series data (flexible - works with any numeric columns).
 
     Args:
         file_path: Path to CSV file
@@ -19,7 +19,7 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
         group_column: Optional group column to preserve (e.g., 'symbol' for multi-stock datasets)
 
     Returns:
-        df: Validated DataFrame
+        df: Validated DataFrame with all numeric columns preserved
     """
     try:
         df = pd.read_csv(file_path)
@@ -71,25 +71,29 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
 
     # Filter to only the columns we want
     df = df[cols_to_keep].copy()
-    
-    # Expected OHLCV columns
+
+    # Check for typical OHLCV columns (informational only - not required)
     expected_cols = ['open', 'high', 'low', 'close', 'volume']
     missing_cols = [col for col in expected_cols if col not in df.columns]
-    
-    if missing_cols:
-        logging.error(f"Missing required columns: {missing_cols}")
-        raise ValueError(f"Missing required columns: {missing_cols}")
-    
-    # Validate and convert data types for OHLCV columns
-    for col in expected_cols:
+    present_cols = [col for col in expected_cols if col in df.columns]
+
+    # Inform user about available columns
+    if missing_cols and present_cols:
+        print(f"   Info: Missing typical OHLCV columns: {missing_cols}")
+        print(f"   Found OHLCV columns: {present_cols}")
+    elif not present_cols:
+        print(f"   Info: No typical OHLCV columns found - using custom numeric columns")
+
+    # Validate and convert data types for present OHLCV columns
+    for col in present_cols:
         if not pd.api.types.is_numeric_dtype(df[col]):
             try:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             except:
                 raise ValueError(f"Column '{col}' contains non-numeric values")
-    
+
     # Handle other numeric columns (exclude group_column to preserve its dtype)
-    exclude_cols = expected_cols + [date_column]
+    exclude_cols = present_cols + [date_column]
     if group_column is not None:
         exclude_cols.append(group_column)
 
@@ -121,27 +125,31 @@ def load_stock_data(file_path: str, date_column: str = 'date', asset_type: str =
         except:
             print(f"Warning: Could not parse date column '{date_column}'")
     
-    # Remove rows with NaN in critical columns
+    # Remove rows with NaN in critical columns (only check present columns)
     before_len = len(df)
-    df = df.dropna(subset=expected_cols)
+    if present_cols:
+        df = df.dropna(subset=present_cols)
     after_len = len(df)
-    
+
     if before_len != after_len:
         print(f"Removed {before_len - after_len} rows with missing values")
-    
+
     if len(df) == 0:
         raise ValueError("No valid data remaining after cleaning")
-    
+
     return df
 
 
 def validate_stock_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Validate stock data for common issues.
-    
+
+    Only validates columns that are present in the DataFrame.
+    Safe to use with partial OHLCV data (e.g., just 'close').
+
     Args:
         df: DataFrame with stock data
-        
+
     Returns:
         df: Cleaned DataFrame
     """

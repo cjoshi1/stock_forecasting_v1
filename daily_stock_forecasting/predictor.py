@@ -92,7 +92,7 @@ class StockPredictor(TimeSeriesPredictor):
 
     def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Override base class to add stock-specific features (vwap) before time-series features.
+        Override base class to add stock-specific preprocessing before time-series features.
 
         Args:
             df: DataFrame with OHLCV data and optional date column
@@ -100,7 +100,7 @@ class StockPredictor(TimeSeriesPredictor):
         Returns:
             processed_df: DataFrame with stock-specific and time-series features
         """
-        # First add stock-specific features (vwap)
+        # First add stock-specific preprocessing (NaN filling)
         df_with_stock_features = create_stock_features(
             df=df,
             verbose=self.verbose
