@@ -140,10 +140,32 @@ class TimeSeriesPredictor:
         self._cache_enabled = True
 
     def _get_dataframe_hash(self, df: pd.DataFrame) -> str:
-        """Generate a hash key for DataFrame caching."""
+        """
+        Generate a hash key for DataFrame caching.
+
+        Uses shape, columns, and multiple sample rows to minimize collision risk.
+        Samples first, middle, and last rows for better uniqueness.
+        """
         import hashlib
-        # Use shape, column names, and sample of data for hash
-        key_data = f"{df.shape}_{list(df.columns)}_{df.iloc[0].to_dict() if len(df) > 0 else {}}"
+
+        # Base: shape and columns
+        key_parts = [str(df.shape), str(list(df.columns))]
+
+        # Add samples from multiple positions to reduce collision risk
+        if len(df) > 0:
+            # First row
+            key_parts.append(str(df.iloc[0].to_dict()))
+
+            # Middle row (if exists)
+            if len(df) > 1:
+                mid_idx = len(df) // 2
+                key_parts.append(str(df.iloc[mid_idx].to_dict()))
+
+            # Last row (if different from first)
+            if len(df) > 2:
+                key_parts.append(str(df.iloc[-1].to_dict()))
+
+        key_data = "_".join(key_parts)
         return hashlib.md5(key_data.encode()).hexdigest()
 
     def _create_group_key(self, row_or_df):
@@ -181,6 +203,52 @@ class TimeSeriesPredictor:
                 return row_or_df[self.group_columns[0]]
             else:
                 return row_or_df[self.group_columns].apply(tuple, axis=1)
+
+    def _filter_dataframe_by_group(self, df: pd.DataFrame, group_key) -> pd.DataFrame:
+        """
+        Filter dataframe to rows matching the given group key.
+
+        Handles both single-column and multi-column grouping correctly.
+
+        Args:
+            df: DataFrame to filter (should contain group columns)
+            group_key: Group key value
+                      - For single column: scalar (e.g., 'AAPL')
+                      - For multi-column: tuple (e.g., ('AAPL', 'Tech'))
+
+        Returns:
+            Filtered DataFrame containing only rows for the specified group
+
+        Examples:
+            >>> # Single column grouping
+            >>> filtered = _filter_dataframe_by_group(df, 'AAPL')
+            >>> # Returns df[df['symbol'] == 'AAPL']
+
+            >>> # Multi-column grouping
+            >>> filtered = _filter_dataframe_by_group(df, ('AAPL', 'Tech'))
+            >>> # Returns df[(df['symbol'] == 'AAPL') & (df['sector'] == 'Tech')]
+        """
+        if not self.group_columns:
+            return df
+
+        if len(self.group_columns) == 1:
+            # Single column grouping - simple filter
+            col = self.group_columns[0]
+            return df[df[col] == group_key].copy()
+        else:
+            # Multi-column grouping - create composite filter
+            # group_key is a tuple like ('AAPL', 'Tech')
+            if not isinstance(group_key, tuple):
+                raise ValueError(
+                    f"Expected tuple for multi-column group key, got {type(group_key)}: {group_key}"
+                )
+
+            # Create filter for each column
+            mask = pd.Series([True] * len(df), index=df.index)
+            for i, col in enumerate(self.group_columns):
+                mask &= (df[col] == group_key[i])
+
+            return df[mask].copy()
 
     def _detect_time_column(self, df: pd.DataFrame) -> Optional[str]:
         """Detect time-related column in DataFrame."""
@@ -536,8 +604,9 @@ class TimeSeriesPredictor:
         # Create composite group key
         df_scaled['_group_key'] = self._create_group_key(df_scaled)
 
-        # Get unique groups
-        unique_groups = df_scaled['_group_key'].unique()
+        # Get unique groups and sort for consistent ordering
+        # Sorting ensures consistent scaler application order across train/test
+        unique_groups = sorted(df_scaled['_group_key'].unique())
 
         if self.verbose:
             print(f"   Scaling features for {len(unique_groups)} groups")
@@ -664,7 +733,10 @@ class TimeSeriesPredictor:
         # Create temporary composite key column
         df_processed = df_processed.copy()
         df_processed['_group_key'] = self._create_group_key(df_processed)
-        unique_groups = df_processed['_group_key'].unique()
+
+        # Get unique groups and sort for consistent ordering
+        # Sorting ensures consistent sequence creation order
+        unique_groups = sorted(df_processed['_group_key'].unique())
 
         all_sequences_num = []  # Numerical sequences
         all_sequences_cat = []  # Categorical features (if any)
@@ -1733,24 +1805,9 @@ class TimeSeriesPredictor:
             # Get predictions with group information - predict() handles all preprocessing
             predictions, group_indices = self.predict(df, return_group_info=True)
 
-        # Get unique groups
+        # Get unique groups and sort them for consistent ordering
+        # group_indices contains the actual group keys (scalar or tuple)
         unique_groups = sorted(set(group_indices))
-
-        # We need to map group_value (label encoded int) back to original group column values
-        if self.group_columns:
-            # Get the group column name
-            group_col_name = self.group_columns[0]  # Assuming single group column for now
-
-            # Get encoder for this group column
-            if group_col_name in self.cat_encoders:
-                encoder = self.cat_encoders[group_col_name]
-                # Map encoded values back to original strings
-                group_value_to_name = {i: name for i, name in enumerate(encoder.classes_)}
-            else:
-                # Fallback: use group values as-is (shouldn't happen in normal flow)
-                group_value_to_name = {gv: gv for gv in unique_groups}
-        else:
-            group_value_to_name = {gv: gv for gv in unique_groups}
 
         # Check if _last_processed_df is available
         if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
@@ -1772,12 +1829,11 @@ class TimeSeriesPredictor:
 
                 # Calculate per-group metrics for this target
                 for group_value in unique_groups:
-                    group_name = group_value_to_name[group_value]
-
-                    # Get processed data for this group
-                    group_df_processed = self._last_processed_df[
-                        self._last_processed_df[group_col_name] == group_name
-                    ].copy()
+                    # Get processed data for this group using the helper method
+                    # group_value is the actual group key (scalar or tuple)
+                    group_df_processed = self._filter_dataframe_by_group(
+                        self._last_processed_df, group_value
+                    )
 
                     # Get predictions for this group
                     group_mask = np.array([g == group_value for g in group_indices])
@@ -1843,10 +1899,9 @@ class TimeSeriesPredictor:
                     # Extract actuals per group in the correct order
                     all_actuals_list = []
                     for group_value in unique_groups:
-                        group_name = group_value_to_name[group_value]
-                        group_df = self._last_processed_df[
-                            self._last_processed_df[group_col_name] == group_name
-                        ]
+                        group_df = self._filter_dataframe_by_group(
+                            self._last_processed_df, group_value
+                        )
                         group_actual = group_df[shifted_col].values[offset:]
                         all_actuals_list.append(group_actual)
 
@@ -1868,10 +1923,9 @@ class TimeSeriesPredictor:
                         # Extract actuals per group in the correct order
                         all_actuals_list = []
                         for group_value in unique_groups:
-                            group_name = group_value_to_name[group_value]
-                            group_df = self._last_processed_df[
-                                self._last_processed_df[group_col_name] == group_name
-                            ]
+                            group_df = self._filter_dataframe_by_group(
+                                self._last_processed_df, group_value
+                            )
                             group_actual = group_df[shifted_col].values[offset:]
                             all_actuals_list.append(group_actual)
 
@@ -1895,10 +1949,9 @@ class TimeSeriesPredictor:
                         # Extract actuals per group
                         actuals_for_horizon = []
                         for group_value in unique_groups:
-                            group_name = group_value_to_name[group_value]
-                            group_df = self._last_processed_df[
-                                self._last_processed_df[group_col_name] == group_name
-                            ]
+                            group_df = self._filter_dataframe_by_group(
+                                self._last_processed_df, group_value
+                            )
                             group_actual = group_df[shifted_col].values[offset:]
                             actuals_for_horizon.append(group_actual)
 
@@ -1925,12 +1978,11 @@ class TimeSeriesPredictor:
 
             # Calculate metrics per group
             for group_value in unique_groups:
-                group_name = group_value_to_name[group_value]
-
-                # Get processed data for this group
-                group_df_processed = self._last_processed_df[
-                    self._last_processed_df[group_col_name] == group_name
-                ].copy()
+                # Get processed data for this group using the helper method
+                # group_value is the actual group key (scalar or tuple)
+                group_df_processed = self._filter_dataframe_by_group(
+                    self._last_processed_df, group_value
+                )
 
                 # Get predictions for this group
                 group_mask = np.array([g == group_value for g in group_indices])
@@ -1994,10 +2046,9 @@ class TimeSeriesPredictor:
                 # Extract actuals per group in the correct order
                 all_actuals_list = []
                 for group_value in unique_groups:
-                    group_name = group_value_to_name[group_value]
-                    group_df = self._last_processed_df[
-                        self._last_processed_df[group_col_name] == group_name
-                    ]
+                    group_df = self._filter_dataframe_by_group(
+                        self._last_processed_df, group_value
+                    )
                     group_actual = group_df[shifted_col].values[offset:]
                     all_actuals_list.append(group_actual)
 
@@ -2019,10 +2070,9 @@ class TimeSeriesPredictor:
                     # Extract actuals per group in the correct order
                     all_actuals_list = []
                     for group_value in unique_groups:
-                        group_name = group_value_to_name[group_value]
-                        group_df = self._last_processed_df[
-                            self._last_processed_df[group_col_name] == group_name
-                        ]
+                        group_df = self._filter_dataframe_by_group(
+                            self._last_processed_df, group_value
+                        )
                         group_actual = group_df[shifted_col].values[offset:]
                         all_actuals_list.append(group_actual)
 
@@ -2046,10 +2096,9 @@ class TimeSeriesPredictor:
                     # Extract actuals per group
                     actuals_for_horizon = []
                     for group_value in unique_groups:
-                        group_name = group_value_to_name[group_value]
-                        group_df = self._last_processed_df[
-                            self._last_processed_df[group_col_name] == group_name
-                        ]
+                        group_df = self._filter_dataframe_by_group(
+                            self._last_processed_df, group_value
+                        )
                         group_actual = group_df[shifted_col].values[offset:]
                         actuals_for_horizon.append(group_actual)
 
