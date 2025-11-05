@@ -60,7 +60,7 @@ class TimeSeriesPredictor:
                                        If True, enables autoregressive modeling by including target
                                        values in the sequence window
             verbose: Whether to print detailed processing information
-            **model_kwargs: Model-specific hyperparameters (d_model, num_heads, num_layers, etc.)
+            **model_kwargs: Model-specific hyperparameters (d_token, n_heads, n_layers, etc.)
         """
         # Normalize target_column to list for uniform handling
         if isinstance(target_column, str):

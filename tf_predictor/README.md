@@ -76,15 +76,15 @@ class MyPredictor(TimeSeriesPredictor):
 ```python
 from tf_predictor.core.utils import split_time_series
 
-# Initialize your custom predictor (v2.0.0+ parameter names)
+# Initialize your custom predictor
 predictor = MyPredictor(
     target_column='value',
     sequence_length=7,
     prediction_horizon=1,  # Number of steps ahead (default: 1)
     model_type='ft_transformer_cls',  # 'ft_transformer_cls' or 'csn_transformer_cls'
-    d_model=128,  # Renamed from d_token in v2.0.0
-    num_layers=3,  # Renamed from n_layers in v2.0.0
-    num_heads=8    # Renamed from n_heads in v2.0.0
+    d_token=128,
+    n_layers=3,
+    n_heads=8
 )
 
 # Split your time series data
@@ -143,9 +143,9 @@ predictor = MultiEntityPredictor(
     target_column='value',
     sequence_length=10,
     group_columns='entity_id',  # ⭐ Single column grouping
-    d_model=128,
-    num_layers=3,
-    num_heads=8
+    d_token=128,
+    n_layers=3,
+    n_heads=8
 )
 
 # Data will be automatically sorted by [entity_id, date]
@@ -180,9 +180,9 @@ predictor = MultiDimensionPredictor(
     sequence_length=10,
     group_columns=['symbol', 'sector'],  # ⭐ Multi-column grouping (NEW!)
     categorical_columns=['symbol', 'sector'],  # Also encode as categorical
-    d_model=128,
-    num_layers=3,
-    num_heads=8
+    d_token=128,
+    n_layers=3,
+    n_heads=8
 )
 
 # Data will be automatically sorted by [symbol, sector, date]
@@ -221,9 +221,9 @@ predictor = MultiTargetPredictor(
     target_column=['temperature', 'humidity', 'pressure'],  # ⭐ Multiple targets
     sequence_length=10,
     prediction_horizon=1,  # Or use >1 for multi-horizon per target
-    d_model=128,
-    num_layers=3,
-    num_heads=8
+    d_token=128,
+    n_layers=3,
+    n_heads=8
 )
 
 # Train on multiple targets simultaneously
@@ -262,9 +262,9 @@ predictor = MultiTargetPredictor(
     prediction_horizon=3,                      # 3 steps ahead per target
     group_columns=['symbol', 'sector'],        # Multi-column grouping ⭐ NEW
     categorical_columns=['symbol', 'sector'],  # Categorical encoding
-    d_model=192,
-    num_layers=4,
-    num_heads=8
+    d_token=192,
+    n_layers=4,
+    n_heads=8
 )
 
 predictor.fit(train_df, val_df, epochs=150, batch_size=64)
@@ -312,9 +312,9 @@ predictor = MyPredictor(
 
     # === Model Architecture ===
     model_type='ft_transformer_cls',          # 'ft_transformer_cls' or 'csn_transformer_cls'
-    d_model=128,                              # Token embedding dimension (renamed from d_token)
-    num_layers=3,                             # Number of transformer layers (renamed from n_layers)
-    num_heads=8,                              # Number of attention heads (renamed from n_heads)
+    d_token=128,                              # Token embedding dimension
+    n_layers=3,                             # Number of transformer layers
+    n_heads=8,                              # Number of attention heads
     dropout=0.1,                              # Dropout rate for regularization
 
     # === Scaling & Normalization ===
@@ -378,7 +378,7 @@ loaded_predictor.load('my_model.pt')
 |----------|-----------|-------------|
 | **Target** | `target_column` | What to predict (str or list) |
 | **Sequence** | `sequence_length`, `prediction_horizon` | Input length and output horizon |
-| **Architecture** | `model_type`, `d_model`, `num_layers`, `num_heads`, `dropout` | Model structure |
+| **Architecture** | `model_type`, `d_token`, `n_layers`, `n_heads`, `dropout` | Model structure |
 | **Scaling** | `scaler_type`, `group_columns` | Normalization strategy (supports multi-column) ⭐ |
 | **Features** | `categorical_columns`, `use_lagged_target_features` | Feature handling |
 
@@ -464,9 +464,9 @@ from tf_predictor.core.utils import (
 - `categorical_columns`: Categorical features to encode - str or list (default: None)
 - `scaler_type`: Scaler type ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
 - `use_lagged_target_features`: Include target in input sequences (bool, default: False)
-- `d_model`: Token embedding dimension (default: 128) - **renamed from `d_token` in v2.0.0**
-- `num_layers`: Number of transformer layers (default: 3) - **renamed from `n_layers` in v2.0.0**
-- `num_heads`: Number of attention heads (default: 8) - **renamed from `n_heads` in v2.0.0**
+- `d_token`: Token embedding dimension (default: 128)
+- `n_layers`: Number of transformer layers (default: 3)
+- `n_heads`: Number of attention heads (default: 8)
 - `dropout`: Dropout rate (default: 0.1)
 - `verbose`: Print detailed processing information (bool, default: False)
 
@@ -639,13 +639,13 @@ For detailed information, see:
 
 ### For Better Accuracy:
 - Use longer sequences (10-50 time steps) for complex temporal patterns
-- Increase model capacity (`d_model=256`, `num_layers=6`) for large datasets
+- Increase model capacity (`d_token=256`, `n_layers=6`) for large datasets
 - Add domain-specific features in your `_create_base_features()` method
 - Use multi-column grouping for hierarchical data structures
 - Leverage multi-target prediction to capture variable correlations
 
 ### For Faster Training:
-- Use smaller models (`d_model=64`, `num_layers=2`) for quick experiments
+- Use smaller models (`d_token=64`, `n_layers=2`) for quick experiments
 - Increase batch size if memory allows
 - Use fewer features for initial prototyping
 
@@ -677,7 +677,7 @@ For detailed information, see:
 - Use group-based scaling if entities have different value ranges
 
 **"Memory errors"**
-- Reduce `batch_size` and `d_model`
+- Reduce `batch_size` and `d_token`
 - Process data in smaller chunks
 - Clear feature cache periodically
 
