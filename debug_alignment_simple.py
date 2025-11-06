@@ -222,9 +222,9 @@ def test_single_target():
         model_type='ft_transformer_cls',
         scaler_type='standard',
         use_lagged_target_features=True,
-        d_token=32,  # Updated parameter name
-        n_heads=2,   # Updated parameter name
-        n_layers=2   # Updated parameter name
+        d_model=32,    # CLS models use d_model
+        num_heads=2,   # CLS models use num_heads
+        num_layers=2   # CLS models use num_layers
     )
     predictor.verbose = True
 
@@ -273,9 +273,9 @@ def test_multi_target():
         model_type='ft_transformer_cls',
         scaler_type='standard',
         use_lagged_target_features=True,
-        d_token=32,  # Updated parameter name
-        n_heads=2,   # Updated parameter name
-        n_layers=2   # Updated parameter name
+        d_model=32,    # CLS models use d_model
+        num_heads=2,   # CLS models use num_heads
+        num_layers=2   # CLS models use num_layers
     )
     predictor.verbose = True
 
