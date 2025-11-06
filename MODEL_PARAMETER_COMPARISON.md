@@ -357,6 +357,166 @@ TOTAL:                  1,205,845 parameters
 
 ---
 
+## 🔑 Critical Insight: Why Categorical & Numerical Transformers Have SAME Parameter Count
+
+### The Key Question Answered
+
+**Q: How can the categorical transformer (processing 2 features) and numerical transformer (processing 8 features × 10 timesteps) have the exact same parameter count (593,280 each)?**
+
+**A: Because by the time data enters the transformer, ALL features have been projected to the SAME dimension: d_token = 128!**
+
+### 🎯 The Token Dimension Unification
+
+Both transformers operate on **tokens of dimension 128**, regardless of the original feature dimensions:
+
+```
+╔═══════════════════════════════════════════════════════════════════╗
+║  DATA FLOW: From Different Dimensions → Unified d_token          ║
+╠═══════════════════════════════════════════════════════════════════╣
+║                                                                   ║
+║  CATEGORICAL PATH:                                                ║
+║  ─────────────────                                                ║
+║                                                                   ║
+║  Input Features:                                                  ║
+║  ┌──────────────────────────────────────────────────────┐       ║
+║  │ Symbol (cardinality=100)                             │       ║
+║  │   → Embedding(100, 53)                               │       ║
+║  │   → Linear(53, 128)  ──→ [batch, 1, 128] ✅         │       ║
+║  │                                                       │       ║
+║  │ Sector (cardinality=5)                               │       ║
+║  │   → Embedding(5, 32)                                 │       ║
+║  │   → Linear(32, 128)  ──→ [batch, 1, 128] ✅         │       ║
+║  └──────────────────────────────────────────────────────┘       ║
+║                     ↓                                             ║
+║  Combined: [batch, 2, 128]  (2 categorical tokens)              ║
+║  + CLS1:   [batch, 1, 128]  (1 CLS token)                       ║
+║  ─────────────────────────────────────────────────────           ║
+║  INPUT TO CATEGORICAL TRANSFORMER: [batch, 3, 128] ◄────────┐   ║
+║                                                              │   ║
+║                                                              │   ║
+║  NUMERICAL PATH:                                            │   ║
+║  ────────────────                                           │   ║
+║                                                              │   ║
+║  Input Features:                                            │   ║
+║  ┌──────────────────────────────────────────────────────┐  │   ║
+║  │ 8 numerical features × 10 timesteps                  │  │   ║
+║  │   → Shape: [batch, 10, 8]                            │  │   ║
+║  │   → Linear(8, 128)  ──→ [batch, 10, 128] ✅         │  │   ║
+║  │   → Add positional encoding (also dim 128)           │  │   ║
+║  └──────────────────────────────────────────────────────┘  │   ║
+║                     ↓                                       │   ║
+║  Sequence: [batch, 10, 128]  (10 timestep tokens)         │   ║
+║  + CLS2:   [batch, 1, 128]   (1 CLS token)                │   ║
+║  ──────────────────────────────────────────────────────    │   ║
+║  INPUT TO NUMERICAL TRANSFORMER: [batch, 11, 128] ◄────────┤   ║
+║                                                              │   ║
+║  ════════════════════════════════════════════════════════   │   ║
+║                                                              │   ║
+║  BOTH TRANSFORMERS SEE:                                     │   ║
+║    - Input dimension: 128 (d_token) ◄────────────────────────┘   ║
+║    - Different NUMBER of tokens (3 vs 11)                    ║
+║    - But SAME token dimension!                               ║
+║                                                               ║
+║  TRANSFORMER PARAMETERS DEPEND ON:                            ║
+║    ✅ d_token (128) ──→ SAME for both                        ║
+║    ✅ n_heads (8)   ──→ SAME for both                        ║
+║    ✅ n_layers (3)  ──→ SAME for both                        ║
+║    ❌ Number of tokens ──→ DIFFERENT (3 vs 11)              ║
+║                            BUT doesn't affect param count!   ║
+╚═══════════════════════════════════════════════════════════════════╝
+```
+
+### 📐 Mathematical Proof
+
+The transformer parameter count depends ONLY on d_token, NOT on the number of tokens:
+
+**Categorical Transformer (3 tokens: 1 CLS + 2 categorical):**
+```
+Per layer parameters:
+  Q projection: [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  K projection: [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  V projection: [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  Output proj:  [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  FFN Layer 1:  [d_token × d_ffn]   = 128 × 512 = 65,536 (+ 512 bias)
+  FFN Layer 2:  [d_ffn × d_token]   = 512 × 128 = 65,536 (+ 128 bias)
+  LayerNorms:   2 × 2 × d_token     = 2 × 2 × 128 = 512
+
+  Total: 197,760 parameters per layer
+  3 layers: 593,280 parameters
+```
+
+**Numerical Transformer (11 tokens: 1 CLS + 10 timesteps):**
+```
+Per layer parameters:
+  Q projection: [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  K projection: [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  V projection: [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  Output proj:  [d_token × d_token] = 128 × 128 = 16,384 (+ 128 bias)
+  FFN Layer 1:  [d_token × d_ffn]   = 128 × 512 = 65,536 (+ 512 bias)
+  FFN Layer 2:  [d_ffn × d_token]   = 512 × 128 = 65,536 (+ 128 bias)
+  LayerNorms:   2 × 2 × d_token     = 2 × 2 × 128 = 512
+
+  Total: 197,760 parameters per layer
+  3 layers: 593,280 parameters
+```
+
+**Notice:** The formulas are IDENTICAL! The number of tokens (3 vs 11) doesn't appear anywhere!
+
+### 🎨 Visual Summary: What Matters for Parameter Count?
+
+```
+                Feature         Token         Transformer
+                Dimension       Dimension     Parameters
+                ─────────       ─────────     ──────────
+
+Categorical:    53 (symbol)  ─→
+                32 (sector)  ─→  128 (d_token) ─→ 197,760 per layer
+                                 ↑
+                                 │ This dimension
+                                 │ determines params!
+                                 ↓
+Numerical:      8 features   ─→  128 (d_token) ─→ 197,760 per layer
+                × 10 steps
+
+
+KEY INSIGHT:
+- Original feature dimensions: DIFFERENT (53, 32 vs 8×10)
+- Unified token dimension: SAME (128 for both)
+- Transformer parameters: SAME (197,760 per layer)
+```
+
+### 🔍 What DOES Change?
+
+While parameters stay the same, the **computational cost** differs:
+
+```
+Categorical Transformer:
+  - 3 tokens total
+  - Attention complexity: O(3²) = 9 operations per layer
+  - Memory for attention: 32 × 8 × 3² = 2,304 values
+
+Numerical Transformer:
+  - 11 tokens total
+  - Attention complexity: O(11²) = 121 operations per layer
+  - Memory for attention: 32 × 8 × 11² = 30,976 values
+```
+
+**The transformer "sees" more tokens in the numerical path, but uses the same weight matrices to process them!**
+
+### 💡 Analogy
+
+Think of the transformer as a **stamp** that processes each token:
+
+- The stamp itself (weights) has a fixed size: d_token × d_token
+- Categorical path: stamp 3 times (3 tokens)
+- Numerical path: stamp 11 times (11 tokens)
+- **Stamp size doesn't change** (parameters stay same)
+- **Number of stamps differs** (computation changes)
+
+This is why both transformers have exactly **593,280 parameters** despite processing completely different types and quantities of features!
+
+---
+
 ## Side-by-Side Comparison
 
 | Component | FT-Transformer | CSN-Transformer | Difference |
