@@ -711,14 +711,22 @@ def run_test(predictor, df_raw, test_name):
 
                 # Build the alignment table
                 if extracted_dates is not None and group_predictions is not None:
-                    print(f"\n📊 ALIGNMENT TABLE: Date vs Predictions vs Actuals")
-                    print("="*80)
+                    print(f"\n📊 ALIGNMENT TABLE: Timestamp, Date, Actual vs Predictions")
+                    print("="*120)
 
                     # Create table data
                     table_data = []
 
                     for i in range(len(extracted_dates)):
-                        row = {'Date': pd.Timestamp(extracted_dates[i]).strftime('%Y-%m-%d')}
+                        # Get the row from the original dataframe for timestamp
+                        row_in_group = offset + i
+                        timestamp_val = group_df.iloc[row_in_group]['timestamp'] if row_in_group < len(group_df) and 'timestamp' in group_df.columns else None
+
+                        row = {
+                            'Index': i,
+                            'Timestamp': pd.Timestamp(timestamp_val).strftime('%Y-%m-%d %H:%M:%S') if timestamp_val else 'N/A',
+                            'Date': pd.Timestamp(extracted_dates[i]).strftime('%Y-%m-%d')
+                        }
 
                         # Add predictions and actuals for each target and horizon
                         if isinstance(group_predictions, dict):
@@ -729,23 +737,23 @@ def run_test(predictor, df_raw, test_name):
                                     for h in range(1, predictor.prediction_horizon + 1):
                                         shifted_col = f"{target_col}_target_h{h}"
 
-                                        # Get prediction for this horizon
-                                        h_idx = h - 1  # 0-indexed
-                                        if i < len(target_preds):
-                                            pred_value = target_preds[i, h_idx] if target_preds.ndim > 1 else target_preds[i]
-                                            row[f'{target_col}_h{h}_pred'] = pred_value
-                                        else:
-                                            row[f'{target_col}_h{h}_pred'] = None
-
-                                        # Get actual
+                                        # Get actual value (these are unscaled in _last_processed_df)
                                         if shifted_col in group_df.columns:
                                             actual_values = group_df[shifted_col].values[offset:]
                                             if i < len(actual_values):
-                                                row[f'{target_col}_h{h}_actual'] = actual_values[i]
+                                                row[f'{target_col}_h{h}_actual'] = f"{actual_values[i]:.2f}"
                                             else:
-                                                row[f'{target_col}_h{h}_actual'] = None
+                                                row[f'{target_col}_h{h}_actual'] = 'N/A'
                                         else:
-                                            row[f'{target_col}_h{h}_actual'] = None
+                                            row[f'{target_col}_h{h}_actual'] = 'N/A'
+
+                                        # Get prediction for this horizon (these are inverse-transformed)
+                                        h_idx = h - 1  # 0-indexed
+                                        if i < len(target_preds):
+                                            pred_value = target_preds[i, h_idx] if target_preds.ndim > 1 else target_preds[i]
+                                            row[f'{target_col}_h{h}_pred'] = f"{pred_value:.2f}"
+                                        else:
+                                            row[f'{target_col}_h{h}_pred'] = 'N/A'
                         else:
                             # Single-target: predictions are a single array
                             pred_idx = 0
@@ -753,22 +761,22 @@ def run_test(predictor, df_raw, test_name):
                                 for h in range(1, predictor.prediction_horizon + 1):
                                     shifted_col = f"{target_col}_target_h{h}"
 
-                                    # Get prediction
-                                    if i < len(group_predictions):
-                                        pred_value = group_predictions[i, pred_idx] if group_predictions.ndim > 1 else group_predictions[i]
-                                        row[f'{target_col}_h{h}_pred'] = pred_value
-                                    else:
-                                        row[f'{target_col}_h{h}_pred'] = None
-
-                                    # Get actual
+                                    # Get actual value (unscaled)
                                     if shifted_col in group_df.columns:
                                         actual_values = group_df[shifted_col].values[offset:]
                                         if i < len(actual_values):
-                                            row[f'{target_col}_h{h}_actual'] = actual_values[i]
+                                            row[f'{target_col}_h{h}_actual'] = f"{actual_values[i]:.2f}"
                                         else:
-                                            row[f'{target_col}_h{h}_actual'] = None
+                                            row[f'{target_col}_h{h}_actual'] = 'N/A'
                                     else:
-                                        row[f'{target_col}_h{h}_actual'] = None
+                                        row[f'{target_col}_h{h}_actual'] = 'N/A'
+
+                                    # Get prediction (inverse-transformed)
+                                    if i < len(group_predictions):
+                                        pred_value = group_predictions[i, pred_idx] if group_predictions.ndim > 1 else group_predictions[i]
+                                        row[f'{target_col}_h{h}_pred'] = f"{pred_value:.2f}"
+                                    else:
+                                        row[f'{target_col}_h{h}_pred'] = 'N/A'
 
                                     pred_idx += 1
 
@@ -776,8 +784,31 @@ def run_test(predictor, df_raw, test_name):
 
                     # Convert to DataFrame and display
                     alignment_df = pd.DataFrame(table_data)
-                    print(alignment_df.to_string(index=False))
-                    print("="*80)
+
+                    # Reorder columns for better readability
+                    # Start with Index, Timestamp, Date, then alternate actual/pred for each target+horizon
+                    ordered_cols = ['Index', 'Timestamp', 'Date']
+                    for target_col in predictor.target_columns:
+                        for h in range(1, predictor.prediction_horizon + 1):
+                            ordered_cols.append(f'{target_col}_h{h}_actual')
+                            ordered_cols.append(f'{target_col}_h{h}_pred')
+
+                    # Keep only columns that exist in the dataframe
+                    ordered_cols = [col for col in ordered_cols if col in alignment_df.columns]
+                    alignment_df = alignment_df[ordered_cols]
+
+                    print("\n" + alignment_df.to_string(index=False))
+                    print("\n" + "="*120)
+                    print("\n📋 Legend:")
+                    print("  - Index: Row number in extracted data (0-indexed)")
+                    print("  - Timestamp: Original timestamp from data")
+                    print("  - Date: Date extracted for this prediction")
+                    for target_col in predictor.target_columns:
+                        for h in range(1, predictor.prediction_horizon + 1):
+                            print(f"  - {target_col}_h{h}_actual: Actual {target_col} value {h} step(s) ahead")
+                            print(f"  - {target_col}_h{h}_pred: Predicted {target_col} value {h} step(s) ahead")
+                    print("\n💡 Verify: Each _actual should match its corresponding _pred closely if model is trained well")
+                    print("="*120)
 
                 # Show how many predictions this group has
                 num_group_preds = group_mask.sum()
