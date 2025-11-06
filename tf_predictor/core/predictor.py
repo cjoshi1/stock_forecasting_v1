@@ -204,6 +204,82 @@ class TimeSeriesPredictor:
             else:
                 return row_or_df[self.group_columns].apply(tuple, axis=1)
 
+    def _decode_group_key(self, encoded_group_key):
+        """
+        Decode an encoded group key back to its original values.
+
+        This reverses the label encoding applied to group columns, converting
+        encoded integer values back to their original string/categorical values.
+
+        Args:
+            encoded_group_key: Encoded group key value
+                             - For single column: scalar encoded value (e.g., 0)
+                             - For multi-column: tuple of encoded values (e.g., (0, 1))
+
+        Returns:
+            - If no group columns: None
+            - If single group column: scalar original value (e.g., 'AAPL')
+            - If multiple group columns: tuple of original values (e.g., ('AAPL', 'Tech'))
+
+        Examples:
+            >>> # Single column grouping
+            >>> self.group_columns = ['symbol']
+            >>> _decode_group_key(0)  # 0 is encoded 'AAPL'
+            'AAPL'
+
+            >>> # Multi-column grouping
+            >>> self.group_columns = ['symbol', 'sector']
+            >>> _decode_group_key((0, 1))  # 0='AAPL', 1='Tech'
+            ('AAPL', 'Tech')
+        """
+        if not self.group_columns:
+            return None
+
+        # Check if group columns are categorical (need decoding)
+        categorical_group_cols = [col for col in self.group_columns if col in self.categorical_columns]
+
+        if not categorical_group_cols:
+            # No categorical columns in group - return as-is
+            return encoded_group_key
+
+        if len(self.group_columns) == 1:
+            # Single column grouping
+            col = self.group_columns[0]
+            if col in self.categorical_columns:
+                # Decode using the label encoder
+                if col not in self.cat_encoders:
+                    raise ValueError(f"No encoder found for group column '{col}'")
+                encoder = self.cat_encoders[col]
+                # inverse_transform expects array, returns array
+                decoded = encoder.inverse_transform([encoded_group_key])[0]
+                return decoded
+            else:
+                # Not categorical, return as-is
+                return encoded_group_key
+        else:
+            # Multi-column grouping - encoded_group_key is a tuple
+            if not isinstance(encoded_group_key, tuple):
+                raise ValueError(
+                    f"Expected tuple for multi-column encoded group key, got {type(encoded_group_key)}: {encoded_group_key}"
+                )
+
+            # Decode each column value
+            decoded_values = []
+            for i, col in enumerate(self.group_columns):
+                encoded_val = encoded_group_key[i]
+                if col in self.categorical_columns:
+                    # Decode categorical column
+                    if col not in self.cat_encoders:
+                        raise ValueError(f"No encoder found for group column '{col}'")
+                    encoder = self.cat_encoders[col]
+                    decoded_val = encoder.inverse_transform([encoded_val])[0]
+                    decoded_values.append(decoded_val)
+                else:
+                    # Not categorical, use as-is
+                    decoded_values.append(encoded_val)
+
+            return tuple(decoded_values)
+
     def _filter_dataframe_by_group(self, df: pd.DataFrame, group_key) -> pd.DataFrame:
         """
         Filter dataframe to rows matching the given group key.
@@ -1806,8 +1882,14 @@ class TimeSeriesPredictor:
             predictions, group_indices = self.predict(df, return_group_info=True)
 
         # Get unique groups and sort them for consistent ordering
-        # group_indices contains the actual group keys (scalar or tuple)
+        # group_indices contains ENCODED group keys (scalar or tuple of integers)
         unique_groups = sorted(set(group_indices))
+
+        # Decode group indices back to original values for filtering _last_processed_df
+        # _last_processed_df contains original unencoded values, so we need to decode
+        # the encoded group_indices to match
+        decoded_group_indices = [self._decode_group_key(g) for g in group_indices]
+        decoded_unique_groups = [self._decode_group_key(g) for g in unique_groups]
 
         # Check if _last_processed_df is available
         if not hasattr(self, '_last_processed_df') or self._last_processed_df is None:
@@ -1828,15 +1910,17 @@ class TimeSeriesPredictor:
                 target_predictions = predictions[target_col]
 
                 # Calculate per-group metrics for this target
-                for group_value in unique_groups:
-                    # Get processed data for this group using the helper method
-                    # group_value is the actual group key (scalar or tuple)
+                # Iterate over both encoded and decoded group values
+                for encoded_group, decoded_group in zip(unique_groups, decoded_unique_groups):
+                    # Get processed data for this group using DECODED value
+                    # _last_processed_df contains original unencoded values
                     group_df_processed = self._filter_dataframe_by_group(
-                        self._last_processed_df, group_value
+                        self._last_processed_df, decoded_group
                     )
 
-                    # Get predictions for this group
-                    group_mask = np.array([g == group_value for g in group_indices])
+                    # Get predictions for this group using ENCODED value
+                    # group_indices contains encoded values
+                    group_mask = np.array([g == encoded_group for g in group_indices])
 
                     if self.prediction_horizon == 1:
                         # Single-horizon
@@ -1847,7 +1931,7 @@ class TimeSeriesPredictor:
                         # Validate alignment
                         if len(group_actual) != len(group_preds):
                             raise ValueError(
-                                f"Alignment error for group {group_value}, {shifted_col}: "
+                                f"Alignment error for group {decoded_group}, {shifted_col}: "
                                 f"Expected {len(group_preds)} actuals but found {len(group_actual)}"
                             )
 
@@ -1865,7 +1949,7 @@ class TimeSeriesPredictor:
                             # Validate alignment
                             if len(horizon_actual) != len(horizon_pred):
                                 raise ValueError(
-                                    f"Alignment error for group {group_value}, {shifted_col}: "
+                                    f"Alignment error for group {decoded_group}, {shifted_col}: "
                                     f"Expected {len(horizon_pred)} actuals but found {len(horizon_actual)}"
                                 )
 
@@ -1885,8 +1969,8 @@ class TimeSeriesPredictor:
 
                         group_metrics = horizon_metrics
 
-                    # Store metrics in nested structure
-                    group_key = str(group_value)
+                    # Store metrics in nested structure using decoded group key
+                    group_key = str(decoded_group)
                     if group_key not in all_metrics:
                         all_metrics[group_key] = {}
                     all_metrics[group_key][target_col] = group_metrics
@@ -1898,9 +1982,9 @@ class TimeSeriesPredictor:
 
                     # Extract actuals per group in the correct order
                     all_actuals_list = []
-                    for group_value in unique_groups:
+                    for decoded_group in decoded_unique_groups:
                         group_df = self._filter_dataframe_by_group(
-                            self._last_processed_df, group_value
+                            self._last_processed_df, decoded_group
                         )
                         group_actual = group_df[shifted_col].values[offset:]
                         all_actuals_list.append(group_actual)
@@ -1922,9 +2006,9 @@ class TimeSeriesPredictor:
 
                         # Extract actuals per group in the correct order
                         all_actuals_list = []
-                        for group_value in unique_groups:
+                        for decoded_group in decoded_unique_groups:
                             group_df = self._filter_dataframe_by_group(
-                                self._last_processed_df, group_value
+                                self._last_processed_df, decoded_group
                             )
                             group_actual = group_df[shifted_col].values[offset:]
                             all_actuals_list.append(group_actual)
@@ -1948,9 +2032,9 @@ class TimeSeriesPredictor:
 
                         # Extract actuals per group
                         actuals_for_horizon = []
-                        for group_value in unique_groups:
+                        for decoded_group in decoded_unique_groups:
                             group_df = self._filter_dataframe_by_group(
-                                self._last_processed_df, group_value
+                                self._last_processed_df, decoded_group
                             )
                             group_actual = group_df[shifted_col].values[offset:]
                             actuals_for_horizon.append(group_actual)
@@ -1977,15 +2061,17 @@ class TimeSeriesPredictor:
             all_metrics = {}
 
             # Calculate metrics per group
-            for group_value in unique_groups:
-                # Get processed data for this group using the helper method
-                # group_value is the actual group key (scalar or tuple)
+            # Iterate over both encoded and decoded group values
+            for encoded_group, decoded_group in zip(unique_groups, decoded_unique_groups):
+                # Get processed data for this group using DECODED value
+                # _last_processed_df contains original unencoded values
                 group_df_processed = self._filter_dataframe_by_group(
-                    self._last_processed_df, group_value
+                    self._last_processed_df, decoded_group
                 )
 
-                # Get predictions for this group
-                group_mask = np.array([g == group_value for g in group_indices])
+                # Get predictions for this group using ENCODED value
+                # group_indices contains encoded values
+                group_mask = np.array([g == encoded_group for g in group_indices])
 
                 if self.prediction_horizon == 1:
                     # Single-horizon
@@ -1996,7 +2082,7 @@ class TimeSeriesPredictor:
                     # Validate alignment
                     if len(group_actual) != len(group_preds):
                         raise ValueError(
-                            f"Alignment error for group {group_value}, {shifted_col}: "
+                            f"Alignment error for group {decoded_group}, {shifted_col}: "
                             f"Expected {len(group_preds)} actuals but found {len(group_actual)}"
                         )
 
@@ -2015,7 +2101,7 @@ class TimeSeriesPredictor:
                         # Validate alignment
                         if len(horizon_actual) != len(horizon_pred):
                             raise ValueError(
-                                f"Alignment error for group {group_value}, {shifted_col}: "
+                                f"Alignment error for group {decoded_group}, {shifted_col}: "
                                 f"Expected {len(horizon_pred)} actuals but found {len(horizon_actual)}"
                             )
 
@@ -2035,7 +2121,7 @@ class TimeSeriesPredictor:
 
                     group_metrics = horizon_metrics
 
-                all_metrics[str(group_value)] = group_metrics
+                all_metrics[str(decoded_group)] = group_metrics
 
             # Calculate overall metrics across all groups
             # For grouped data, we must extract actuals per-group and concatenate in the same order as predictions
@@ -2045,9 +2131,9 @@ class TimeSeriesPredictor:
 
                 # Extract actuals per group in the correct order
                 all_actuals_list = []
-                for group_value in unique_groups:
+                for decoded_group in decoded_unique_groups:
                     group_df = self._filter_dataframe_by_group(
-                        self._last_processed_df, group_value
+                        self._last_processed_df, decoded_group
                     )
                     group_actual = group_df[shifted_col].values[offset:]
                     all_actuals_list.append(group_actual)
@@ -2069,9 +2155,9 @@ class TimeSeriesPredictor:
 
                     # Extract actuals per group in the correct order
                     all_actuals_list = []
-                    for group_value in unique_groups:
+                    for decoded_group in decoded_unique_groups:
                         group_df = self._filter_dataframe_by_group(
-                            self._last_processed_df, group_value
+                            self._last_processed_df, decoded_group
                         )
                         group_actual = group_df[shifted_col].values[offset:]
                         all_actuals_list.append(group_actual)
@@ -2095,9 +2181,9 @@ class TimeSeriesPredictor:
 
                     # Extract actuals per group
                     actuals_for_horizon = []
-                    for group_value in unique_groups:
+                    for decoded_group in decoded_unique_groups:
                         group_df = self._filter_dataframe_by_group(
-                            self._last_processed_df, group_value
+                            self._last_processed_df, decoded_group
                         )
                         group_actual = group_df[shifted_col].values[offset:]
                         actuals_for_horizon.append(group_actual)
