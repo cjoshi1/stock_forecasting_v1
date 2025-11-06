@@ -12,12 +12,12 @@ specialized transformers before late fusion.
 📊 ARCHITECTURE OVERVIEW:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  STATIC Categorical Features → Categorical Transformer → CLS₁               │
-│  [batch, num_categorical]    → [embeddings + attention]  → [batch, d_model] │
+│  [batch, num_categorical]    → [embeddings + attention]  → [batch, d_token] │
 │                                                                    ↓         │
 │                                                               CONCATENATE    │
 │                                                                    ↓         │
 │  TIME-VARYING Numerical Seq  → Numerical Transformer      → CLS₂  → Predict │
-│  [batch, seq_len, num_num]   → [projection + attention]  → [batch, d_model] │
+│  [batch, seq_len, num_num]   → [projection + attention]  → [batch, d_token] │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 🔄 DATA FLOW WITH MATRIX DIMENSIONS:
@@ -58,7 +58,7 @@ Example Configuration:
 │                                                                              │
 │ Step 4: Stack Categorical Tokens                                            │
 │   cat_tokens = stack([symbol_proj, sector_proj], dim=1)                    │
-│   →  [32, 2, 128]  # [batch, num_categorical, d_model]                     │
+│   →  [32, 2, 128]  # [batch, num_categorical, d_token]                     │
 │                                                                              │
 │ Step 5: Add CLS₁ Token                                                      │
 │   cls1_token = CLSToken(d_model)                # [1, 1, 128]              │
@@ -241,33 +241,33 @@ class CSNTransformerBlock(nn.Module):
     This is the core building block that enables feature interaction learning.
     """
 
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
+    def __init__(self, d_token: int, n_heads: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
 
         # Multi-head self-attention mechanism
         # Allows each position to attend to all positions in the sequence
-        self.attention = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.attention = nn.MultiheadAttention(d_token, n_heads, dropout=dropout, batch_first=True)
 
         # Layer normalization for training stability
-        self.norm1 = nn.LayerNorm(d_model)  # After attention
-        self.norm2 = nn.LayerNorm(d_model)  # After feed-forward
+        self.norm1 = nn.LayerNorm(d_token)  # After attention
+        self.norm2 = nn.LayerNorm(d_token)  # After feed-forward
 
         # Position-wise feed-forward network
         # Applies same transformation to each position independently
         self.feed_forward = nn.Sequential(
-            nn.Linear(d_model, d_ff),       # Expand to hidden dimension
+            nn.Linear(d_token, d_ff),       # Expand to hidden dimension
             nn.ReLU(),                      # Non-linear activation
             nn.Dropout(dropout),            # Regularization
-            nn.Linear(d_ff, d_model),       # Project back to d_model
+            nn.Linear(d_ff, d_token),       # Project back to d_token
             nn.Dropout(dropout)             # Final regularization
         )
 
     def forward(self, x):
         """
         Args:
-            x: Input tokens [batch_size, seq_len, d_model]
+            x: Input tokens [batch_size, seq_len, d_token]
         Returns:
-            Output tokens [batch_size, seq_len, d_model]
+            Output tokens [batch_size, seq_len, d_token]
         """
         # Self-attention with residual connection and layer norm
         # Each token can attend to every other token in the sequence
@@ -296,13 +296,13 @@ class CategoricalProcessor(nn.Module):
 
     def __init__(self,
                  categorical_features: Dict[str, int],  # feature_name: num_unique_values
-                 d_model: int,
+                 d_token: int,
                  n_layers: int = 2,
                  n_heads: int = 4,
                  dropout: float = 0.1):
         super().__init__()
 
-        self.d_model = d_model
+        self.d_token = d_token
         self.feature_names = list(categorical_features.keys())
 
         # Create embedding table for each categorical feature
@@ -310,24 +310,24 @@ class CategoricalProcessor(nn.Module):
         self.embeddings = nn.ModuleDict()
         for feature_name, vocab_size in categorical_features.items():
             # Add 1 for potential unknown/padding values (vocab_size + 1)
-            # Maps discrete values [0, vocab_size-1] → dense vectors [d_model]
-            self.embeddings[feature_name] = nn.Embedding(vocab_size + 1, d_model)
+            # Maps discrete values [0, vocab_size-1] → dense vectors [d_token]
+            self.embeddings[feature_name] = nn.Embedding(vocab_size + 1, d_token)
 
         # CLS token for categorical feature aggregation
         # This token will collect information from all categorical features
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_token))
 
         # Stack of transformer blocks for categorical feature interaction
-        d_ff = d_model * 4  # Standard transformer feed-forward dimension
+        d_ff = d_token * 4  # Standard transformer feed-forward dimension
         self.transformer_blocks = nn.ModuleList([
-            CSNTransformerBlock(d_model, n_heads, d_ff, dropout)
+            CSNTransformerBlock(d_token, n_heads, d_ff, dropout)
             for _ in range(n_layers)
         ])
 
         # Positional embeddings to distinguish feature positions
         # Categorical features don't have inherent order, but position helps attention
         max_seq_len = len(categorical_features) + 1  # +1 for CLS token
-        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+        self.pos_embedding = nn.Embedding(max_seq_len, d_token)
 
     def forward(self, categorical_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -337,7 +337,7 @@ class CategoricalProcessor(nn.Module):
             categorical_inputs: Dict mapping feature names to index tensors
                                e.g., {'year': [32], 'quarter': [32], 'month_sin': [32]}
         Returns:
-            cls_output: [batch_size, d_model] - Aggregated categorical representation
+            cls_output: [batch_size, d_token] - Aggregated categorical representation
         """
         batch_size = next(iter(categorical_inputs.values())).size(0)
         device = next(iter(categorical_inputs.values())).device
@@ -346,40 +346,40 @@ class CategoricalProcessor(nn.Module):
         embedded_features = []
         for feature_name in self.feature_names:
             if feature_name in categorical_inputs:
-                # Lookup embedding: [batch_size] → [batch_size, d_model]
+                # Lookup embedding: [batch_size] → [batch_size, d_token]
                 embedded = self.embeddings[feature_name](categorical_inputs[feature_name])
                 embedded_features.append(embedded)
 
         # Step 2: Stack all feature embeddings
         if embedded_features:
-            # Stack: List of [batch, d_model] → [batch, num_features, d_model]
+            # Stack: List of [batch, d_token] → [batch, num_features, d_token]
             feature_embeddings = torch.stack(embedded_features, dim=1)
         else:
             # Handle case with no categorical features
-            feature_embeddings = torch.zeros(batch_size, 0, self.d_model, device=device)
+            feature_embeddings = torch.zeros(batch_size, 0, self.d_token, device=device)
 
         # Step 3: Add CLS token for aggregation
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, d_model]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, d_token]
 
-        # Concatenate: [batch, 1, d_model] + [batch, num_features, d_model]
-        # Result: [batch, 1 + num_features, d_model]
+        # Concatenate: [batch, 1, d_token] + [batch, num_features, d_token]
+        # Result: [batch, 1 + num_features, d_token]
         x = torch.cat([cls_tokens, feature_embeddings], dim=1)
 
         # Step 4: Add positional embeddings
         # Help model distinguish between different categorical features
         seq_len = x.size(1)
         positions = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
-        pos_emb = self.pos_embedding(positions)  # [batch, seq_len, d_model]
+        pos_emb = self.pos_embedding(positions)  # [batch, seq_len, d_token]
         x = x + pos_emb
 
         # Step 5: Apply transformer blocks for feature interaction
         # Each categorical feature can attend to every other categorical feature
         for transformer_block in self.transformer_blocks:
-            x = transformer_block(x)  # [batch, 1 + num_features, d_model]
+            x = transformer_block(x)  # [batch, 1 + num_features, d_token]
 
         # Step 6: Extract CLS token output
         # CLS token has aggregated information from all categorical features
-        cls_output = x[:, 0, :]  # [batch_size, d_model]
+        cls_output = x[:, 0, :]  # [batch_size, d_token]
         return cls_output
 
 
@@ -399,7 +399,7 @@ class NumericalProcessor(nn.Module):
     def __init__(self,
                  num_numerical_features: int,
                  sequence_length: int,
-                 d_model: int,
+                 d_token: int,
                  n_layers: int = 2,
                  n_heads: int = 4,
                  dropout: float = 0.1):
@@ -407,27 +407,27 @@ class NumericalProcessor(nn.Module):
 
         self.num_features = num_numerical_features
         self.sequence_length = sequence_length
-        self.d_model = d_model
+        self.d_token = d_token
 
-        # Project each timestep's numerical features to d_model dimension
-        # Maps [num_features] → [d_model] for each timestep
-        self.feature_projection = nn.Linear(num_numerical_features, d_model)
+        # Project each timestep's numerical features to d_token dimension
+        # Maps [num_features] → [d_token] for each timestep
+        self.feature_projection = nn.Linear(num_numerical_features, d_token)
 
         # CLS token for numerical sequence aggregation
         # This token will collect temporal patterns from numerical sequences
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_token))
 
         # Stack of transformer blocks for temporal pattern learning
-        d_ff = d_model * 4  # Standard transformer feed-forward dimension
+        d_ff = d_token * 4  # Standard transformer feed-forward dimension
         self.transformer_blocks = nn.ModuleList([
-            CSNTransformerBlock(d_model, n_heads, d_ff, dropout)
+            CSNTransformerBlock(d_token, n_heads, d_ff, dropout)
             for _ in range(n_layers)
         ])
 
         # Positional embeddings for temporal order
         # Critical for preserving time series ordering in attention
         max_seq_len = sequence_length + 1  # +1 for CLS token
-        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+        self.pos_embedding = nn.Embedding(max_seq_len, d_token)
 
     def forward(self, numerical_inputs: torch.Tensor) -> torch.Tensor:
         """
@@ -438,7 +438,7 @@ class NumericalProcessor(nn.Module):
                             Time series data with multiple numerical features per timestep
 
         Returns:
-            cls_output: [batch_size, d_model] - Aggregated temporal representation
+            cls_output: [batch_size, d_token] - Aggregated temporal representation
 
         Processing Flow:
         1. Feature Projection: Map each timestep's features to embedding space
@@ -452,18 +452,18 @@ class NumericalProcessor(nn.Module):
         device = numerical_inputs.device
 
         # Step 1: Feature Projection - Convert continuous features to embeddings
-        # Transform each timestep: [num_features] → [d_model]
+        # Transform each timestep: [num_features] → [d_token]
         # This allows the transformer to work with consistent dimensionality
-        x = self.feature_projection(numerical_inputs)  # [batch_size, seq_len, d_model]
+        x = self.feature_projection(numerical_inputs)  # [batch_size, seq_len, d_token]
 
         # Step 2: Add CLS Token for sequence aggregation
         # CLS token will learn to aggregate information from all timesteps
-        # Shape transformation: [1, 1, d_model] → [batch_size, 1, d_model]
+        # Shape transformation: [1, 1, d_token] → [batch_size, 1, d_token]
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
 
         # Concatenate CLS with projected sequences
-        # [batch_size, 1, d_model] + [batch_size, seq_len, d_model]
-        # Result: [batch_size, seq_len+1, d_model]
+        # [batch_size, 1, d_token] + [batch_size, seq_len, d_token]
+        # Result: [batch_size, seq_len+1, d_token]
         x = torch.cat([cls_tokens, x], dim=1)
 
         # Step 3: Add Positional Embeddings for temporal order
@@ -471,7 +471,7 @@ class NumericalProcessor(nn.Module):
         # Without this, the model can't distinguish between different timesteps
         total_seq_len = x.size(1)  # seq_len + 1 (for CLS)
         positions = torch.arange(total_seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
-        pos_emb = self.pos_embedding(positions)  # [batch_size, seq_len+1, d_model]
+        pos_emb = self.pos_embedding(positions)  # [batch_size, seq_len+1, d_token]
         x = x + pos_emb  # Element-wise addition of positional information
 
         # Step 4: Apply Transformer Blocks for temporal pattern learning
@@ -479,12 +479,12 @@ class NumericalProcessor(nn.Module):
         # CLS token can attend to all timesteps, timesteps can attend to each other
         for transformer_block in self.transformer_blocks:
             # Self-attention + feed-forward with residual connections
-            x = transformer_block(x)  # [batch_size, seq_len+1, d_model]
+            x = transformer_block(x)  # [batch_size, seq_len+1, d_token]
 
         # Step 5: Extract CLS Token Output
         # CLS token (position 0) has aggregated information from entire sequence
         # This becomes our fixed-size representation of the variable-length sequence
-        cls_output = x[:, 0, :]  # [batch_size, d_model]
+        cls_output = x[:, 0, :]  # [batch_size, d_token]
 
         # Return the aggregated temporal representation
         # This will be concatenated with categorical CLS for final prediction
@@ -623,7 +623,7 @@ class CSNTransformer(nn.Module):
                  categorical_features: Dict[str, int],
                  num_numerical_features: int,
                  sequence_length: int,
-                 d_model: int = 128,
+                 d_token: int = 128,
                  n_layers: int = 3,
                  n_heads: int = 8,
                  dropout: float = 0.1,
@@ -631,7 +631,7 @@ class CSNTransformer(nn.Module):
                  prediction_horizons: int = 1):
         super().__init__()
 
-        self.d_model = d_model
+        self.d_token = d_token
         self.has_categorical = len(categorical_features) > 0
         self.has_numerical = num_numerical_features > 0
         self.prediction_horizons = prediction_horizons
@@ -639,32 +639,32 @@ class CSNTransformer(nn.Module):
         # Categorical processor
         if self.has_categorical:
             self.categorical_processor = CategoricalProcessor(
-                categorical_features, d_model, n_layers, n_heads, dropout
+                categorical_features, d_token, n_layers, n_heads, dropout
             )
 
         # Numerical processor
         if self.has_numerical:
             self.numerical_processor = NumericalProcessor(
-                num_numerical_features, sequence_length, d_model, n_layers, n_heads, dropout
+                num_numerical_features, sequence_length, d_token, n_layers, n_heads, dropout
             )
 
         # Determine fusion dimension
         fusion_dim = 0
         if self.has_categorical:
-            fusion_dim += d_model
+            fusion_dim += d_token
         if self.has_numerical:
-            fusion_dim += d_model
+            fusion_dim += d_token
 
         # Fully connected layers for final prediction - multi-horizon support
         final_output_dim = output_dim * prediction_horizons
         self.prediction_head = nn.Sequential(
-            nn.Linear(fusion_dim, d_model),
+            nn.Linear(fusion_dim, d_token),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, d_model // 2),
+            nn.Linear(d_token, d_token // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model // 2, final_output_dim)
+            nn.Linear(d_token // 2, final_output_dim)
         )
 
         self.output_dim = output_dim
@@ -787,7 +787,7 @@ class CSNTransformerPredictor(nn.Module):
                  categorical_features: Dict[str, int],
                  num_numerical_features: int,
                  sequence_length: int,
-                 d_model: int = 128,
+                 d_token: int = 128,
                  n_layers: int = 3,
                  n_heads: int = 8,
                  dropout: float = 0.1,
@@ -798,7 +798,7 @@ class CSNTransformerPredictor(nn.Module):
             categorical_features=categorical_features,
             num_numerical_features=num_numerical_features,
             sequence_length=sequence_length,
-            d_model=d_model,
+            d_token=d_token,
             n_layers=n_layers,
             n_heads=n_heads,
             dropout=dropout,
@@ -1005,9 +1005,9 @@ class CSNTransformerCLSModel(TransformerBasedModel):
         num_categorical: int,
         cat_cardinalities: List[int],
         output_dim: int,
-        d_model: int = 128,
-        num_heads: int = 8,
-        num_layers: int = 3,
+        d_token: int = 128,
+        n_heads: int = 8,
+        n_layers: int = 3,
         dropout: float = 0.1,
         activation: str = 'gelu'
     ):
@@ -1020,13 +1020,13 @@ class CSNTransformerCLSModel(TransformerBasedModel):
             num_categorical: Number of categorical features
             cat_cardinalities: List of cardinalities for each categorical feature
             output_dim: Output dimension (num_targets * prediction_horizon)
-            d_model: Embedding dimension
-            num_heads: Number of attention heads
-            num_layers: Number of transformer layers
+            d_token: Embedding dimension (token size)
+            n_heads: Number of attention heads
+            n_layers: Number of transformer layers
             dropout: Dropout rate
             activation: Activation function ('relu' or 'gelu')
         """
-        super().__init__(d_model=d_model, num_heads=num_heads, num_layers=num_layers)
+        super().__init__(d_token=d_token, n_heads=n_heads, n_layers=n_layers)
 
         self.sequence_length = sequence_length
         self.num_numerical = num_numerical
@@ -1045,7 +1045,7 @@ class CSNTransformerCLSModel(TransformerBasedModel):
             import math
 
             # CLS token for categorical path
-            self.cls1_token = CLSToken(d_model)
+            self.cls1_token = CLSToken(d_token)
 
             # Categorical embeddings with logarithmic dimension scaling
             self.cat_embeddings = nn.ModuleList()
@@ -1054,58 +1054,58 @@ class CSNTransformerCLSModel(TransformerBasedModel):
             for cardinality in cat_cardinalities:
                 # Calculate embedding dimension using logarithmic scaling
                 emb_dim = int(8 * math.log2(cardinality + 1))
-                # Clamp to bounds [d_model/4, d_model]
-                min_dim = d_model // 4
-                max_dim = d_model
+                # Clamp to bounds [d_token/4, d_token]
+                min_dim = d_token // 4
+                max_dim = d_token
                 emb_dim = max(min_dim, min(max_dim, emb_dim))
 
                 # Create embedding layer
                 embedding = nn.Embedding(cardinality, emb_dim)
                 self.cat_embeddings.append(embedding)
 
-                # Project to d_model if needed
-                if emb_dim != d_model:
-                    projection = nn.Linear(emb_dim, d_model)
+                # Project to d_token if needed
+                if emb_dim != d_token:
+                    projection = nn.Linear(emb_dim, d_token)
                     self.cat_projections.append(projection)
                 else:
                     self.cat_projections.append(nn.Identity())
 
             # Categorical transformer
             cat_encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=num_heads,
-                dim_feedforward=4 * d_model,
+                d_model=d_token,
+                nhead=n_heads,
+                dim_feedforward=4 * d_token,
                 dropout=dropout,
                 activation=activation,
                 batch_first=True
             )
-            self.cat_transformer = nn.TransformerEncoder(cat_encoder_layer, num_layers=num_layers)
+            self.cat_transformer = nn.TransformerEncoder(cat_encoder_layer, num_layers=n_layers)
 
         # PATH 2: Numerical Processing
         if num_numerical > 0:
             # CLS token for numerical path
-            self.cls2_token = CLSToken(d_model)
+            self.cls2_token = CLSToken(d_token)
 
-            # Project numerical features to d_model
-            self.num_projection = nn.Linear(num_numerical, d_model)
+            # Project numerical features to d_token
+            self.num_projection = nn.Linear(num_numerical, d_token)
 
             # Positional encoding for temporal sequences
-            self.temporal_pos_encoding = nn.Parameter(torch.randn(1, sequence_length, d_model) * 0.02)
+            self.temporal_pos_encoding = nn.Parameter(torch.randn(1, sequence_length, d_token) * 0.02)
 
             # Numerical transformer
             num_encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=num_heads,
-                dim_feedforward=4 * d_model,
+                d_model=d_token,
+                nhead=n_heads,
+                dim_feedforward=4 * d_token,
                 dropout=dropout,
                 activation=activation,
                 batch_first=True
             )
-            self.num_transformer = nn.TransformerEncoder(num_encoder_layer, num_layers=num_layers)
+            self.num_transformer = nn.TransformerEncoder(num_encoder_layer, num_layers=n_layers)
 
         # Fusion and Prediction Head
-        # Input dimension is 2 * d_model (CLS₁ + CLS₂)
-        fusion_dim = 2 * d_model if (num_categorical > 0 and num_numerical > 0) else d_model
+        # Input dimension is 2 * d_token (CLS₁ + CLS₂)
+        fusion_dim = 2 * d_token if (num_categorical > 0 and num_numerical > 0) else d_token
 
         self.head = MultiHorizonHead(
             d_input=fusion_dim,
@@ -1135,44 +1135,44 @@ class CSNTransformerCLSModel(TransformerBasedModel):
             for i in range(self.num_categorical):
                 cat_indices = x_cat[:, i]  # [batch]
                 emb = self.cat_embeddings[i](cat_indices)  # [batch, emb_dim]
-                projected = self.cat_projections[i](emb)  # [batch, d_model]
-                cat_tokens_list.append(projected.unsqueeze(1))  # [batch, 1, d_model]
+                projected = self.cat_projections[i](emb)  # [batch, d_token]
+                cat_tokens_list.append(projected.unsqueeze(1))  # [batch, 1, d_token]
 
-            cat_tokens = torch.cat(cat_tokens_list, dim=1)  # [batch, num_categorical, d_model]
+            cat_tokens = torch.cat(cat_tokens_list, dim=1)  # [batch, num_categorical, d_token]
 
             # Step 2: Add CLS₁ token
-            cls1_tokens = self.cls1_token(batch_size)  # [batch, 1, d_model]
-            cat_tokens_with_cls = torch.cat([cls1_tokens, cat_tokens], dim=1)  # [batch, 1+num_cat, d_model]
+            cls1_tokens = self.cls1_token(batch_size)  # [batch, 1, d_token]
+            cat_tokens_with_cls = torch.cat([cls1_tokens, cat_tokens], dim=1)  # [batch, 1+num_cat, d_token]
 
             # Step 3: Categorical transformer
-            cat_output = self.cat_transformer(cat_tokens_with_cls)  # [batch, 1+num_cat, d_model]
+            cat_output = self.cat_transformer(cat_tokens_with_cls)  # [batch, 1+num_cat, d_token]
 
             # Step 4: Extract CLS₁
-            cls1_output = cat_output[:, 0, :]  # [batch, d_model]
+            cls1_output = cat_output[:, 0, :]  # [batch, d_token]
             cls_outputs.append(cls1_output)
 
         # PATH 2: Numerical Processing
         if self.num_numerical > 0:
             # Step 1: Project numerical features
-            x_num_proj = self.num_projection(x_num)  # [batch, seq_len, d_model]
+            x_num_proj = self.num_projection(x_num)  # [batch, seq_len, d_token]
 
             # Step 2: Add positional encoding
-            x_num_proj = x_num_proj + self.temporal_pos_encoding  # [batch, seq_len, d_model]
+            x_num_proj = x_num_proj + self.temporal_pos_encoding  # [batch, seq_len, d_token]
 
             # Step 3: Add CLS₂ token
-            cls2_tokens = self.cls2_token(batch_size)  # [batch, 1, d_model]
-            num_tokens_with_cls = torch.cat([cls2_tokens, x_num_proj], dim=1)  # [batch, 1+seq_len, d_model]
+            cls2_tokens = self.cls2_token(batch_size)  # [batch, 1, d_token]
+            num_tokens_with_cls = torch.cat([cls2_tokens, x_num_proj], dim=1)  # [batch, 1+seq_len, d_token]
 
             # Step 4: Numerical transformer
-            num_output = self.num_transformer(num_tokens_with_cls)  # [batch, 1+seq_len, d_model]
+            num_output = self.num_transformer(num_tokens_with_cls)  # [batch, 1+seq_len, d_token]
 
             # Step 5: Extract CLS₂
-            cls2_output = num_output[:, 0, :]  # [batch, d_model]
+            cls2_output = num_output[:, 0, :]  # [batch, d_token]
             cls_outputs.append(cls2_output)
 
         # FUSION: Concatenate CLS outputs
         if len(cls_outputs) == 2:
-            fused_cls = torch.cat(cls_outputs, dim=1)  # [batch, 2*d_model]
+            fused_cls = torch.cat(cls_outputs, dim=1)  # [batch, 2*d_token]
         else:
             fused_cls = cls_outputs[0]  # Only one path available
 
@@ -1185,9 +1185,9 @@ class CSNTransformerCLSModel(TransformerBasedModel):
         """Get the current configuration of the model."""
         return {
             'model_type': 'csn_transformer_cls',
-            'd_model': self.d_model,
-            'num_heads': self.num_heads,
-            'num_layers': self.num_layers,
+            'd_token': self.d_token,
+            'n_heads': self.n_heads,
+            'n_layers': self.n_layers,
             'dropout': self.dropout_rate,
             'activation': self.activation_name,
             'sequence_length': self.sequence_length,

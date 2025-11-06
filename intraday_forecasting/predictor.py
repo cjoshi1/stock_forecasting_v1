@@ -33,7 +33,7 @@ class IntradayPredictor(TimeSeriesPredictor):
                  categorical_columns: Optional[Union[str, list]] = None,
                  scaler_type: str = 'standard',
                  use_lagged_target_features: bool = False,
-                 d_model: int = 128, num_heads: int = 8, num_layers: int = 3,
+                 d_token: int = 128, n_heads: int = 8, n_layers: int = 3,
                  dropout: float = 0.1, verbose: bool = False, **kwargs):
         """
         Initialize IntradayPredictor.
@@ -51,9 +51,9 @@ class IntradayPredictor(TimeSeriesPredictor):
             categorical_columns: Optional column(s) to encode and pass as categorical features
             scaler_type: Type of scaler ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
             use_lagged_target_features: Whether to include target columns in input sequences
-            d_model: Token embedding dimension
-            num_heads: Number of attention heads
-            num_layers: Number of transformer layers
+            d_token: Token embedding dimension
+            n_heads: Number of attention heads
+            n_layers: Number of transformer layers
             dropout: Dropout rate
             verbose: Whether to print detailed logs
             **kwargs: Additional arguments passed to base predictor
@@ -95,7 +95,7 @@ class IntradayPredictor(TimeSeriesPredictor):
         # The base TimeSeriesPredictor will handle the normalization
         shifted_target_name = target_column
 
-        # Initialize base predictor with model_type (no mapping needed - names match factory)
+        # Initialize base predictor with model_type
         super().__init__(
             target_column=shifted_target_name,
             sequence_length=sequence_length,
@@ -105,9 +105,9 @@ class IntradayPredictor(TimeSeriesPredictor):
             model_type=model_type,
             scaler_type=scaler_type,
             use_lagged_target_features=use_lagged_target_features,
-            d_model=d_model,
-            num_heads=num_heads,
-            num_layers=num_layers,
+            d_token=d_token,
+            n_heads=n_heads,
+            n_layers=n_layers,
             dropout=dropout,
             verbose=verbose,
             **kwargs
@@ -128,7 +128,7 @@ class IntradayPredictor(TimeSeriesPredictor):
             print(f"  - Country: {country} ({market_config['description']})")
             print(f"  - Market Hours: {market_config['open']} - {market_config['close']}")
             print(f"  - Sequence length: {sequence_length} {timeframe} bars")
-            print(f"  - Model: {d_model}d x {num_layers}L x {num_heads}H")
+            print(f"  - Model: {d_token}d x {n_layers}L x {n_heads}H")
 
     def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """

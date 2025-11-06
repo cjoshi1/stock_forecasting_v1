@@ -59,9 +59,9 @@ class TimeSeriesModel(ABC, nn.Module):
         Example:
             {
                 'model_type': 'ft_transformer',
-                'd_model': 64,
-                'num_heads': 4,
-                'num_layers': 3,
+                'd_token': 64,
+                'n_heads': 4,
+                'n_layers': 3,
                 'sequence_length': 10,
                 'num_features': 5,
                 'output_dim': 1
@@ -114,23 +114,23 @@ class TransformerBasedModel(TimeSeriesModel):
     - Temporal Fusion Transformer
     """
 
-    def __init__(self, d_model: int, num_heads: int, num_layers: int):
+    def __init__(self, d_token: int, n_heads: int, n_layers: int):
         """
         Initialize transformer-based model.
 
         Args:
-            d_model: Embedding dimension
-            num_heads: Number of attention heads
-            num_layers: Number of transformer layers
+            d_token: Token embedding dimension (formerly d_model)
+            n_heads: Number of attention heads (formerly num_heads)
+            n_layers: Number of transformer layers (formerly num_layers)
         """
         super().__init__()
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.num_layers = num_layers
+        self.d_token = d_token
+        self.n_heads = n_heads
+        self.n_layers = n_layers
 
     def get_embedding_dim(self) -> int:
-        """Get the embedding dimension (d_model)."""
-        return self.d_model
+        """Get the token embedding dimension (d_token)."""
+        return self.d_token
 
     @abstractmethod
     def get_attention_weights(self) -> Optional[torch.Tensor]:

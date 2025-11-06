@@ -827,9 +827,9 @@ class FTTransformerCLSModel(TransformerBasedModel):
         num_categorical: int,
         cat_cardinalities: List[int],
         output_dim: int,
-        d_model: int = 128,
-        num_heads: int = 8,
-        num_layers: int = 3,
+        d_token: int = 128,
+        n_heads: int = 8,
+        n_layers: int = 3,
         dropout: float = 0.1,
         activation: str = 'gelu'
     ):
@@ -842,13 +842,13 @@ class FTTransformerCLSModel(TransformerBasedModel):
             num_categorical: Number of categorical features
             cat_cardinalities: List of cardinalities for each categorical feature
             output_dim: Output dimension (num_targets * prediction_horizon)
-            d_model: Embedding dimension
-            num_heads: Number of attention heads
-            num_layers: Number of transformer layers
+            d_token: Embedding dimension (token size)
+            n_heads: Number of attention heads
+            n_layers: Number of transformer layers
             dropout: Dropout rate
             activation: Activation function ('relu' or 'gelu')
         """
-        super().__init__(d_model=d_model, num_heads=num_heads, num_layers=num_layers)
+        super().__init__(d_token=d_token, n_heads=n_heads, n_layers=n_layers)
 
         self.sequence_length = sequence_length
         self.num_numerical = num_numerical
@@ -863,11 +863,11 @@ class FTTransformerCLSModel(TransformerBasedModel):
             raise ValueError(f"cat_cardinalities length ({len(cat_cardinalities)}) must match num_categorical ({num_categorical})")
 
         # CLS token for prediction
-        self.cls_token = CLSToken(d_model)
+        self.cls_token = CLSToken(d_token)
 
         # Numerical tokenizer
         if num_numerical > 0:
-            self.num_tokenizer = NumericalTokenizer(num_numerical, d_model)
+            self.num_tokenizer = NumericalTokenizer(num_numerical, d_token)
 
         # Categorical embeddings with logarithmic dimension scaling
         if num_categorical > 0:
@@ -879,39 +879,39 @@ class FTTransformerCLSModel(TransformerBasedModel):
             for cardinality in cat_cardinalities:
                 # Calculate embedding dimension using logarithmic scaling
                 emb_dim = int(8 * math.log2(cardinality + 1))
-                # Clamp to bounds [d_model/4, d_model]
-                min_dim = d_model // 4
-                max_dim = d_model
+                # Clamp to bounds [d_token/4, d_token]
+                min_dim = d_token // 4
+                max_dim = d_token
                 emb_dim = max(min_dim, min(max_dim, emb_dim))
 
                 # Create embedding layer
                 embedding = nn.Embedding(cardinality, emb_dim)
                 self.cat_embeddings.append(embedding)
 
-                # Project to d_model if needed
-                if emb_dim != d_model:
-                    projection = nn.Linear(emb_dim, d_model)
+                # Project to d_token if needed
+                if emb_dim != d_token:
+                    projection = nn.Linear(emb_dim, d_token)
                     self.cat_projections.append(projection)
                 else:
                     self.cat_projections.append(nn.Identity())
 
         # Positional encoding for temporal sequences (optional, can help)
-        self.temporal_pos_encoding = nn.Parameter(torch.randn(1, sequence_length, d_model) * 0.02)
+        self.temporal_pos_encoding = nn.Parameter(torch.randn(1, sequence_length, d_token) * 0.02)
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=num_heads,
-            dim_feedforward=4 * d_model,
+            d_model=d_token,
+            nhead=n_heads,
+            dim_feedforward=4 * d_token,
             dropout=dropout,
             activation=activation,
             batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
 
         # Prediction head
         self.head = MultiHorizonHead(
-            d_input=d_model,
+            d_input=d_token,
             prediction_horizons=output_dim,
             hidden_dim=None,
             dropout=dropout
@@ -931,19 +931,19 @@ class FTTransformerCLSModel(TransformerBasedModel):
         batch_size = x_num.shape[0]
 
         # Step 1: Create CLS token
-        cls_tokens = self.cls_token(batch_size)  # [batch, 1, d_model]
+        cls_tokens = self.cls_token(batch_size)  # [batch, 1, d_token]
 
         # Step 2: Tokenize numerical sequences
         # Process each timestep independently
         num_tokens_list = []
         for t in range(self.sequence_length):
             x_num_t = x_num[:, t, :]  # [batch, num_numerical]
-            tokens_t = self.num_tokenizer(x_num_t)  # [batch, num_numerical, d_model]
+            tokens_t = self.num_tokenizer(x_num_t)  # [batch, num_numerical, d_token]
             # Add temporal positional encoding
             tokens_t = tokens_t + self.temporal_pos_encoding[:, t:t+1, :].expand(-1, self.num_numerical, -1)
             num_tokens_list.append(tokens_t)
 
-        # Concatenate all timesteps: [batch, seq_len * num_numerical, d_model]
+        # Concatenate all timesteps: [batch, seq_len * num_numerical, d_token]
         num_tokens = torch.cat(num_tokens_list, dim=1)
 
         # Step 3: Process categorical features (if present)
@@ -952,10 +952,10 @@ class FTTransformerCLSModel(TransformerBasedModel):
             for i in range(self.num_categorical):
                 cat_indices = x_cat[:, i]  # [batch]
                 emb = self.cat_embeddings[i](cat_indices)  # [batch, emb_dim]
-                projected = self.cat_projections[i](emb)  # [batch, d_model]
-                cat_tokens_list.append(projected.unsqueeze(1))  # [batch, 1, d_model]
+                projected = self.cat_projections[i](emb)  # [batch, d_token]
+                cat_tokens_list.append(projected.unsqueeze(1))  # [batch, 1, d_token]
 
-            cat_tokens = torch.cat(cat_tokens_list, dim=1)  # [batch, num_categorical, d_model]
+            cat_tokens = torch.cat(cat_tokens_list, dim=1)  # [batch, num_categorical, d_token]
 
             # Step 4: Concatenate all tokens: [CLS, numerical, categorical]
             all_tokens = torch.cat([cls_tokens, num_tokens, cat_tokens], dim=1)
@@ -964,10 +964,10 @@ class FTTransformerCLSModel(TransformerBasedModel):
             all_tokens = torch.cat([cls_tokens, num_tokens], dim=1)
 
         # Step 5: Transformer processing
-        transformer_output = self.transformer(all_tokens)  # [batch, num_tokens, d_model]
+        transformer_output = self.transformer(all_tokens)  # [batch, num_tokens, d_token]
 
         # Step 6: Extract CLS token and predict
-        cls_output = transformer_output[:, 0, :]  # [batch, d_model]
+        cls_output = transformer_output[:, 0, :]  # [batch, d_token]
         predictions = self.head(cls_output)  # [batch, output_dim]
 
         return predictions
@@ -976,9 +976,9 @@ class FTTransformerCLSModel(TransformerBasedModel):
         """Get the current configuration of the model."""
         return {
             'model_type': 'ft_transformer_cls',
-            'd_model': self.d_model,
-            'num_heads': self.num_heads,
-            'num_layers': self.num_layers,
+            'd_token': self.d_token,
+            'n_heads': self.n_heads,
+            'n_layers': self.n_layers,
             'dropout': self.dropout_rate,
             'activation': self.activation_name,
             'sequence_length': self.sequence_length,
