@@ -1097,9 +1097,11 @@ class TimeSeriesPredictor:
             total_output_size = self.prediction_horizon
 
         # Create model using factory
-        # For _cls models, pass additional categorical parameters
-        if self.model_type.endswith('_cls'):
-            # For CLS models, calculate total features for display
+        # Transformer models with categorical support use different parameters
+        CATEGORICAL_SUPPORT_MODELS = ['ft_transformer', 'csn_transformer']
+
+        if self.model_type in CATEGORICAL_SUPPORT_MODELS:
+            # For transformer models, calculate total features for display
             num_features = num_numerical + num_categorical
             self.model = ModelFactory.create_model(
                 model_type=self.model_type,
@@ -2610,8 +2612,10 @@ class TimeSeriesPredictor:
                        if k not in ['verbose']}
 
         # Recreate model using factory
-        if predictor.model_type.endswith('_cls'):
-            # CLS models need separate numerical/categorical counts
+        CATEGORICAL_SUPPORT_MODELS = ['ft_transformer', 'csn_transformer']
+
+        if predictor.model_type in CATEGORICAL_SUPPORT_MODELS:
+            # Transformer models need separate numerical/categorical counts
             num_numerical = len(predictor.numerical_columns) if predictor.numerical_columns else num_features
             num_categorical = len(predictor.categorical_columns) if predictor.categorical_columns else 0
 
