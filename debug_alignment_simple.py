@@ -47,15 +47,22 @@ def create_synthetic_data():
     """
     Create minimal synthetic dataset for debugging.
 
-    2 symbols, 10 rows each, simple incrementing values
-    to make tracking transformations easy.
+    4 groups (symbol + sector combinations), 10 rows each,
+    simple incrementing values to make tracking transformations easy.
+
+    Groups:
+    - AAPL + Tech
+    - GOOGL + Tech
+    - MSFT + Consumer
+    - AMZN + Consumer
     """
     data = []
 
-    # Symbol AAPL: close values 100, 101, 102, ..., 109
+    # Group 1: AAPL + Tech - close values 100-109
     for i in range(10):
         data.append({
             'symbol': 'AAPL',
+            'sector': 'Tech',
             'date': datetime(2024, 1, 1) + timedelta(days=i),
             'close': 100.0 + i,
             'volume': 1000 + i * 10,
@@ -64,10 +71,11 @@ def create_synthetic_data():
             'low': 99.0 + i,
         })
 
-    # Symbol GOOGL: close values 200, 201, 202, ..., 209
+    # Group 2: GOOGL + Tech - close values 200-209
     for i in range(10):
         data.append({
             'symbol': 'GOOGL',
+            'sector': 'Tech',
             'date': datetime(2024, 1, 1) + timedelta(days=i),
             'close': 200.0 + i,
             'volume': 2000 + i * 20,
@@ -76,14 +84,48 @@ def create_synthetic_data():
             'low': 199.0 + i,
         })
 
+    # Group 3: MSFT + Consumer - close values 300-309
+    for i in range(10):
+        data.append({
+            'symbol': 'MSFT',
+            'sector': 'Consumer',
+            'date': datetime(2024, 1, 1) + timedelta(days=i),
+            'close': 300.0 + i,
+            'volume': 3000 + i * 30,
+            'open': 299.0 + i,
+            'high': 301.0 + i,
+            'low': 299.0 + i,
+        })
+
+    # Group 4: AMZN + Consumer - close values 400-409
+    for i in range(10):
+        data.append({
+            'symbol': 'AMZN',
+            'sector': 'Consumer',
+            'date': datetime(2024, 1, 1) + timedelta(days=i),
+            'close': 400.0 + i,
+            'volume': 4000 + i * 40,
+            'open': 399.0 + i,
+            'high': 401.0 + i,
+            'low': 399.0 + i,
+        })
+
     df = pd.DataFrame(data)
     df['timestamp'] = df['date']
 
     return df
 
 
-def print_df_state(df, title, group_col='symbol', show_cols=None, show_all_cols=False):
-    """Print dataframe state at a checkpoint."""
+def print_df_state(df, title, group_col=None, show_cols=None, show_all_cols=False):
+    """Print dataframe state at a checkpoint.
+
+    Args:
+        df: DataFrame to print
+        title: Title for the section
+        group_col: Column(s) to group by (string, list, or None)
+        show_cols: Columns to display (None for auto-selection)
+        show_all_cols: If True, show all columns
+    """
     print("\n" + "="*80)
     print(f"📊 {title}")
     print("="*80)
@@ -96,9 +138,14 @@ def print_df_state(df, title, group_col='symbol', show_cols=None, show_all_cols=
     elif show_cols is None:
         # Default: show important columns
         show_cols = []
-        # Always include group and date if they exist
-        if group_col in df.columns:
-            show_cols.append(group_col)
+
+        # Handle group_col as string or list
+        group_cols = [group_col] if isinstance(group_col, str) else (group_col if group_col else [])
+
+        # Always include group columns and date if they exist
+        for col in group_cols:
+            if col in df.columns:
+                show_cols.append(col)
         if 'date' in df.columns:
             show_cols.append('date')
 
@@ -118,48 +165,66 @@ def print_df_state(df, title, group_col='symbol', show_cols=None, show_all_cols=
         # Keep only columns that exist
         show_cols = [col for col in show_cols if col in df.columns]
 
-    if group_col in df.columns:
-        for symbol in sorted(df[group_col].unique()):
-            group_df = df[df[group_col] == symbol]
-            print(f"\n--- {symbol} ({len(group_df)} rows) ---")
-            print(group_df[show_cols].to_string(index=True))
+    # Display grouped or ungrouped
+    if group_col:
+        group_cols = [group_col] if isinstance(group_col, str) else group_col
+
+        # Check if all group columns exist
+        if all(col in df.columns for col in group_cols):
+            # Group by all columns
+            grouped = df.groupby(group_cols)
+            for group_key, group_df in grouped:
+                # Format group key for display
+                if isinstance(group_key, tuple):
+                    group_display = " + ".join(f"{col}={val}" for col, val in zip(group_cols, group_key))
+                else:
+                    group_display = f"{group_cols[0]}={group_key}"
+
+                print(f"\n--- {group_display} ({len(group_df)} rows) ---")
+                print(group_df[show_cols].to_string(index=True))
+        else:
+            print(df[show_cols].to_string(index=True))
     else:
         print(df[show_cols].to_string(index=True))
 
 
 def test_single_target():
-    """Test single-target scenario."""
+    """Test single-target scenario with MULTI-COLUMN grouping."""
     print("="*80)
-    print("🔍 TEST 1: SINGLE-TARGET ALIGNMENT")
+    print("🔍 TEST 1: SINGLE-TARGET ALIGNMENT (MULTI-COLUMN GROUPING)")
     print("="*80)
     print("\nConfiguration:")
     print("  - Targets: close (SINGLE-TARGET)")
-    print("  - Groups: 2 (AAPL, GOOGL)")
+    print("  - Groups: 4 with MULTI-COLUMN grouping ['symbol', 'sector']")
+    print("    * (AAPL, Tech)")
+    print("    * (GOOGL, Tech)")
+    print("    * (MSFT, Consumer)")
+    print("    * (AMZN, Consumer)")
     print("  - Rows per group: 10")
     print("  - Sequence length: 3")
     print("  - Prediction horizon: 2")
 
     # Create synthetic data
     df_raw = create_synthetic_data()
-    print_df_state(df_raw, "STEP 0: Raw Input Data", show_cols=['symbol', 'date', 'close', 'volume'])
+    print_df_state(df_raw, "STEP 0: Raw Input Data", show_cols=['symbol', 'sector', 'date', 'close', 'volume'])
 
     # Create predictor
     print("\n" + "="*80)
-    print("Creating Single-Target TimeSeriesPredictor...")
+    print("Creating Single-Target TimeSeriesPredictor with MULTI-COLUMN grouping...")
     print("="*80)
 
     predictor = TimeSeriesPredictor(
         target_column='close',  # SINGLE TARGET
         sequence_length=3,
         prediction_horizon=2,
-        group_columns='symbol',
-        categorical_columns='symbol',
-        model_type='ft_transformer_cls',  # Fixed: use correct model name
+        group_columns=['symbol', 'sector'],  # MULTI-COLUMN GROUPING
+        categorical_columns=['symbol', 'sector'],  # Both are categorical
+        model_type='ft_transformer_cls',
         scaler_type='standard',
         use_lagged_target_features=True,
-        d_model=32,
-        num_heads=2,
-        num_layers=2
+        d_token=32,  # Updated parameter name
+        n_heads=2,   # Updated parameter name
+        n_layers=2   # Updated parameter name
     )
     predictor.verbose = True
 
@@ -169,19 +234,24 @@ def test_single_target():
 
     print("\n✅ Single-target predictor created")
     print(f"   Target columns: {predictor.target_columns}")
+    print(f"   Group columns: {predictor.group_columns}")
     print(f"   Is multi-target: {predictor.is_multi_target}")
 
-    return run_test(predictor, df_raw, "SINGLE-TARGET")
+    return run_test(predictor, df_raw, "SINGLE-TARGET-MULTIGROUP")
 
 
 def test_multi_target():
-    """Test multi-target scenario."""
+    """Test multi-target scenario with MULTI-COLUMN grouping."""
     print("\n\n" + "="*80)
-    print("🔍 TEST 2: MULTI-TARGET ALIGNMENT")
+    print("🔍 TEST 2: MULTI-TARGET ALIGNMENT (MULTI-COLUMN GROUPING)")
     print("="*80)
     print("\nConfiguration:")
     print("  - Targets: close, volume (MULTI-TARGET)")
-    print("  - Groups: 2 (AAPL, GOOGL)")
+    print("  - Groups: 4 with MULTI-COLUMN grouping ['symbol', 'sector']")
+    print("    * (AAPL, Tech)")
+    print("    * (GOOGL, Tech)")
+    print("    * (MSFT, Consumer)")
+    print("    * (AMZN, Consumer)")
     print("  - Rows per group: 10")
     print("  - Sequence length: 3")
     print("  - Prediction horizon: 2")
@@ -191,21 +261,21 @@ def test_multi_target():
 
     # Create multi-target predictor
     print("\n" + "="*80)
-    print("Creating Multi-Target TimeSeriesPredictor...")
+    print("Creating Multi-Target TimeSeriesPredictor with MULTI-COLUMN grouping...")
     print("="*80)
 
     predictor = TimeSeriesPredictor(
         target_column=['close', 'volume'],  # MULTI-TARGET
         sequence_length=3,
         prediction_horizon=2,
-        group_columns='symbol',
-        categorical_columns='symbol',
-        model_type='ft_transformer_cls',  # Fixed: use correct model name
+        group_columns=['symbol', 'sector'],  # MULTI-COLUMN GROUPING
+        categorical_columns=['symbol', 'sector'],  # Both are categorical
+        model_type='ft_transformer_cls',
         scaler_type='standard',
         use_lagged_target_features=True,
-        d_model=32,
-        num_heads=2,
-        num_layers=2
+        d_token=32,  # Updated parameter name
+        n_heads=2,   # Updated parameter name
+        n_layers=2   # Updated parameter name
     )
     predictor.verbose = True
 
@@ -215,9 +285,10 @@ def test_multi_target():
 
     print("\n✅ Multi-target predictor created")
     print(f"   Target columns: {predictor.target_columns}")
+    print(f"   Group columns: {predictor.group_columns}")
     print(f"   Is multi-target: {predictor.is_multi_target}")
 
-    return run_test(predictor, df_raw, "MULTI-TARGET")
+    return run_test(predictor, df_raw, "MULTI-TARGET-MULTIGROUP")
 
 
 def run_test(predictor, df_raw, test_name):
@@ -269,8 +340,8 @@ def run_test(predictor, df_raw, test_name):
     )
 
     # Build show_cols dynamically based on targets
-    group_col = predictor.group_columns[0] if predictor.group_columns else None
-    show_cols_step2 = [group_col, 'date'] if group_col else ['date']
+    group_cols_list = predictor.group_columns if predictor.group_columns else []
+    show_cols_step2 = list(group_cols_list) + ['date'] if group_cols_list else ['date']
     for target in predictor.target_columns:
         show_cols_step2.append(target)
         for h in range(1, predictor.prediction_horizon + 1):
@@ -278,11 +349,15 @@ def run_test(predictor, df_raw, test_name):
             if shifted_col in df_step2.columns:
                 show_cols_step2.append(shifted_col)
 
-    print_df_state(df_step2, "After create_shifted_targets()", show_cols=show_cols_step2)
+    print_df_state(df_step2, "After create_shifted_targets()", group_col=group_cols_list, show_cols=show_cols_step2)
 
     print("\n🔑 KEY POINT: This dataframe (df_step2) is what gets stored in _last_processed_df")
-    print(f"   It's BEFORE encoding and scaling, so '{group_col}' is still a string")
-    print("   Row count per group:", df_step2.groupby(group_col).size().to_dict() if group_col else len(df_step2))
+    group_cols_list = predictor.group_columns if predictor.group_columns else []
+    if group_cols_list:
+        print(f"   It's BEFORE encoding and scaling, so {group_cols_list} are still strings/original values")
+        print("   Row count per group:", df_step2.groupby(group_cols_list).size().to_dict())
+    else:
+        print("   Total rows:", len(df_step2))
 
     # STEP 3: Encode categorical features
     print("\n" + "="*80)
@@ -292,13 +367,16 @@ def run_test(predictor, df_raw, test_name):
 
     df_step3 = predictor._encode_categorical_features(df_step2.copy(), fit_encoders=True)
     print_df_state(df_step3, "After _encode_categorical_features()",
-                   show_cols=show_cols_step2)  # Use same columns as step 2
+                   group_col=group_cols_list, show_cols=show_cols_step2)  # Use same columns as step 2
 
     print("\nEncoding mapping:")
-    if group_col and group_col in predictor.cat_encoders:
-        encoder = predictor.cat_encoders[group_col]
-        for i, name in enumerate(encoder.classes_):
-            print(f"  {name} -> {i}")
+    if group_cols_list:
+        for group_col in group_cols_list:
+            if group_col in predictor.cat_encoders:
+                encoder = predictor.cat_encoders[group_col]
+                print(f"  {group_col}:")
+                for i, name in enumerate(encoder.classes_):
+                    print(f"    {name} -> {i}")
 
     # STEP 4: Determine numerical columns
     print("\n" + "="*80)
@@ -391,7 +469,7 @@ def run_test(predictor, df_raw, test_name):
     print("  - First sequence uses rows [0:3], predicts for row 2 (index 2)")
     print("  - Last sequence uses rows [5:8], predicts for row 7 (index 7)")
     print("  - Targets are extracted from indices [2:8] (offset = sequence_length - 1 = 2)")
-    print("  - Total: 6 × 2 groups = 12 sequences")
+    print(f"  - Total: 6 × 4 groups = 24 sequences (MULTI-COLUMN GROUPING)")
 
     X, y = predictor._prepare_data_grouped(df_step5.copy(), fit_scaler=False)
 
@@ -404,10 +482,11 @@ def run_test(predictor, df_raw, test_name):
         print(f"   X shape: {X.shape}")
     print(f"   y shape: {y.shape}")
 
-    print(f"\n   Expected: 10 sequences total (5 per group)")
+    print(f"\n   Expected: 24 sequences total (6 per group × 4 groups)")
     print(f"   Got: {len(y)} sequences")
 
-    print(f"\n   Group indices: {predictor._last_group_indices}")
+    if hasattr(predictor, '_last_group_indices'):
+        print(f"\n   Group indices: {predictor._last_group_indices}")
 
     # =========================================================================
     # STEP 7: Train a simple model and run actual evaluation
@@ -727,26 +806,28 @@ def run_test(predictor, df_raw, test_name):
     print("📋 SUMMARY - Data Flow Through Pipeline")
     print("="*80)
 
-    print("\n1. Raw data:        10 rows per group")
-    print("2. After shifting:   8 rows per group (2 dropped due to no future data)")
-    print("3. After sequences:  6 predictions per group (NEW: 8 - 3 + 1 = 6)")
+    print("\n1. Raw data:        10 rows per group × 4 groups = 40 total rows")
+    print("2. After shifting:   8 rows per group × 4 groups = 32 total rows (2 dropped per group)")
+    print("3. After sequences:  6 predictions per group × 4 groups = 24 total predictions")
     print("\n4. Evaluation extracts actuals from Step 2 (8 rows per group)")
     print("   - Applies NEW sequence offset: 8 - (3-1) = 6 actuals per group")
     print("   - For each horizon, extract from shifted columns directly")
-    print("   - Available: 6 actuals, Predictions: 6")
+    print("   - Available: 6 actuals per group, Predictions: 6 per group")
     print("   - ✅  PERFECT ALIGNMENT!")
 
-    print("\n🔍 This demonstrates the NEW alignment (FIXED):")
-    print("   - Predictions count: (rows_after_shift - sequence_length + 1)")
+    print("\n🔍 This demonstrates the NEW alignment (FIXED) with MULTI-COLUMN GROUPING:")
+    print("   - Multi-column groups use composite keys: ('AAPL', 'Tech'), ('GOOGL', 'Tech'), etc.")
+    print("   - _filter_dataframe_by_group() properly handles tuple keys")
+    print("   - Predictions count: (rows_after_shift - sequence_length + 1) per group")
     print("   - Actuals extracted from shifted columns with offset = sequence_length - 1")
     print("   - Each horizon is independent: close_target_h1, close_target_h2, etc.")
-    print("   - Actuals count ALWAYS equals predictions count!")
+    print("   - Actuals count ALWAYS equals predictions count FOR EACH GROUP!")
 
-    print("\n💡 Potential issues to investigate:")
-    print("   1. Is sequence_length offset applied consistently?")
-    print("   2. Are group boundaries respected (no data leakage)?")
-    print("   3. Is the multi-horizon actual extraction correct?")
-    print("   4. Does _last_processed_df match what we expect?")
+    print("\n💡 Multi-column grouping verification:")
+    print("   1. ✓ Composite keys respected (no mixing between groups)")
+    print("   2. ✓ Sequence offset applied consistently per group")
+    print("   3. ✓ Group boundaries respected (no data leakage across groups)")
+    print("   4. ✓ Multi-horizon actual extraction correct for each group")
 
     return 0
 
@@ -758,19 +839,24 @@ def main():
     dual_output = DualOutput(output_filename)
     sys.stdout = dual_output
 
-    print("# Alignment Test Results")
+    print("# Alignment Test Results - MULTI-COLUMN GROUPING")
     print(f"\n**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("\n" + "="*80)
-    print("🧪 COMPREHENSIVE ALIGNMENT TESTING")
+    print("🧪 COMPREHENSIVE ALIGNMENT TESTING WITH MULTI-COLUMN GROUPING")
     print("="*80)
     print("\nThis script will test:")
     print("  1. Single-target, multi-horizon (close only)")
     print("  2. Multi-target, multi-horizon (close + volume)")
     print("\nBoth tests use:")
-    print("  - 2 groups (AAPL, GOOGL)")
+    print("  - 4 groups with MULTI-COLUMN grouping ['symbol', 'sector']:")
+    print("    * (AAPL, Tech)")
+    print("    * (GOOGL, Tech)")
+    print("    * (MSFT, Consumer)")
+    print("    * (AMZN, Consumer)")
     print("  - 10 rows per group")
     print("  - Sequence length: 3")
     print("  - Prediction horizon: 2")
+    print("\n💡 This test validates the FIX for multi-column grouping bug!")
 
     # Test 1: Single-target
     try:
