@@ -574,12 +574,8 @@ def run_test(predictor, df_raw, test_name):
                 print("="*80)
                 per_group = metrics['per_group']
 
-                # Get encoder for group name decoding
-                encoder = predictor.cat_encoders.get(group_col, None) if group_col else None
-
                 for group_key, group_data in per_group.items():
-                    group_name = encoder.classes_[int(group_key)] if encoder else group_key
-                    print(f"\n--- Group {group_key}: {group_name} ---")
+                    print(f"\n--- Group: {group_key} ---")
 
                     for target_col in predictor.target_columns:
                         if target_col in group_data:
@@ -619,12 +615,8 @@ def run_test(predictor, df_raw, test_name):
                 print("\n--- PER-GROUP METRICS ---")
                 per_group = metrics['per_group']
 
-                # Get encoder for group name decoding
-                encoder = predictor.cat_encoders.get(group_col, None) if group_col else None
-
                 for group_key, group_metrics in per_group.items():
-                    group_name = encoder.classes_[int(group_key)] if encoder else group_key
-                    print(f"\n  Group {group_key}: {group_name}")
+                    print(f"\n  Group: {group_key}")
                     for horizon_key, horizon_metrics in group_metrics.items():
                         print(f"    {horizon_key}:")
                         for metric_name, value in horizon_metrics.items():
@@ -658,18 +650,16 @@ def run_test(predictor, df_raw, test_name):
     if hasattr(predictor, '_last_processed_df') and predictor._last_processed_df is not None:
         print("\n📦 Inspecting _last_processed_df (used for evaluation):")
         print(f"   Total rows: {len(predictor._last_processed_df)}")
-        if group_col:
-            print(f"   Per group: {predictor._last_processed_df.groupby(group_col).size().to_dict()}")
+        if predictor.group_columns:
+            print(f"   Per group: {predictor._last_processed_df.groupby(predictor.group_columns).size().to_dict()}")
         print(f"   Columns: {list(predictor._last_processed_df.columns)}")
 
         # Show the shifted target columns
         shifted_cols = [col for col in predictor._last_processed_df.columns if '_target_h' in col]
         print(f"\n   Shifted target columns: {shifted_cols}")
 
-        # Get encoder mapping
-        if group_col and group_col in predictor.cat_encoders:
-            encoder = predictor.cat_encoders[group_col]
-            group_value_to_name = {i: name for i, name in enumerate(encoder.classes_)}
+        # Get unique groups
+        if predictor.group_columns and hasattr(predictor, '_last_group_indices'):
             unique_groups = sorted(set(predictor._last_group_indices))
 
             offset = predictor.sequence_length - 1
@@ -678,14 +668,16 @@ def run_test(predictor, df_raw, test_name):
             # =========================================================================
             # NEW: Create alignment table for each group
             # =========================================================================
-            for group_value in unique_groups:
-                group_name = group_value_to_name[group_value]
-                print(f"\n--- Group {group_value}: {group_name} ---")
+            for encoded_group_value in unique_groups:
+                # Decode the group key to get original values
+                decoded_group_value = predictor._decode_group_key(encoded_group_value)
 
-                # Get processed data for this group
-                group_df = predictor._last_processed_df[
-                    predictor._last_processed_df[group_col] == group_name
-                ].copy()
+                print(f"\n--- Group {encoded_group_value} (encoded) → {decoded_group_value} (decoded) ---")
+
+                # Get processed data for this group using the decoded value
+                group_df = predictor._filter_dataframe_by_group(
+                    predictor._last_processed_df, decoded_group_value
+                ).copy()
 
                 print(f"Rows in group: {len(group_df)}")
 
@@ -693,8 +685,8 @@ def run_test(predictor, df_raw, test_name):
                 group_dates = group_df['date'].values if 'date' in group_df.columns else None
                 extracted_dates = group_dates[offset:] if group_dates is not None else None
 
-                # Get predictions for this group
-                group_mask = np.array([g == group_value for g in predictor._last_group_indices])
+                # Get predictions for this group using ENCODED value
+                group_mask = np.array([g == encoded_group_value for g in predictor._last_group_indices])
 
                 # Handle both single-target (array) and multi-target (dict) predictions
                 if isinstance(test_predictions, dict):
