@@ -1847,7 +1847,7 @@ class TimeSeriesPredictor:
                         # Validate alignment
                         if len(group_actual) != len(group_preds):
                             raise ValueError(
-                                f"Alignment error for group {group_name}, {shifted_col}: "
+                                f"Alignment error for group {group_value}, {shifted_col}: "
                                 f"Expected {len(group_preds)} actuals but found {len(group_actual)}"
                             )
 
@@ -1865,7 +1865,7 @@ class TimeSeriesPredictor:
                             # Validate alignment
                             if len(horizon_actual) != len(horizon_pred):
                                 raise ValueError(
-                                    f"Alignment error for group {group_name}, {shifted_col}: "
+                                    f"Alignment error for group {group_value}, {shifted_col}: "
                                     f"Expected {len(horizon_pred)} actuals but found {len(horizon_actual)}"
                                 )
 
@@ -1996,7 +1996,7 @@ class TimeSeriesPredictor:
                     # Validate alignment
                     if len(group_actual) != len(group_preds):
                         raise ValueError(
-                            f"Alignment error for group {group_name}, {shifted_col}: "
+                            f"Alignment error for group {group_value}, {shifted_col}: "
                             f"Expected {len(group_preds)} actuals but found {len(group_actual)}"
                         )
 
@@ -2015,7 +2015,7 @@ class TimeSeriesPredictor:
                         # Validate alignment
                         if len(horizon_actual) != len(horizon_pred):
                             raise ValueError(
-                                f"Alignment error for group {group_name}, {shifted_col}: "
+                                f"Alignment error for group {group_value}, {shifted_col}: "
                                 f"Expected {len(horizon_pred)} actuals but found {len(horizon_actual)}"
                             )
 
