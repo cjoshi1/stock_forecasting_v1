@@ -812,20 +812,28 @@ class CSNTransformerPredictor(nn.Module):
 
 class CSNTransformerCLSModel(TransformerBasedModel):
     """
-    🧠 CSN-TRANSFORMER WITH CLS TOKENS FOR CATEGORICAL FEATURES (CSN_TRANSFORMER_CLS)
-    ==================================================================================
+    🧠 CSN-TRANSFORMER WITH CONFIGURABLE POOLING (CSN_TRANSFORMER)
+    ===============================================================
 
     This model extends the CSN-Transformer architecture to handle STATIC categorical features
-    alongside TIME-VARYING numerical features using a DUAL-PATH processing approach.
+    alongside TIME-VARYING numerical features using a DUAL-PATH processing approach with
+    configurable pooling strategies for sequence aggregation.
 
     📊 ARCHITECTURE OVERVIEW:
     ┌─────────────────────────────────────────────────────────────────────────────┐
-    │  PATH 1: Categorical Features → Categorical Transformer → CLS₁              │
+    │  PATH 1: Categorical Features → Categorical Transformer → Pooling₁          │
     │                                                                ↓             │
     │                                                           FUSION             │
     │                                                                ↓             │
-    │  PATH 2: Numerical Sequences → Numerical Transformer → CLS₂  → Prediction  │
+    │  PATH 2: Numerical Sequences → Numerical Transformer → Pooling₂ → Prediction│
     └─────────────────────────────────────────────────────────────────────────────┘
+
+    Supports multiple pooling strategies for both pathways:
+    - 'cls': CLS token pooling (legacy, 0 parameters)
+    - 'singlehead_attention': Single-head attention pooling
+    - 'multihead_attention': Multi-head attention pooling (default)
+    - 'weighted_avg': Learnable weighted average
+    - 'temporal_multihead_attention': Temporal multi-head attention with recency bias
 
     🔄 DATA FLOW WITH MATRIX DIMENSIONS:
 
@@ -1008,11 +1016,12 @@ class CSNTransformerCLSModel(TransformerBasedModel):
         d_token: int = 128,
         n_heads: int = 8,
         n_layers: int = 3,
+        pooling_type: str = 'multihead_attention',
         dropout: float = 0.1,
         activation: str = 'gelu'
     ):
         """
-        Initialize CSN-Transformer with dual-path CLS tokens for categorical features.
+        Initialize CSN-Transformer with dual-path configurable pooling.
 
         Args:
             sequence_length: Length of input sequences (lookback window)
@@ -1021,8 +1030,10 @@ class CSNTransformerCLSModel(TransformerBasedModel):
             cat_cardinalities: List of cardinalities for each categorical feature
             output_dim: Output dimension (num_targets * prediction_horizon)
             d_token: Embedding dimension (token size)
-            n_heads: Number of attention heads
+            n_heads: Number of attention heads (shared between transformer and pooling)
             n_layers: Number of transformer layers
+            pooling_type: Pooling strategy ('cls', 'singlehead_attention', 'multihead_attention',
+                         'weighted_avg', 'temporal_multihead_attention')
             dropout: Dropout rate
             activation: Activation function ('relu' or 'gelu')
         """
@@ -1033,6 +1044,7 @@ class CSNTransformerCLSModel(TransformerBasedModel):
         self.num_categorical = num_categorical
         self.cat_cardinalities = cat_cardinalities
         self.output_dim = output_dim
+        self.pooling_type = pooling_type
         self.dropout_rate = dropout
         self.activation_name = activation
 
@@ -1044,8 +1056,11 @@ class CSNTransformerCLSModel(TransformerBasedModel):
         if num_categorical > 0:
             import math
 
-            # CLS token for categorical path
-            self.cls1_token = CLSToken(d_token)
+            # CLS token for categorical path (only if using cls pooling)
+            if pooling_type == 'cls':
+                self.cls1_token = CLSToken(d_token)
+            else:
+                self.cls1_token = None
 
             # Categorical embeddings with logarithmic dimension scaling
             self.cat_embeddings = nn.ModuleList()
@@ -1081,10 +1096,28 @@ class CSNTransformerCLSModel(TransformerBasedModel):
             )
             self.cat_transformer = nn.TransformerEncoder(cat_encoder_layer, num_layers=n_layers)
 
+            # Categorical pooling module
+            # Calculate max sequence length for categorical path
+            max_cat_tokens = num_categorical
+            if pooling_type == 'cls':
+                max_cat_tokens += 1  # Add CLS token
+
+            from .base.pooling import create_pooling_module
+            self.cat_pooling = create_pooling_module(
+                pooling_type=pooling_type,
+                d_token=d_token,
+                n_heads=n_heads,
+                max_seq_len=max_cat_tokens,
+                dropout=dropout
+            )
+
         # PATH 2: Numerical Processing
         if num_numerical > 0:
-            # CLS token for numerical path
-            self.cls2_token = CLSToken(d_token)
+            # CLS token for numerical path (only if using cls pooling)
+            if pooling_type == 'cls':
+                self.cls2_token = CLSToken(d_token)
+            else:
+                self.cls2_token = None
 
             # Project numerical features to d_token
             self.num_projection = nn.Linear(num_numerical, d_token)
@@ -1102,6 +1135,21 @@ class CSNTransformerCLSModel(TransformerBasedModel):
                 batch_first=True
             )
             self.num_transformer = nn.TransformerEncoder(num_encoder_layer, num_layers=n_layers)
+
+            # Numerical pooling module
+            # Calculate max sequence length for numerical path
+            max_num_tokens = sequence_length
+            if pooling_type == 'cls':
+                max_num_tokens += 1  # Add CLS token
+
+            from .base.pooling import create_pooling_module
+            self.num_pooling = create_pooling_module(
+                pooling_type=pooling_type,
+                d_token=d_token,
+                n_heads=n_heads,
+                max_seq_len=max_num_tokens,
+                dropout=dropout
+            )
 
         # Fusion and Prediction Head
         # Input dimension is 2 * d_token (CLS₁ + CLS₂)
@@ -1140,16 +1188,17 @@ class CSNTransformerCLSModel(TransformerBasedModel):
 
             cat_tokens = torch.cat(cat_tokens_list, dim=1)  # [batch, num_categorical, d_token]
 
-            # Step 2: Add CLS₁ token
-            cls1_tokens = self.cls1_token(batch_size)  # [batch, 1, d_token]
-            cat_tokens_with_cls = torch.cat([cls1_tokens, cat_tokens], dim=1)  # [batch, 1+num_cat, d_token]
+            # Step 2: Optionally add CLS₁ token (only for cls pooling)
+            if self.cls1_token is not None:
+                cls1_tokens = self.cls1_token(batch_size)  # [batch, 1, d_token]
+                cat_tokens = torch.cat([cls1_tokens, cat_tokens], dim=1)  # [batch, 1+num_cat, d_token]
 
             # Step 3: Categorical transformer
-            cat_output = self.cat_transformer(cat_tokens_with_cls)  # [batch, 1+num_cat, d_token]
+            cat_output = self.cat_transformer(cat_tokens)  # [batch, seq_len, d_token]
 
-            # Step 4: Extract CLS₁
-            cls1_output = cat_output[:, 0, :]  # [batch, d_token]
-            cls_outputs.append(cls1_output)
+            # Step 4: Apply categorical pooling
+            cat_pooled = self.cat_pooling(cat_output)  # [batch, d_token]
+            cls_outputs.append(cat_pooled)
 
         # PATH 2: Numerical Processing
         if self.num_numerical > 0:
@@ -1159,16 +1208,19 @@ class CSNTransformerCLSModel(TransformerBasedModel):
             # Step 2: Add positional encoding
             x_num_proj = x_num_proj + self.temporal_pos_encoding  # [batch, seq_len, d_token]
 
-            # Step 3: Add CLS₂ token
-            cls2_tokens = self.cls2_token(batch_size)  # [batch, 1, d_token]
-            num_tokens_with_cls = torch.cat([cls2_tokens, x_num_proj], dim=1)  # [batch, 1+seq_len, d_token]
+            # Step 3: Optionally add CLS₂ token (only for cls pooling)
+            if self.cls2_token is not None:
+                cls2_tokens = self.cls2_token(batch_size)  # [batch, 1, d_token]
+                num_tokens = torch.cat([cls2_tokens, x_num_proj], dim=1)  # [batch, 1+seq_len, d_token]
+            else:
+                num_tokens = x_num_proj  # [batch, seq_len, d_token]
 
             # Step 4: Numerical transformer
-            num_output = self.num_transformer(num_tokens_with_cls)  # [batch, 1+seq_len, d_token]
+            num_output = self.num_transformer(num_tokens)  # [batch, seq_len, d_token]
 
-            # Step 5: Extract CLS₂
-            cls2_output = num_output[:, 0, :]  # [batch, d_token]
-            cls_outputs.append(cls2_output)
+            # Step 5: Apply numerical pooling
+            num_pooled = self.num_pooling(num_output)  # [batch, d_token]
+            cls_outputs.append(num_pooled)
 
         # FUSION: Concatenate CLS outputs
         if len(cls_outputs) == 2:
@@ -1184,10 +1236,11 @@ class CSNTransformerCLSModel(TransformerBasedModel):
     def get_model_config(self) -> Dict[str, Any]:
         """Get the current configuration of the model."""
         return {
-            'model_type': 'csn_transformer_cls',
+            'model_type': 'csn_transformer',
             'd_token': self.d_token,
             'n_heads': self.n_heads,
             'n_layers': self.n_layers,
+            'pooling_type': self.pooling_type,
             'dropout': self.dropout_rate,
             'activation': self.activation_name,
             'sequence_length': self.sequence_length,
