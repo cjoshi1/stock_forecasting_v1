@@ -62,9 +62,9 @@ def main():
                        help='Number of historical days to use for prediction')
     parser.add_argument('--prediction_horizon', type=int, default=1,
                        help='Number of steps ahead to predict (1=next step, 2=two steps ahead, etc.)')
-    parser.add_argument('--model_type', type=str, default='ft_transformer_cls',
-                       choices=['ft_transformer_cls', 'csn_transformer_cls'],
-                       help='Model architecture (ft_transformer_cls=FT-Transformer, csn_transformer_cls=CSNTransformer)')
+    parser.add_argument('--model_type', type=str, default='ft_transformer',
+                       choices=['ft_transformer', 'csn_transformer'],
+                       help='Model architecture (ft_transformer=FT-Transformer, csn_transformer=CSNTransformer)')
     parser.add_argument('--d_token', type=int, default=128,
                        help='Token embedding dimension')
     parser.add_argument('--n_layers', type=int, default=3,
@@ -265,9 +265,9 @@ def main():
         print(f"   - Target: {target_columns}")
     print(f"   - Sequence length: {args.sequence_length}")
     print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
-    print(f"   - Token dimension: {args.d_model}")
-    print(f"   - Layers: {args.num_layers}")
-    print(f"   - Attention heads: {args.num_heads}")
+    print(f"   - Token dimension: {args.d_token}")
+    print(f"   - Layers: {args.n_layers}")
+    print(f"   - Attention heads: {args.n_heads}")
     print(f"   - Dropout: {args.dropout}")
     print(f"   - Scaler type: {args.scaler_type}")
     if args.use_lagged_target_features:
