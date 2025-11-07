@@ -649,11 +649,13 @@ class SequenceFTTransformerPredictor(nn.Module):
 
 class FTTransformerCLSModel(TransformerBasedModel):
     """
-    🧠 FT-TRANSFORMER WITH CLS TOKEN FOR CATEGORICAL FEATURES (FT_TRANSFORMER_CLS)
-    ==============================================================================
+    🧠 FT-TRANSFORMER WITH CONFIGURABLE POOLING FOR CATEGORICAL FEATURES
+    ====================================================================
 
     This model extends the FT-Transformer architecture to handle STATIC categorical features
     alongside TIME-VARYING numerical features for time series forecasting.
+
+    Supports multiple pooling strategies for sequence aggregation:
 
     📊 ARCHITECTURE OVERVIEW:
     ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -827,14 +829,15 @@ class FTTransformerCLSModel(TransformerBasedModel):
         num_categorical: int,
         cat_cardinalities: List[int],
         output_dim: int,
-        d_model: int = 128,
-        num_heads: int = 8,
-        num_layers: int = 3,
+        d_token: int = 128,
+        n_heads: int = 8,
+        n_layers: int = 3,
+        pooling_type: str = 'multihead_attention',
         dropout: float = 0.1,
         activation: str = 'gelu'
     ):
         """
-        Initialize FT-Transformer with CLS token for categorical features.
+        Initialize FT-Transformer with configurable pooling strategy.
 
         Args:
             sequence_length: Length of input sequences (lookback window)
@@ -842,13 +845,18 @@ class FTTransformerCLSModel(TransformerBasedModel):
             num_categorical: Number of categorical features
             cat_cardinalities: List of cardinalities for each categorical feature
             output_dim: Output dimension (num_targets * prediction_horizon)
-            d_model: Embedding dimension
-            num_heads: Number of attention heads
-            num_layers: Number of transformer layers
+            d_token: Embedding dimension (token size)
+            n_heads: Number of attention heads (used for transformer and multihead pooling)
+            n_layers: Number of transformer layers
+            pooling_type: Pooling strategy ('cls', 'singlehead_attention', 'multihead_attention',
+                        'weighted_avg', 'temporal_multihead_attention')
             dropout: Dropout rate
             activation: Activation function ('relu' or 'gelu')
         """
-        super().__init__(d_model=d_model, num_heads=num_heads, num_layers=num_layers)
+        super().__init__(d_token=d_token, n_heads=n_heads, n_layers=n_layers)
+
+        # Store pooling type for config
+        self.pooling_type = pooling_type
 
         self.sequence_length = sequence_length
         self.num_numerical = num_numerical
@@ -862,12 +870,15 @@ class FTTransformerCLSModel(TransformerBasedModel):
         if num_categorical > 0 and len(cat_cardinalities) != num_categorical:
             raise ValueError(f"cat_cardinalities length ({len(cat_cardinalities)}) must match num_categorical ({num_categorical})")
 
-        # CLS token for prediction
-        self.cls_token = CLSToken(d_model)
+        # CLS token only if using cls pooling
+        if pooling_type == 'cls':
+            self.cls_token = CLSToken(d_token)
+        else:
+            self.cls_token = None
 
         # Numerical tokenizer
         if num_numerical > 0:
-            self.num_tokenizer = NumericalTokenizer(num_numerical, d_model)
+            self.num_tokenizer = NumericalTokenizer(num_numerical, d_token)
 
         # Categorical embeddings with logarithmic dimension scaling
         if num_categorical > 0:
@@ -879,39 +890,56 @@ class FTTransformerCLSModel(TransformerBasedModel):
             for cardinality in cat_cardinalities:
                 # Calculate embedding dimension using logarithmic scaling
                 emb_dim = int(8 * math.log2(cardinality + 1))
-                # Clamp to bounds [d_model/4, d_model]
-                min_dim = d_model // 4
-                max_dim = d_model
+                # Clamp to bounds [d_token/4, d_token]
+                min_dim = d_token // 4
+                max_dim = d_token
                 emb_dim = max(min_dim, min(max_dim, emb_dim))
 
                 # Create embedding layer
                 embedding = nn.Embedding(cardinality, emb_dim)
                 self.cat_embeddings.append(embedding)
 
-                # Project to d_model if needed
-                if emb_dim != d_model:
-                    projection = nn.Linear(emb_dim, d_model)
+                # Project to d_token if needed
+                if emb_dim != d_token:
+                    projection = nn.Linear(emb_dim, d_token)
                     self.cat_projections.append(projection)
                 else:
                     self.cat_projections.append(nn.Identity())
 
         # Positional encoding for temporal sequences (optional, can help)
-        self.temporal_pos_encoding = nn.Parameter(torch.randn(1, sequence_length, d_model) * 0.02)
+        self.temporal_pos_encoding = nn.Parameter(torch.randn(1, sequence_length, d_token) * 0.02)
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=num_heads,
-            dim_feedforward=4 * d_model,
+            d_model=d_token,
+            nhead=n_heads,
+            dim_feedforward=4 * d_token,
             dropout=dropout,
             activation=activation,
             batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        # Calculate max sequence length for pooling
+        # For CLS pooling: 1 (CLS) + seq_len * num_numerical + num_categorical
+        # For other pooling: seq_len * num_numerical + num_categorical
+        max_num_tokens = sequence_length * num_numerical + num_categorical
+        if pooling_type == 'cls':
+            max_num_tokens += 1  # Add CLS token
+
+        # Create pooling module
+        from .base.pooling import create_pooling_module
+        self.pooling = create_pooling_module(
+            pooling_type=pooling_type,
+            d_token=d_token,
+            n_heads=n_heads,
+            max_seq_len=max_num_tokens,
+            dropout=dropout
+        )
 
         # Prediction head
         self.head = MultiHorizonHead(
-            d_input=d_model,
+            d_input=d_token,
             prediction_horizons=output_dim,
             hidden_dim=None,
             dropout=dropout
@@ -929,22 +957,26 @@ class FTTransformerCLSModel(TransformerBasedModel):
             predictions: [batch_size, output_dim]
         """
         batch_size = x_num.shape[0]
+        tokens_list = []
 
-        # Step 1: Create CLS token
-        cls_tokens = self.cls_token(batch_size)  # [batch, 1, d_model]
+        # Step 1: Optionally create CLS token (only for cls pooling)
+        if self.cls_token is not None:
+            cls_tokens = self.cls_token(batch_size)  # [batch, 1, d_token]
+            tokens_list.append(cls_tokens)
 
         # Step 2: Tokenize numerical sequences
         # Process each timestep independently
         num_tokens_list = []
         for t in range(self.sequence_length):
             x_num_t = x_num[:, t, :]  # [batch, num_numerical]
-            tokens_t = self.num_tokenizer(x_num_t)  # [batch, num_numerical, d_model]
+            tokens_t = self.num_tokenizer(x_num_t)  # [batch, num_numerical, d_token]
             # Add temporal positional encoding
             tokens_t = tokens_t + self.temporal_pos_encoding[:, t:t+1, :].expand(-1, self.num_numerical, -1)
             num_tokens_list.append(tokens_t)
 
-        # Concatenate all timesteps: [batch, seq_len * num_numerical, d_model]
+        # Concatenate all timesteps: [batch, seq_len * num_numerical, d_token]
         num_tokens = torch.cat(num_tokens_list, dim=1)
+        tokens_list.append(num_tokens)
 
         # Step 3: Process categorical features (if present)
         if x_cat is not None and self.num_categorical > 0:
@@ -952,33 +984,36 @@ class FTTransformerCLSModel(TransformerBasedModel):
             for i in range(self.num_categorical):
                 cat_indices = x_cat[:, i]  # [batch]
                 emb = self.cat_embeddings[i](cat_indices)  # [batch, emb_dim]
-                projected = self.cat_projections[i](emb)  # [batch, d_model]
-                cat_tokens_list.append(projected.unsqueeze(1))  # [batch, 1, d_model]
+                projected = self.cat_projections[i](emb)  # [batch, d_token]
+                cat_tokens_list.append(projected.unsqueeze(1))  # [batch, 1, d_token]
 
-            cat_tokens = torch.cat(cat_tokens_list, dim=1)  # [batch, num_categorical, d_model]
+            cat_tokens = torch.cat(cat_tokens_list, dim=1)  # [batch, num_categorical, d_token]
+            tokens_list.append(cat_tokens)
 
-            # Step 4: Concatenate all tokens: [CLS, numerical, categorical]
-            all_tokens = torch.cat([cls_tokens, num_tokens, cat_tokens], dim=1)
-        else:
-            # No categorical features
-            all_tokens = torch.cat([cls_tokens, num_tokens], dim=1)
+        # Step 4: Concatenate all tokens
+        # For cls pooling: [CLS, numerical, categorical]
+        # For other pooling: [numerical, categorical]
+        all_tokens = torch.cat(tokens_list, dim=1)
 
         # Step 5: Transformer processing
-        transformer_output = self.transformer(all_tokens)  # [batch, num_tokens, d_model]
+        transformer_output = self.transformer(all_tokens)  # [batch, num_tokens, d_token]
 
-        # Step 6: Extract CLS token and predict
-        cls_output = transformer_output[:, 0, :]  # [batch, d_model]
-        predictions = self.head(cls_output)  # [batch, output_dim]
+        # Step 6: Apply pooling to aggregate sequence
+        pooled_output = self.pooling(transformer_output)  # [batch, d_token]
+
+        # Step 7: Predict from pooled representation
+        predictions = self.head(pooled_output)  # [batch, output_dim]
 
         return predictions
 
     def get_model_config(self) -> Dict[str, Any]:
         """Get the current configuration of the model."""
         return {
-            'model_type': 'ft_transformer_cls',
-            'd_model': self.d_model,
-            'num_heads': self.num_heads,
-            'num_layers': self.num_layers,
+            'model_type': 'ft_transformer',
+            'd_token': self.d_token,
+            'n_heads': self.n_heads,
+            'n_layers': self.n_layers,
+            'pooling_type': self.pooling_type,
             'dropout': self.dropout_rate,
             'activation': self.activation_name,
             'sequence_length': self.sequence_length,

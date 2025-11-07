@@ -14,13 +14,13 @@ def _register_builtin_models():
     """Register built-in models with the factory."""
     try:
         from ..ft_model import FTTransformerCLSModel
-        ModelFactory.register_model('ft_transformer_cls', FTTransformerCLSModel)
+        ModelFactory.register_model('ft_transformer', FTTransformerCLSModel)
     except ImportError:
         pass  # FT-Transformer not available
 
     try:
         from ..csn_model import CSNTransformerCLSModel
-        ModelFactory.register_model('csn_transformer_cls', CSNTransformerCLSModel)
+        ModelFactory.register_model('csn_transformer', CSNTransformerCLSModel)
     except ImportError:
         pass  # CSN-Transformer not available
 
@@ -156,11 +156,13 @@ class ModelFactory:
         model_class = cls._model_registry[model_type]
 
         # Create model instance with appropriate parameters
-        # CLS models use different signature (num_numerical, num_categorical, cat_cardinalities)
-        if model_type.endswith('_cls'):
+        # Transformer models with categorical support use different signature
+        CATEGORICAL_SUPPORT_MODELS = ['ft_transformer', 'csn_transformer']
+
+        if model_type in CATEGORICAL_SUPPORT_MODELS:
             if num_numerical is None or num_categorical is None:
                 raise ValueError(
-                    f"CLS models require 'num_numerical' and 'num_categorical' parameters. "
+                    f"Transformer models require 'num_numerical' and 'num_categorical' parameters. "
                     f"Got num_numerical={num_numerical}, num_categorical={num_categorical}"
                 )
             model = model_class(
@@ -175,7 +177,7 @@ class ModelFactory:
             # Standard models use num_features parameter
             if num_features is None:
                 raise ValueError(
-                    f"Non-CLS models require 'num_features' parameter. "
+                    f"Standard models require 'num_features' parameter. "
                     f"Got num_features={num_features}"
                 )
             model = model_class(
@@ -249,17 +251,19 @@ def get_default_model_params(model_type: str) -> Dict[str, Any]:
         # Returns: {'d_model': 64, 'num_heads': 4, 'num_layers': 3, ...}
     """
     defaults = {
-        'ft_transformer_cls': {
-            'd_model': 128,
-            'num_heads': 8,
-            'num_layers': 3,
+        'ft_transformer': {
+            'd_token': 128,
+            'n_heads': 8,
+            'n_layers': 3,
+            'pooling_type': 'multihead_attention',
             'dropout': 0.1,
             'activation': 'gelu'
         },
-        'csn_transformer_cls': {
-            'd_model': 128,
-            'num_heads': 8,
-            'num_layers': 3,
+        'csn_transformer': {
+            'd_token': 128,
+            'n_heads': 8,
+            'n_layers': 3,
+            'pooling_type': 'multihead_attention',
             'dropout': 0.1,
             'activation': 'gelu'
         },

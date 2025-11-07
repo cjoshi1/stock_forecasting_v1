@@ -65,12 +65,12 @@ def main():
     parser.add_argument('--model_type', type=str, default='ft_transformer_cls',
                        choices=['ft_transformer_cls', 'csn_transformer_cls'],
                        help='Model architecture (ft_transformer_cls=FT-Transformer, csn_transformer_cls=CSNTransformer)')
-    parser.add_argument('--d_model', type=int, default=128,
-                       help='Token embedding dimension (formerly d_token)')
-    parser.add_argument('--num_layers', type=int, default=3,
-                       help='Number of transformer layers (formerly n_layers)')
-    parser.add_argument('--num_heads', type=int, default=8,
-                       help='Number of attention heads (formerly n_heads)')
+    parser.add_argument('--d_token', type=int, default=128,
+                       help='Token embedding dimension')
+    parser.add_argument('--n_layers', type=int, default=3,
+                       help='Number of transformer layers')
+    parser.add_argument('--n_heads', type=int, default=8,
+                       help='Number of attention heads')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
 
@@ -250,9 +250,9 @@ def main():
         categorical_columns=cat_cols_for_model,
         scaler_type=args.scaler_type,
         use_lagged_target_features=args.use_lagged_target_features,
-        d_model=args.d_model,
-        num_layers=args.num_layers,
-        num_heads=args.num_heads,
+        d_token=args.d_token,
+        n_layers=args.n_layers,
+        n_heads=args.n_heads,
         dropout=args.dropout
     )
 
