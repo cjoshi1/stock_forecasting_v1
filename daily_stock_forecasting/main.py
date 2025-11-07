@@ -64,7 +64,10 @@ def main():
                        help='Number of steps ahead to predict (1=next step, 2=two steps ahead, etc.)')
     parser.add_argument('--model_type', type=str, default='ft_transformer',
                        choices=['ft_transformer', 'csn_transformer'],
-                       help='Model architecture (ft_transformer=FT-Transformer, csn_transformer=CSNTransformer)')
+                       help='Model architecture (ft_transformer=FT-Transformer, csn_transformer=CSN-Transformer)')
+    parser.add_argument('--pooling_type', type=str, default='multihead_attention',
+                       choices=['cls', 'singlehead_attention', 'multihead_attention', 'weighted_avg', 'temporal_multihead_attention'],
+                       help='Pooling strategy for sequence aggregation (default: multihead_attention)')
     parser.add_argument('--d_token', type=int, default=128,
                        help='Token embedding dimension')
     parser.add_argument('--n_layers', type=int, default=3,

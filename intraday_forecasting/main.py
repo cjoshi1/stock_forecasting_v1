@@ -381,7 +381,10 @@ def main():
                        help='Trading timeframe for prediction')
     parser.add_argument('--model_type', type=str, default='ft_transformer',
                        choices=['ft_transformer', 'csn_transformer'],
-                       help='Model architecture (ft_transformer=FT-Transformer, csn_transformer=CSNTransformer)')
+                       help='Model architecture (ft_transformer=FT-Transformer, csn_transformer=CSN-Transformer)')
+    parser.add_argument('--pooling_type', type=str, default='multihead_attention',
+                       choices=['cls', 'singlehead_attention', 'multihead_attention', 'weighted_avg', 'temporal_multihead_attention'],
+                       help='Pooling strategy for sequence aggregation (default: multihead_attention)')
     parser.add_argument('--country', type=str, default='US',
                        choices=['US', 'INDIA', 'CRYPTO'],
                        help='Country market (US, INDIA, or CRYPTO for 24/7 cryptocurrency trading)')
