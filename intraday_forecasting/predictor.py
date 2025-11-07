@@ -27,7 +27,7 @@ class IntradayPredictor(TimeSeriesPredictor):
     time-of-day effects, and market microstructure features.
     """
     
-    def __init__(self, target_column: Union[str, list] = 'close', timeframe: str = '5min', model_type: str = 'ft_transformer_cls',
+    def __init__(self, target_column: Union[str, list] = 'close', timeframe: str = '5min', model_type: str = 'ft_transformer',
                  timestamp_col: str = 'timestamp', country: str = 'US',
                  prediction_horizon: int = 1, group_columns: Optional[Union[str, list]] = None,
                  categorical_columns: Optional[Union[str, list]] = None,
@@ -43,7 +43,7 @@ class IntradayPredictor(TimeSeriesPredictor):
                           - str: Single target (e.g., 'close')
                           - List[str]: Multiple targets (e.g., ['close', 'volume'])
             timeframe: Trading timeframe ('1min', '5min', '15min', '1h')
-            model_type: Model architecture ('ft_transformer_cls' for FT-Transformer, 'csn_transformer_cls' for CSNTransformer)
+            model_type: Model architecture ('ft_transformer' for FT-Transformer, 'csn_transformer' for CSN-Transformer)
             timestamp_col: Name of timestamp column
             country: Country code ('US' or 'INDIA')
             prediction_horizon: Number of steps ahead to predict (1=single, >1=multi-horizon)
@@ -63,8 +63,8 @@ class IntradayPredictor(TimeSeriesPredictor):
             raise ValueError(f"Unsupported country: {country}. Use: US or INDIA")
 
         # Validate model type
-        if model_type not in ['ft_transformer_cls', 'csn_transformer_cls']:
-            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft_transformer_cls' or 'csn_transformer_cls'")
+        if model_type not in ['ft_transformer', 'csn_transformer']:
+            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft_transformer' or 'csn_transformer'")
 
         # Get timeframe-specific configuration
         self.timeframe = timeframe
@@ -120,7 +120,7 @@ class IntradayPredictor(TimeSeriesPredictor):
         self.market_config = market_config
 
         if verbose:
-            model_name = "CSNTransformer" if model_type == 'csn_transformer_cls' else "FT-Transformer"
+            model_name = "CSN-Transformer" if model_type == 'csn_transformer' else "FT-Transformer"
             targets_text = ', '.join(target_columns_list) if is_multi_target else target_columns_list[0]
             print(f"Initialized IntradayPredictor for {timeframe} forecasting")
             print(f"  - Target(s): {targets_text}")

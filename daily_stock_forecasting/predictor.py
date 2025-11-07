@@ -22,7 +22,7 @@ class StockPredictor(TimeSeriesPredictor):
         sequence_length: int = 5,  # Number of historical days to use
         prediction_horizon: int = 1,  # Number of steps ahead to predict
         asset_type: str = 'stock',  # 'stock' or 'crypto'
-        model_type: str = 'ft_transformer_cls',  # 'ft_transformer_cls' or 'csn_transformer_cls'
+        model_type: str = 'ft_transformer',  # 'ft_transformer' or 'csn_transformer'
         group_columns: Optional[Union[str, list]] = None,  # Column(s) for group-based scaling
         categorical_columns: Optional[Union[str, list]] = None,  # Column(s) for categorical features
         scaler_type: str = 'standard',  # Scaler type for normalization
@@ -42,7 +42,7 @@ class StockPredictor(TimeSeriesPredictor):
             sequence_length: Number of historical days to use for prediction
             prediction_horizon: Number of steps ahead to predict (1 = next step)
             asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
-            model_type: Model architecture ('ft_transformer_cls' for FT-Transformer, 'csn_transformer_cls' for CSNTransformer)
+            model_type: Model architecture ('ft_transformer' for FT-Transformer, 'csn_transformer' for CSN-Transformer)
             group_columns: Optional column(s) for group-based scaling (e.g., 'symbol' for multi-stock datasets)
             categorical_columns: Optional column(s) to encode and pass as categorical features
             scaler_type: Type of scaler ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
@@ -55,8 +55,8 @@ class StockPredictor(TimeSeriesPredictor):
             **kwargs: Additional model hyperparameters
         """
         # Validate model type
-        if model_type not in ['ft_transformer_cls', 'csn_transformer_cls']:
-            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft_transformer_cls' or 'csn_transformer_cls'")
+        if model_type not in ['ft_transformer', 'csn_transformer']:
+            raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft_transformer' or 'csn_transformer'")
 
         # Store original target info before any transformation
         self.original_target_column = target_column
