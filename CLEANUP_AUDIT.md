@@ -13,19 +13,18 @@
 - Multiple debug scripts
 - Redundant documentation
 
-**Recommendation**: Remove **43 files** (reduce clutter by ~40%)
+**Recommendation**: Remove **42 files** (reduce clutter by ~40%)
 
 ---
 
 ## 🗑️ FILES RECOMMENDED FOR REMOVAL
 
-### Category 1: Temporary Test/Debug Scripts (16 files) - **HIGH PRIORITY**
+### Category 1: Temporary Test/Debug Scripts (15 files) - **HIGH PRIORITY**
 
 These are one-off debugging scripts that served their purpose and can be removed:
 
 ```bash
 # Debug scripts (no longer needed)
-/home/user/stock_forecasting_v1/debug_alignment_simple.py
 /home/user/stock_forecasting_v1/debug_evaluation.py
 /home/user/stock_forecasting_v1/debug_scaling.py
 /home/user/stock_forecasting_v1/analyze_daily_results.py
@@ -52,7 +51,8 @@ These are one-off debugging scripts that served their purpose and can be removed
 
 **Rationale**: These were created for specific debugging sessions. The issues are fixed, and proper test suites now exist in `daily_stock_forecasting/tests/` and `intraday_forecasting/tests/`.
 
-**KEEP ONLY:**
+**KEEP:**
+- `/home/user/stock_forecasting_v1/test_alignment_debug.py` ✅ (comprehensive multi-column grouping alignment test)
 - `/home/user/stock_forecasting_v1/test_pooling_end_to_end.py` ✅ (comprehensive pooling verification)
 - `/home/user/stock_forecasting_v1/test_pipeline_stages.py` ✅ (important pipeline verification)
 - `/home/user/stock_forecasting_v1/test_multi_column_grouping.py` ✅ (important feature test)
@@ -167,8 +167,9 @@ POOLING_VERIFICATION_RESULTS.md         # v2.1 pooling verification ⭐ NEW
 POOLING_IMPLEMENTATION_SUMMARY.md       # v2.1 pooling details ⭐ NEW
 ```
 
-### Root Test Files (4 files)
+### Root Test Files (5 files)
 ```
+test_alignment_debug.py                 # Multi-column grouping alignment test ⭐ KEPT
 test_pooling_end_to_end.py              # Pooling verification ⭐ NEW
 test_pipeline_stages.py                 # Pipeline validation
 test_multi_column_grouping.py           # Multi-column grouping test
@@ -196,9 +197,9 @@ requirements.txt                        # Dependencies
 
 ### After Cleanup:
 - **Root MD files**: 9 (reduce by 23)
-- **Root test files**: 4 (reduce by 12)
+- **Root test files**: 5 (reduce by 11)
 - **Historical docs**: 14 (moved to docs/historical/)
-- **Total reduction**: 43 files removed/moved
+- **Total reduction**: 42 files removed/moved
 
 ### Benefits:
 - ✅ **Cleaner root directory** - Only essential docs
@@ -211,11 +212,10 @@ requirements.txt                        # Dependencies
 
 ## 🔧 Cleanup Commands
 
-### Phase 1: Remove Temporary Test Scripts (19 files)
+### Phase 1: Remove Temporary Test Scripts (15 files)
 
 ```bash
-# Remove debug scripts
-rm debug_alignment_simple.py
+# Remove debug scripts (NOT debug_alignment_simple.py - renamed to test_alignment_debug.py)
 rm debug_evaluation.py
 rm debug_scaling.py
 rm analyze_daily_results.py
@@ -288,19 +288,19 @@ mv ONLYMAX_SCALER_IMPLEMENTATION.md docs/historical/
 ```bash
 # Commit cleanup
 git add -A
-git commit -m "chore: Clean up repository - remove 43 redundant/temporary files
+git commit -m "chore: Clean up repository - remove 42 redundant/temporary files
 
 Removed:
-- 19 temporary test/debug scripts
+- 15 temporary test/debug scripts
 - 19 redundant/superseded documentation files
 - Moved 3 implementation plans to docs/historical/
 
 Kept:
 - 9 essential root documentation files
-- 4 important test files
+- 5 important test files (including renamed test_alignment_debug.py)
 - All package-specific documentation
 
-Result: Cleaner repository structure with 40% fewer files in root directory.
+Result: Cleaner repository structure with 69% fewer files in root directory.
 "
 ```
 
@@ -333,8 +333,9 @@ POOLING_IMPLEMENTATION_SUMMARY.md
 POOLING_VERIFICATION_RESULTS.md
 ```
 
-### Test Files (4 files)
+### Test Files (5 files)
 ```
+test_alignment_debug.py
 test_pooling_end_to_end.py
 test_pipeline_stages.py
 test_multi_column_grouping.py
@@ -346,8 +347,8 @@ test_overall_metrics.py
 requirements.txt
 ```
 
-**Total Root Files**: 14 (down from 48)
-**Reduction**: 71% fewer files in root directory!
+**Total Root Files**: 15 (down from 48)
+**Reduction**: 69% fewer files in root directory!
 
 ---
 
