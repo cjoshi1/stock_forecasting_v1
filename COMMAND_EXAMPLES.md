@@ -1,16 +1,18 @@
 # Command Reference
 
-**Version:** 2.0.0 (Updated: 2025-11-01)
+**Version:** 2.1.0 (Updated: 2025-11-07)
 
-> **📢 Version 2.0.0 Recent Updates:**
+> **📢 Version 2.1.0 Recent Updates:**
+> - **🎯 Configurable Pooling Strategies** - Choose from 5 pooling methods for sequence aggregation
+> - **🚀 Multi-Head Attention Pooling** - New default pooling strategy for better performance
+> - **Parameter Naming**: d_token, n_heads, n_layers (standardized)
+> - **Model Types**: ft_transformer, csn_transformer (removed _cls suffix)
 > - **Evaluation alignment fixes** - Correct actuals extraction from shifted target columns
 > - **Sequence creation optimization** - 20% more training data utilized
-> - **verbose parameter support** - Control verbosity at initialization
 > - Per-horizon target scaling (each horizon gets its own scaler)
 > - Automatic cyclical encoding for temporal features
-> - Fixed 100% MAPE evaluation bug
 >
-> See `IMPLEMENTATION_SUMMARY.md` and `PIPELINE_REFACTORING_SUMMARY.md` for technical details.
+> See `POOLING_VERIFICATION_RESULTS.md` for pooling documentation.
 
 ---
 
@@ -36,6 +38,12 @@ python daily_stock_forecasting/main.py --data_path portfolio.csv --target close 
 
 # Crypto (7-day week)
 python daily_stock_forecasting/main.py --use_sample_data --target close --asset_type crypto --epochs 50
+
+# ⭐ NEW: With custom pooling strategy
+python daily_stock_forecasting/main.py --use_sample_data --target close --pooling_type temporal_multihead_attention --epochs 50
+
+# ⭐ NEW: Experiment with different pooling
+python daily_stock_forecasting/main.py --use_sample_data --target close --pooling_type weighted_avg --epochs 50
 ```
 
 ### Intraday Forecasting
@@ -67,14 +75,15 @@ python daily_stock_forecasting/main.py \
   --asset_type stock \                       # stock or crypto
   --sequence_length 50 \                     # Historical days
   --prediction_horizon 3 \                   # Steps ahead to predict
-  --model_type ft_transformer_cls \          # ft_transformer_cls or csn_transformer_cls
+  --model_type ft_transformer \              # ft_transformer or csn_transformer
+  --pooling_type multihead_attention \       # ⭐ NEW: Pooling strategy (default)
   --group_columns symbol \                   # For multi-asset portfolios
   --categorical_columns symbol \             # Categorical features
   --scaler_type standard \                   # standard, minmax, robust, maxabs, onlymax
   --use_lagged_target_features \             # Include targets in sequences
-  --d_model 128 \                            # Embedding dimension
-  --num_layers 3 \                           # Transformer layers
-  --num_heads 8 \                            # Attention heads
+  --d_token 128 \                            # Embedding dimension
+  --n_layers 3 \                             # Transformer layers
+  --n_heads 8 \                              # Attention heads
   --dropout 0.1 \                            # Dropout rate
   --epochs 100 \                             # Training epochs
   --batch_size 32 \                          # Batch size
@@ -267,7 +276,7 @@ Try these adjustments:
 --sequence_length 30
 
 # Adjust model size
---d_model 256 --num_layers 4
+--d_token 256 --n_layers 4
 ```
 
 ### Out of Memory
@@ -275,9 +284,10 @@ Try these adjustments:
 Reduce resource usage:
 ```bash
 --batch_size 16
---d_model 64
---num_layers 2
+--d_token 64
+--n_layers 2
 --sequence_length 10
+--pooling_type cls  # Fewer parameters than multihead
 ```
 
 ### Poor Multi-Horizon Performance
@@ -292,14 +302,67 @@ Improve multi-horizon predictions:
 
 ---
 
+## 🎯 Pooling Strategies (v2.1.0)
+
+Choose from 5 pooling methods to aggregate transformer sequences:
+
+### Available Pooling Types
+
+```bash
+# Default: Multi-head attention pooling (best overall performance)
+--pooling_type multihead_attention
+
+# Single-head attention (simpler, fewer parameters)
+--pooling_type singlehead_attention
+
+# Temporal multi-head (emphasizes recent timesteps)
+--pooling_type temporal_multihead_attention
+
+# Weighted average (simplest learnable pooling)
+--pooling_type weighted_avg
+
+# CLS token (legacy, for comparison)
+--pooling_type cls
+```
+
+### Example: Testing Different Pooling Strategies
+
+```bash
+# Test all pooling strategies
+for pooling in cls singlehead_attention multihead_attention weighted_avg temporal_multihead_attention; do
+  echo "Testing pooling: $pooling"
+  python daily_stock_forecasting/main.py \
+    --use_sample_data \
+    --target close \
+    --pooling_type $pooling \
+    --epochs 50 \
+    --model_path "outputs/model_${pooling}.pt"
+done
+```
+
+### Pooling Strategy Selection Guide
+
+| Pooling Type | Use When | Parameters | Speed |
+|--------------|----------|------------|-------|
+| `multihead_attention` ⭐ | **Default** - Best overall | ~3×d_token² | Medium |
+| `singlehead_attention` | Smaller models, faster inference | ~3×d_token² | Fast |
+| `temporal_multihead_attention` | Strong trends, recency matters | ~3×d_token² + bias | Medium |
+| `weighted_avg` | Simplest learnable, fast | max_seq_len | Fastest |
+| `cls` | Legacy comparison, baseline | 0 | Fastest |
+
+**Recommendation**: Start with default `multihead_attention`, then experiment with `temporal_multihead_attention` for time series with strong recent patterns.
+
+---
+
 ## Additional Resources
 
+- **Pooling Documentation:** `POOLING_VERIFICATION_RESULTS.md`
 - **Quick Reference:** `PIPELINE_QUICK_REFERENCE.md`
 - **Full Details:** `PIPELINE_REFACTORING_SUMMARY.md`
 - **Changelog:** `CHANGELOG.md`
 - **Architecture:** `tf_predictor/ARCHITECTURE.md`
-- **Testing:** `test_pipeline_stages.py`
+- **Testing:** `test_pooling_end_to_end.py`
 
 ---
 
-**Last Updated:** 2025-11-01 (v2.0.0)
+**Last Updated:** 2025-11-07 (v2.1.0)
