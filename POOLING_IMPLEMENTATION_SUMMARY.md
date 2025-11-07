@@ -1,5 +1,9 @@
 # Pooling Implementation Summary
 
+> **📚 Related Documentation:**
+> - **For verification results and usage examples**: See `POOLING_VERIFICATION_RESULTS.md`
+> - **For end-to-end testing**: Run `python3 test_pooling_end_to_end.py`
+
 ## Overview
 Successfully implemented configurable pooling strategies for both FT-Transformer and CSN-Transformer architectures, replacing the hardcoded CLS token approach with 5 flexible pooling options.
 

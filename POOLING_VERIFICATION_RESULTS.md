@@ -1,5 +1,9 @@
 # ✅ Pooling Implementation - FULLY VERIFIED
 
+> **📚 Related Documentation:**
+> - **For implementation details and phases**: See `POOLING_IMPLEMENTATION_SUMMARY.md`
+> - **For planning and design decisions**: See git history (commits 652af39 through d64415a)
+
 ## Status: ✅ ALL TESTS PASSED - PRODUCTION READY
 
 ### Verification Completed: All 5 Pooling Strategies Working
