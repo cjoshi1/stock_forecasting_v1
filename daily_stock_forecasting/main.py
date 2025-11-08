@@ -56,6 +56,8 @@ def main():
                        help='Type of scaler for normalization (default: standard)')
     parser.add_argument('--use_lagged_target_features', action='store_true',
                        help='Include target columns in input sequences for autoregressive modeling')
+    parser.add_argument('--use_return_forecasting', action='store_true',
+                       help='Enable multi-target return forecasting mode (predicts 1d, 2d, 3d, 4d, 5d returns using technical indicators)')
 
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=5,
@@ -244,7 +246,7 @@ def main():
             cat_cols_for_model = args.categorical_columns
 
     model = StockPredictor(
-        target_column=target_columns,  # Can be str or list
+        target_column=target_columns,  # Can be str or list (ignored if use_return_forecasting=True)
         sequence_length=args.sequence_length,
         prediction_horizon=args.prediction_horizon,
         asset_type=args.asset_type,
@@ -253,21 +255,32 @@ def main():
         categorical_columns=cat_cols_for_model,
         scaler_type=args.scaler_type,
         use_lagged_target_features=args.use_lagged_target_features,
+        use_return_forecasting=args.use_return_forecasting,
+        verbose=True,
         d_token=args.d_token,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
-        dropout=args.dropout
+        dropout=args.dropout,
+        pooling_type=args.pooling_type
     )
 
     print(f"   Model configuration:")
     print(f"   - Asset type: {args.asset_type}")
     print(f"   - Model type: {args.model_type}")
-    if isinstance(target_columns, list):
-        print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
+    print(f"   - Pooling type: {args.pooling_type}")
+
+    if args.use_return_forecasting:
+        print(f"   - Mode: Return Forecasting")
+        print(f"   - Targets: return_1d, return_2d, return_3d, return_4d, return_5d")
+        print(f"   - Input features: close, relative_volume, intraday_momentum, rsi_14, bb_position")
     else:
-        print(f"   - Target: {target_columns}")
+        if isinstance(target_columns, list):
+            print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
+        else:
+            print(f"   - Target: {target_columns}")
+        print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
+
     print(f"   - Sequence length: {args.sequence_length}")
-    print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
     print(f"   - Token dimension: {args.d_token}")
     print(f"   - Layers: {args.n_layers}")
     print(f"   - Attention heads: {args.n_heads}")

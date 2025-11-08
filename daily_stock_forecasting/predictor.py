@@ -8,9 +8,11 @@ including automatic feature engineering and model management.
 import logging
 import pandas as pd
 import numpy as np
-from typing import Optional, Union
+from typing import Optional, Union, List
 from tf_predictor import TimeSeriesPredictor
 from .preprocessing.stock_features import create_stock_features
+from .preprocessing.technical_indicators import calculate_technical_indicators
+from .preprocessing.return_features import calculate_forward_returns, get_return_column_names
 
 
 class StockPredictor(TimeSeriesPredictor):
@@ -27,6 +29,8 @@ class StockPredictor(TimeSeriesPredictor):
         categorical_columns: Optional[Union[str, list]] = None,  # Column(s) for categorical features
         scaler_type: str = 'standard',  # Scaler type for normalization
         use_lagged_target_features: bool = False,  # Include target in input sequences
+        use_return_forecasting: bool = False,  # Enable multi-target return forecasting mode
+        return_horizons: Optional[List[int]] = None,  # Return horizons (default: [1,2,3,4,5])
         verbose: bool = False,  # Whether to print detailed processing information
         d_token: int = 128,  # Token embedding dimension
         n_heads: int = 8,  # Number of attention heads
@@ -39,14 +43,20 @@ class StockPredictor(TimeSeriesPredictor):
             target_column: Which column(s) to predict
                           - str: Single target (e.g., 'close')
                           - List[str]: Multiple targets (e.g., ['close', 'volume'])
+                          - Ignored if use_return_forecasting=True
             sequence_length: Number of historical days to use for prediction
             prediction_horizon: Number of steps ahead to predict (1 = next step)
+                               - Ignored if use_return_forecasting=True
             asset_type: Type of asset - 'stock' (5-day week) or 'crypto' (7-day week)
             model_type: Model architecture ('ft_transformer' for FT-Transformer, 'csn_transformer' for CSN-Transformer)
             group_columns: Optional column(s) for group-based scaling (e.g., 'symbol' for multi-stock datasets)
             categorical_columns: Optional column(s) to encode and pass as categorical features
             scaler_type: Type of scaler ('standard', 'minmax', 'robust', 'maxabs', 'onlymax')
             use_lagged_target_features: Whether to include target columns in input sequences
+            use_return_forecasting: Enable multi-target return forecasting mode
+                                   - Automatically calculates technical indicators as features
+                                   - Predicts forward returns at multiple horizons
+            return_horizons: List of return horizons in days (default: [1,2,3,4,5])
             verbose: Whether to print detailed processing information
             d_token: Token embedding dimension
             n_heads: Number of attention heads
@@ -57,6 +67,20 @@ class StockPredictor(TimeSeriesPredictor):
         # Validate model type
         if model_type not in ['ft_transformer', 'csn_transformer']:
             raise ValueError(f"Unsupported model_type: {model_type}. Use: 'ft_transformer' or 'csn_transformer'")
+
+        # Handle return forecasting mode
+        self.use_return_forecasting = use_return_forecasting
+        self.return_horizons = return_horizons if return_horizons is not None else [1, 2, 3, 4, 5]
+
+        if use_return_forecasting:
+            # Override target and prediction_horizon for return forecasting
+            target_column = get_return_column_names(self.return_horizons)
+            prediction_horizon = 1  # Returns are pre-calculated, so horizon=1
+
+            if verbose:
+                print(f"\n🎯 Return Forecasting Mode Enabled")
+                print(f"   Targets: {target_column}")
+                print(f"   Input Features: close, relative_volume, intraday_momentum, rsi_14, bb_position")
 
         # Store original target info before any transformation
         self.original_target_column = target_column
@@ -100,14 +124,68 @@ class StockPredictor(TimeSeriesPredictor):
         Returns:
             processed_df: DataFrame with stock-specific and time-series features
         """
-        # First add stock-specific preprocessing (NaN filling)
-        df_with_stock_features = create_stock_features(
-            df=df,
-            verbose=self.verbose
-        )
+        if self.use_return_forecasting:
+            # Return forecasting mode: calculate technical indicators and returns
+            if self.verbose:
+                print(f"\n🔧 Processing features for return forecasting...")
 
-        # Then call parent's _create_base_features to add time-series features
-        return super()._create_base_features(df_with_stock_features)
+            # Step 1: Calculate technical indicators
+            df_with_indicators = calculate_technical_indicators(
+                df=df,
+                verbose=self.verbose
+            )
+
+            # Step 2: Calculate forward returns (targets)
+            df_with_returns = calculate_forward_returns(
+                df=df_with_indicators,
+                price_column='close',
+                horizons=self.return_horizons,
+                return_type='percentage',
+                verbose=self.verbose
+            )
+
+            # Step 3: Select only the required input features
+            # Input features: close, relative_volume, intraday_momentum, rsi_14, bb_position
+            feature_columns = ['close', 'relative_volume', 'intraday_momentum', 'rsi_14', 'bb_position']
+            return_columns = get_return_column_names(self.return_horizons)
+
+            # Keep date column if it exists
+            columns_to_keep = []
+            if 'date' in df_with_returns.columns:
+                columns_to_keep.append('date')
+
+            columns_to_keep.extend(feature_columns)
+            columns_to_keep.extend(return_columns)
+
+            # Filter to only necessary columns
+            df_filtered = df_with_returns[columns_to_keep].copy()
+
+            if self.verbose:
+                print(f"\n   Selected Features: {feature_columns}")
+                print(f"   Target Columns: {return_columns}")
+                print(f"   Total rows: {len(df_filtered)}")
+
+                # Drop rows with NaN in features or targets (warm-up period)
+                rows_before = len(df_filtered)
+                df_filtered = df_filtered.dropna()
+                rows_after = len(df_filtered)
+
+                if rows_before != rows_after:
+                    print(f"   ⚠️  Dropped {rows_before - rows_after} rows with NaN (indicator warm-up period)")
+                    print(f"   ✅ Valid data: {rows_after} rows")
+
+            # Call parent's _create_base_features to add time-series encoding
+            return super()._create_base_features(df_filtered)
+
+        else:
+            # Standard mode: use original stock features
+            df_with_stock_features = create_stock_features(
+                df=df,
+                verbose=self.verbose
+            )
+
+            # Then call parent's _create_base_features to add time-series features
+            return super()._create_base_features(df_with_stock_features)
 
     def predict_next_bars(self, df: pd.DataFrame, n_predictions: int = 1) -> pd.DataFrame:
         """
