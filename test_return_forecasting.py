@@ -98,17 +98,32 @@ def test_return_forecasting():
     # 6. Evaluate predictions
     print("\n6️⃣ Evaluating predictions...")
 
-    train_metrics, test_metrics = predictor.evaluate(
-        train_df=train_df,
-        test_df=test_df
+    # For return forecasting, we need to add return columns to the dataframe
+    from daily_stock_forecasting.preprocessing.technical_indicators import calculate_technical_indicators
+    from daily_stock_forecasting.preprocessing.return_features import calculate_forward_returns
+
+    test_df_with_indicators = calculate_technical_indicators(test_df, group_column=None, verbose=False)
+    test_df_with_returns = calculate_forward_returns(
+        test_df_with_indicators,
+        price_column='close',
+        horizons=[1, 2, 3, 4, 5],
+        return_type='percentage',
+        group_column=None,
+        verbose=False
     )
 
+    test_metrics = predictor.evaluate(test_df_with_returns)
+
     print(f"\n   📊 Test Metrics:")
-    for target, metrics in test_metrics.items():
-        print(f"\n   {target}:")
-        for metric_name, value in metrics.items():
-            if isinstance(value, (int, float)):
-                print(f"     - {metric_name}: {value:.4f}")
+    if isinstance(test_metrics, dict):
+        for key, value in test_metrics.items():
+            if isinstance(value, dict):
+                print(f"\n   {key}:")
+                for metric_name, metric_value in value.items():
+                    if isinstance(metric_value, (int, float)):
+                        print(f"     - {metric_name}: {metric_value:.4f}")
+            elif isinstance(value, (int, float)):
+                print(f"   - {key}: {value:.4f}")
 
     # 7. Verify predictions
     print("\n7️⃣ Verifying prediction shapes and values...")

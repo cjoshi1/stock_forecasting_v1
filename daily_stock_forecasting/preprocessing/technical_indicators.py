@@ -160,6 +160,7 @@ def calculate_technical_indicators(
     bb_period: int = 20,
     bb_std: float = 2.0,
     vol_period: int = 20,
+    group_column: Optional[str] = None,
     verbose: bool = False
 ) -> pd.DataFrame:
     """
@@ -177,13 +178,13 @@ def calculate_technical_indicators(
         bb_period: Period for Bollinger Bands (default: 20)
         bb_std: Standard deviations for Bollinger Bands (default: 2.0)
         vol_period: Period for volume MA (default: 20)
+        group_column: Optional column to group by (e.g., 'symbol' for multi-stock data)
+                     If provided, indicators are calculated separately for each group
         verbose: Whether to print calculation info
 
     Returns:
         DataFrame with additional technical indicator columns
     """
-    df_out = df.copy()
-
     # Verify required columns exist
     required_cols = ['open', 'high', 'low', 'close', 'volume']
     missing_cols = [col for col in required_cols if col not in df.columns]
@@ -195,12 +196,37 @@ def calculate_technical_indicators(
         print(f"   RSI Period: {rsi_period}")
         print(f"   Bollinger Bands: {bb_period} days, {bb_std}σ")
         print(f"   Relative Volume: {vol_period} days MA")
+        if group_column:
+            print(f"   Grouping by: {group_column}")
 
-    # Calculate each indicator
-    df_out['relative_volume'] = calculate_relative_volume(df['volume'], period=vol_period)
-    df_out['intraday_momentum'] = calculate_intraday_momentum(df['open'], df['close'])
-    df_out['rsi_14'] = calculate_rsi(df['close'], period=rsi_period)
-    df_out['bb_position'] = calculate_bb_position(df['close'], period=bb_period, num_std=bb_std)
+    def _calculate_indicators_for_group(group_df):
+        """Helper function to calculate indicators for a single group."""
+        group_out = group_df.copy()
+
+        # Calculate each indicator
+        group_out['relative_volume'] = calculate_relative_volume(group_df['volume'], period=vol_period)
+        group_out['intraday_momentum'] = calculate_intraday_momentum(group_df['open'], group_df['close'])
+        group_out['rsi_14'] = calculate_rsi(group_df['close'], period=rsi_period)
+        group_out['bb_position'] = calculate_bb_position(group_df['close'], period=bb_period, num_std=bb_std)
+
+        return group_out
+
+    # Calculate indicators (grouped or ungrouped)
+    if group_column:
+        if group_column not in df.columns:
+            raise ValueError(f"Group column '{group_column}' not found in dataframe")
+
+        # Calculate indicators separately for each group
+        # Note: We use include_groups=True (pandas 2.2+) to keep the grouping column
+        # For older pandas, this parameter is ignored and grouping columns are included by default
+        try:
+            df_out = df.groupby(group_column, group_keys=False).apply(_calculate_indicators_for_group, include_groups=True)
+        except TypeError:
+            # Fallback for older pandas versions that don't support include_groups
+            df_out = df.groupby(group_column, group_keys=False).apply(_calculate_indicators_for_group)
+    else:
+        # Calculate indicators for entire dataframe
+        df_out = _calculate_indicators_for_group(df)
 
     if verbose:
         # Count how many valid (non-NaN) values we have for each indicator

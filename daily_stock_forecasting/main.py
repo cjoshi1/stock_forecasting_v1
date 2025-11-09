@@ -58,6 +58,8 @@ def main():
                        help='Include target columns in input sequences for autoregressive modeling')
     parser.add_argument('--use_return_forecasting', action='store_true',
                        help='Enable multi-target return forecasting mode (predicts 1d, 2d, 3d, 4d, 5d returns using technical indicators)')
+    parser.add_argument('--return_horizons', type=str, default='1,2,3,4,5',
+                       help='Return horizons in days for return forecasting mode (comma-separated, e.g., "1,2,3,5,10")')
 
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=5,
@@ -245,6 +247,11 @@ def main():
         else:
             cat_cols_for_model = args.categorical_columns
 
+    # Parse return_horizons
+    return_horizons_list = None
+    if args.use_return_forecasting and args.return_horizons:
+        return_horizons_list = [int(h.strip()) for h in args.return_horizons.split(',')]
+
     model = StockPredictor(
         target_column=target_columns,  # Can be str or list (ignored if use_return_forecasting=True)
         sequence_length=args.sequence_length,
@@ -256,6 +263,7 @@ def main():
         scaler_type=args.scaler_type,
         use_lagged_target_features=args.use_lagged_target_features,
         use_return_forecasting=args.use_return_forecasting,
+        return_horizons=return_horizons_list,
         verbose=True,
         d_token=args.d_token,
         n_layers=args.n_layers,

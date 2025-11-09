@@ -129,9 +129,15 @@ class StockPredictor(TimeSeriesPredictor):
             if self.verbose:
                 print(f"\n🔧 Processing features for return forecasting...")
 
+            # Determine group column to use (if any)
+            group_col = None
+            if self.group_columns:
+                group_col = self.group_columns[0] if isinstance(self.group_columns, list) else self.group_columns
+
             # Step 1: Calculate technical indicators
             df_with_indicators = calculate_technical_indicators(
                 df=df,
+                group_column=group_col,
                 verbose=self.verbose
             )
 
@@ -141,6 +147,7 @@ class StockPredictor(TimeSeriesPredictor):
                 price_column='close',
                 horizons=self.return_horizons,
                 return_type='percentage',
+                group_column=group_col,
                 verbose=self.verbose
             )
 
@@ -149,10 +156,12 @@ class StockPredictor(TimeSeriesPredictor):
             feature_columns = ['close', 'relative_volume', 'intraday_momentum', 'rsi_14', 'bb_position']
             return_columns = get_return_column_names(self.return_horizons)
 
-            # Keep date column if it exists
+            # Keep date and group columns if they exist
             columns_to_keep = []
             if 'date' in df_with_returns.columns:
                 columns_to_keep.append('date')
+            if group_col and group_col in df_with_returns.columns:
+                columns_to_keep.append(group_col)
 
             columns_to_keep.extend(feature_columns)
             columns_to_keep.extend(return_columns)
