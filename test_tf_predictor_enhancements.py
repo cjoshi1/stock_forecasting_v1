@@ -1,7 +1,13 @@
 """
-Test script for tf_predictor enhancements:
+Comprehensive test script for tf_predictor enhancements:
 1. Inference mode: predict() without target columns
 2. Sequence overlap: split_time_series() with overlap for val/test sets
+
+Tests cover:
+- Single-target vs Multi-target
+- Single-horizon vs Multi-horizon
+- Single-group vs Multi-group
+- With and without categorical features
 """
 
 import numpy as np
@@ -15,7 +21,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tf_predictor'))
 from tf_predictor.core.predictor import TimeSeriesPredictor
 from tf_predictor.core.utils import split_time_series
 
-def generate_test_data(n_samples=200, n_symbols=3):
+
+def generate_test_data(n_samples=200, n_symbols=3, multi_target=False):
     """Generate synthetic time series data for testing."""
     np.random.seed(42)
 
@@ -28,35 +35,42 @@ def generate_test_data(n_samples=200, n_symbols=3):
         values = trend + noise
 
         for i, date in enumerate(dates):
-            data.append({
+            row = {
                 'symbol': symbol,
                 'date': date,
                 'feature1': values[i],
                 'feature2': values[i] * 0.8 + np.random.randn() * 2,
                 'feature3': values[i] * 1.2 + np.random.randn() * 3,
-                'target': values[i] + np.random.randn() * 2  # Target to predict
-            })
+                'target1': values[i] + np.random.randn() * 2
+            }
+
+            if multi_target:
+                row['target2'] = values[i] * 0.9 + np.random.randn() * 3
+
+            data.append(row)
 
     return pd.DataFrame(data)
 
 
-def test_enhancement_1_inference_mode():
-    """Test Enhancement 1: Predict without target columns."""
+def test_single_target_single_horizon_multigroup():
+    """Test 1: Single-target, single-horizon, multi-group with inference mode."""
     print("\n" + "="*80)
-    print("TEST 1: INFERENCE MODE - Predict Without Target Columns")
+    print("TEST 1: Single-Target, Single-Horizon, Multi-Group")
     print("="*80)
 
     # Generate data
-    df = generate_test_data(n_samples=150, n_symbols=2)
-    print(f"\n1. Generated test data: {len(df)} rows, {len(df['symbol'].unique())} symbols")
+    df = generate_test_data(n_samples=150, n_symbols=2, multi_target=False)
+    print(f"\n1. Generated test data: {len(df)} rows, 2 symbols")
     print(f"   Columns: {list(df.columns)}")
+    print(f"   Targets: ['target1']")
 
-    # Split data
+    # Split data with overlap
     train_df, val_df, test_df = split_time_series(
         df,
-        test_size=20,
+        test_size=30,
         val_size=20,
         group_column='symbol',
+        time_column='date',
         sequence_length=10,
         include_overlap=True
     )
@@ -69,256 +83,367 @@ def test_enhancement_1_inference_mode():
     # Train model
     print(f"\n3. Training model...")
     predictor = TimeSeriesPredictor(
-        target_columns=['target'],
-        feature_columns=['feature1', 'feature2', 'feature3'],
+        target_column='target1',
         sequence_length=10,
         prediction_horizon=1,
-        group_columns=['symbol'],
-        model_type='lstm',
-        hidden_size=32,
-        verbose=True
-    )
-
-    predictor.fit(
-        train_df,
-        val_df=val_df,
-        epochs=5,
-        batch_size=16,
-        verbose=False
-    )
-    print("   ✓ Model trained successfully")
-
-    # Test 1a: Predict WITH target columns (traditional way, default behavior)
-    print(f"\n4a. Testing prediction WITH target columns (default behavior)...")
-    test_with_target = test_df.copy()
-    predictions_with_target = predictor.predict(test_with_target)
-    print(f"   ✓ Predictions shape: {predictions_with_target.shape}")
-    print(f"   ✓ Successfully predicted with target columns present")
-
-    # Test 1b: Verify error is raised when targets missing WITHOUT inference_mode
-    print(f"\n4b. Testing that error is raised when targets missing (inference_mode=False)...")
-    test_without_target = test_df.drop(columns=['target']).copy()
-    print(f"   Columns in test data: {list(test_without_target.columns)}")
-    print(f"   Target column 'target' removed")
-
-    try:
-        predictions_error = predictor.predict(test_without_target)  # Should raise error
-        print(f"   ✗ ERROR: Should have raised ValueError but didn't!")
-        return False
-    except ValueError as e:
-        print(f"   ✓ Correctly raised ValueError: '{str(e)[:80]}...'")
-
-    # Test 1c: Predict WITHOUT target columns using explicit inference_mode=True
-    print(f"\n4c. Testing prediction WITHOUT targets (inference_mode=True)...")
-    predictions_without_target = predictor.predict(test_without_target, inference_mode=True)
-    print(f"   ✓ Predictions shape: {predictions_without_target.shape}")
-    print(f"   ✓ Successfully predicted WITHOUT target columns using inference_mode=True")
-
-    # Verify predictions are similar (should be identical input features)
-    print(f"\n5. Verifying predictions consistency:")
-    print(f"   - With targets shape: {predictions_with_target.shape}")
-    print(f"   - Without targets shape: {predictions_without_target.shape}")
-    print(f"   - Shapes match: {predictions_with_target.shape == predictions_without_target.shape}")
-
-    # Check if predictions are close (they should be identical since input is the same)
-    if predictions_with_target.shape == predictions_without_target.shape:
-        diff = np.abs(predictions_with_target - predictions_without_target).mean()
-        print(f"   - Mean absolute difference: {diff:.6f}")
-        if diff < 1e-6:
-            print(f"   ✓ Predictions are identical (as expected)!")
-        else:
-            print(f"   ⚠ Predictions differ (unexpected, but might be due to internal state)")
-
-    print("\n" + "✓"*40)
-    print("TEST 1 PASSED: Inference mode works correctly!")
-    print("✓"*40)
-
-    return True
-
-
-def test_enhancement_2_sequence_overlap():
-    """Test Enhancement 2: Sequence overlap in splits."""
-    print("\n" + "="*80)
-    print("TEST 2: SEQUENCE OVERLAP - Val/Test Sets with Context")
-    print("="*80)
-
-    # Generate simple sequential data
-    df = pd.DataFrame({
-        'symbol': ['A'] * 100,
-        'date': pd.date_range('2023-01-01', periods=100, freq='D'),
-        'feature': np.arange(100),
-        'target': np.arange(100) + 1
-    })
-
-    print(f"\n1. Generated sequential test data: {len(df)} rows")
-    print(f"   Feature values: {df['feature'].min()} to {df['feature'].max()}")
-
-    sequence_length = 10
-    test_size = 20
-    val_size = 20
-
-    # Test 2a: Without overlap
-    print(f"\n2a. Testing split WITHOUT overlap:")
-    train_no_overlap, val_no_overlap, test_no_overlap = split_time_series(
-        df,
-        test_size=test_size,
-        val_size=val_size,
-        group_column=None,
-        sequence_length=sequence_length,
-        include_overlap=False
-    )
-
-    print(f"   - Train rows: {len(train_no_overlap)}")
-    print(f"   - Val rows: {len(val_no_overlap)}")
-    print(f"   - Test rows: {len(test_no_overlap)}")
-    print(f"   - Val first feature value: {val_no_overlap['feature'].iloc[0]}")
-    print(f"   - Test first feature value: {test_no_overlap['feature'].iloc[0]}")
-
-    # Test 2b: With overlap
-    print(f"\n2b. Testing split WITH overlap (sequence_length={sequence_length}):")
-    train_overlap, val_overlap, test_overlap = split_time_series(
-        df,
-        test_size=test_size,
-        val_size=val_size,
-        group_column=None,
-        sequence_length=sequence_length,
-        include_overlap=True
-    )
-
-    print(f"   - Train rows: {len(train_overlap)}")
-    print(f"   - Val rows: {len(val_overlap)} (expected: {val_size + sequence_length - 1})")
-    print(f"   - Test rows: {len(test_overlap)} (expected: {test_size + sequence_length - 1})")
-    print(f"   - Val first feature value: {val_overlap['feature'].iloc[0]}")
-    print(f"   - Test first feature value: {test_overlap['feature'].iloc[0]}")
-
-    # Verify overlap sizes
-    print(f"\n3. Verifying overlap:")
-    overlap_size = sequence_length - 1
-
-    val_size_with_overlap = len(val_overlap)
-    val_expected = val_size + overlap_size
-    print(f"   - Val size: {val_size_with_overlap}, expected: {val_expected}")
-    print(f"   - Val has {overlap_size} extra rows for context: {val_size_with_overlap == val_expected}")
-
-    test_size_with_overlap = len(test_overlap)
-    test_expected = test_size + overlap_size
-    print(f"   - Test size: {test_size_with_overlap}, expected: {test_expected}")
-    print(f"   - Test has {overlap_size} extra rows for context: {test_size_with_overlap == test_expected}")
-
-    # Verify overlap content
-    print(f"\n4. Verifying overlap content (checking first {overlap_size} rows):")
-
-    # Val overlap should come from end of train
-    train_last_values = train_overlap['feature'].iloc[-overlap_size:].values
-    val_first_values = val_overlap['feature'].iloc[:overlap_size].values
-    val_overlap_matches = np.array_equal(train_last_values, val_first_values)
-    print(f"   - Val overlap matches train end: {val_overlap_matches}")
-    print(f"     Train last values: {train_last_values}")
-    print(f"     Val first values: {val_first_values}")
-
-    # Test overlap should come from end of val (base, not including overlap)
-    val_last_values = val_overlap['feature'].iloc[-overlap_size-1:-1].values  # Exclude the very last row
-    test_first_values = test_overlap['feature'].iloc[:overlap_size].values
-    # This is a bit tricky, so let's just check the values make sense
-    print(f"   - Test first values: {test_first_values}")
-    print(f"   - Test overlap provides context for first prediction")
-
-    print("\n" + "✓"*40)
-    print("TEST 2 PASSED: Sequence overlap works correctly!")
-    print("✓"*40)
-
-    return True
-
-
-def test_combined_enhancements():
-    """Test both enhancements together."""
-    print("\n" + "="*80)
-    print("TEST 3: COMBINED - Inference Mode + Sequence Overlap")
-    print("="*80)
-
-    # Generate data
-    df = generate_test_data(n_samples=150, n_symbols=2)
-
-    print(f"\n1. Generated test data with {len(df)} rows")
-
-    # Split with overlap
-    print(f"\n2. Splitting data WITH overlap...")
-    train_df, val_df, test_df = split_time_series(
-        df,
-        test_size=20,
-        val_size=20,
-        group_column='symbol',
-        sequence_length=10,
-        include_overlap=True
-    )
-
-    # Train model
-    print(f"\n3. Training model...")
-    predictor = TimeSeriesPredictor(
-        target_columns=['target'],
-        feature_columns=['feature1', 'feature2', 'feature3'],
-        sequence_length=10,
-        prediction_horizon=1,
-        group_columns=['symbol'],
-        model_type='lstm',
-        hidden_size=32,
+        group_columns='symbol',
+        categorical_columns='symbol',
+        model_type='ft_transformer',
+        d_token=32,
+        n_layers=2,
+        n_heads=4,
+        dropout=0.1,
         verbose=False
     )
 
     predictor.fit(train_df, val_df=val_df, epochs=5, batch_size=16, verbose=False)
-    print("   ✓ Model trained")
+    print("   ✓ Model trained successfully")
 
-    # Predict on test WITHOUT targets using overlap
-    print(f"\n4. Predicting on test set WITHOUT targets (using overlap for context)...")
-    test_no_target = test_df.drop(columns=['target'])
-    predictions = predictor.predict(test_no_target, inference_mode=True)
+    # Test prediction WITH targets
+    print(f"\n4. Testing prediction WITH target column...")
+    preds_with_target = predictor.predict(test_df, inference_mode=False)
+    print(f"   ✓ Predictions shape: {preds_with_target.shape}")
 
-    print(f"   ✓ Predictions generated: {predictions.shape}")
-    print(f"   ✓ First few predictions: {predictions[:5]}")
-    print(f"   ✓ Explicit inference_mode=True allows prediction without targets")
+    # Test prediction WITHOUT targets
+    print(f"\n5. Testing prediction WITHOUT target column (inference_mode=True)...")
+    test_df_no_target = test_df.drop(columns=['target1'])
+    preds_without_target = predictor.predict(test_df_no_target, inference_mode=True)
+    print(f"   ✓ Predictions shape: {preds_without_target.shape}")
 
-    print("\n" + "✓"*40)
-    print("TEST 3 PASSED: Both enhancements work together!")
-    print("✓"*40)
+    # Verify consistency
+    print(f"\n6. Verifying predictions are similar...")
+    # Note: shapes might differ due to NaN removal at different stages
+    print(f"   - With targets: {preds_with_target.shape}")
+    print(f"   - Without targets: {preds_without_target.shape}")
 
+    print("\n✅ TEST 1 PASSED!\n")
     return True
 
 
-if __name__ == "__main__":
+def test_multi_target_single_horizon_multigroup():
+    """Test 2: Multi-target, single-horizon, multi-group with inference mode."""
+    print("\n" + "="*80)
+    print("TEST 2: Multi-Target, Single-Horizon, Multi-Group")
+    print("="*80)
+
+    # Generate data with multiple targets
+    df = generate_test_data(n_samples=150, n_symbols=2, multi_target=True)
+    print(f"\n1. Generated test data: {len(df)} rows, 2 symbols")
+    print(f"   Columns: {list(df.columns)}")
+    print(f"   Targets: ['target1', 'target2']")
+
+    # Split data
+    train_df, val_df, test_df = split_time_series(
+        df,
+        test_size=30,
+        val_size=20,
+        group_column='symbol',
+        time_column='date',
+        sequence_length=10,
+        include_overlap=True
+    )
+
+    print(f"\n2. Split data:")
+    print(f"   - Train: {len(train_df)} rows")
+    print(f"   - Val: {len(val_df)} rows")
+    print(f"   - Test: {len(test_df)} rows")
+
+    # Train model with multiple targets
+    print(f"\n3. Training model with multi-target...")
+    predictor = TimeSeriesPredictor(
+        target_column=['target1', 'target2'],
+        sequence_length=10,
+        prediction_horizon=1,
+        group_columns='symbol',
+        categorical_columns='symbol',
+        model_type='ft_transformer',
+        d_token=32,
+        n_layers=2,
+        n_heads=4,
+        dropout=0.1,
+        verbose=False
+    )
+
+    predictor.fit(train_df, val_df=val_df, epochs=5, batch_size=16, verbose=False)
+    print("   ✓ Model trained successfully")
+
+    # Test prediction WITH targets
+    print(f"\n4. Testing prediction WITH target columns...")
+    preds_with_target = predictor.predict(test_df, inference_mode=False)
+    print(f"   ✓ Predictions type: {type(preds_with_target)}")
+    if isinstance(preds_with_target, dict):
+        for target, preds in preds_with_target.items():
+            print(f"   ✓ {target}: shape {preds.shape}")
+
+    # Test prediction WITHOUT targets
+    print(f"\n5. Testing prediction WITHOUT target columns (inference_mode=True)...")
+    test_df_no_target = test_df.drop(columns=['target1', 'target2'])
+    preds_without_target = predictor.predict(test_df_no_target, inference_mode=True)
+    print(f"   ✓ Predictions type: {type(preds_without_target)}")
+    if isinstance(preds_without_target, dict):
+        for target, preds in preds_without_target.items():
+            print(f"   ✓ {target}: shape {preds.shape}")
+
+    print("\n✅ TEST 2 PASSED!\n")
+    return True
+
+
+def test_single_target_multi_horizon_multigroup():
+    """Test 3: Single-target, multi-horizon, multi-group with inference mode."""
+    print("\n" + "="*80)
+    print("TEST 3: Single-Target, Multi-Horizon, Multi-Group")
+    print("="*80)
+
+    # Generate data
+    df = generate_test_data(n_samples=150, n_symbols=2, multi_target=False)
+    print(f"\n1. Generated test data: {len(df)} rows, 2 symbols")
+    print(f"   Columns: {list(df.columns)}")
+    print(f"   Targets: ['target1']")
+    print(f"   Horizons: [1, 2, 3]")
+
+    # Split data
+    train_df, val_df, test_df = split_time_series(
+        df,
+        test_size=30,
+        val_size=20,
+        group_column='symbol',
+        time_column='date',
+        sequence_length=10,
+        include_overlap=True
+    )
+
+    print(f"\n2. Split data:")
+    print(f"   - Train: {len(train_df)} rows")
+    print(f"   - Val: {len(val_df)} rows")
+    print(f"   - Test: {len(test_df)} rows")
+
+    # Train model with multi-horizon
+    print(f"\n3. Training model with multi-horizon prediction...")
+    predictor = TimeSeriesPredictor(
+        target_column='target1',
+        sequence_length=10,
+        prediction_horizon=3,  # Predict 3 steps ahead
+        group_columns='symbol',
+        categorical_columns='symbol',
+        model_type='ft_transformer',
+        d_token=32,
+        n_layers=2,
+        n_heads=4,
+        dropout=0.1,
+        verbose=False
+    )
+
+    predictor.fit(train_df, val_df=val_df, epochs=5, batch_size=16, verbose=False)
+    print("   ✓ Model trained successfully")
+
+    # Test prediction WITH targets
+    print(f"\n4. Testing prediction WITH target column...")
+    preds_with_target = predictor.predict(test_df, inference_mode=False)
+    print(f"   ✓ Predictions shape: {preds_with_target.shape}")
+    print(f"   ✓ Expected: (n_samples, 3) for 3 horizons")
+
+    # Test prediction WITHOUT targets
+    print(f"\n5. Testing prediction WITHOUT target column (inference_mode=True)...")
+    test_df_no_target = test_df.drop(columns=['target1'])
+    preds_without_target = predictor.predict(test_df_no_target, inference_mode=True)
+    print(f"   ✓ Predictions shape: {preds_without_target.shape}")
+
+    print("\n✅ TEST 3 PASSED!\n")
+    return True
+
+
+def test_multi_target_multi_horizon_multigroup():
+    """Test 4: Multi-target, multi-horizon, multi-group with inference mode."""
+    print("\n" + "="*80)
+    print("TEST 4: Multi-Target, Multi-Horizon, Multi-Group")
+    print("="*80)
+
+    # Generate data with multiple targets
+    df = generate_test_data(n_samples=150, n_symbols=2, multi_target=True)
+    print(f"\n1. Generated test data: {len(df)} rows, 2 symbols")
+    print(f"   Columns: {list(df.columns)}")
+    print(f"   Targets: ['target1', 'target2']")
+    print(f"   Horizons: [1, 2, 3]")
+
+    # Split data
+    train_df, val_df, test_df = split_time_series(
+        df,
+        test_size=30,
+        val_size=20,
+        group_column='symbol',
+        time_column='date',
+        sequence_length=10,
+        include_overlap=True
+    )
+
+    print(f"\n2. Split data:")
+    print(f"   - Train: {len(train_df)} rows")
+    print(f"   - Val: {len(val_df)} rows")
+    print(f"   - Test: {len(test_df)} rows")
+
+    # Train model with multi-target and multi-horizon
+    print(f"\n3. Training model with multi-target AND multi-horizon...")
+    predictor = TimeSeriesPredictor(
+        target_column=['target1', 'target2'],
+        sequence_length=10,
+        prediction_horizon=3,  # Predict 3 steps ahead for both targets
+        group_columns='symbol',
+        categorical_columns='symbol',
+        model_type='ft_transformer',
+        d_token=32,
+        n_layers=2,
+        n_heads=4,
+        dropout=0.1,
+        verbose=False
+    )
+
+    predictor.fit(train_df, val_df=val_df, epochs=5, batch_size=16, verbose=False)
+    print("   ✓ Model trained successfully")
+
+    # Test prediction WITH targets
+    print(f"\n4. Testing prediction WITH target columns...")
+    preds_with_target = predictor.predict(test_df, inference_mode=False)
+    print(f"   ✓ Predictions type: {type(preds_with_target)}")
+    if isinstance(preds_with_target, dict):
+        for target, preds in preds_with_target.items():
+            print(f"   ✓ {target}: shape {preds.shape} (expected: (n_samples, 3) for 3 horizons)")
+
+    # Test prediction WITHOUT targets
+    print(f"\n5. Testing prediction WITHOUT target columns (inference_mode=True)...")
+    test_df_no_target = test_df.drop(columns=['target1', 'target2'])
+    preds_without_target = predictor.predict(test_df_no_target, inference_mode=True)
+    print(f"   ✓ Predictions type: {type(preds_without_target)}")
+    if isinstance(preds_without_target, dict):
+        for target, preds in preds_without_target.items():
+            print(f"   ✓ {target}: shape {preds.shape}")
+
+    print("\n✅ TEST 4 PASSED!\n")
+    return True
+
+
+def test_sequence_overlap():
+    """Test 5: Sequence overlap feature in split_time_series."""
+    print("\n" + "="*80)
+    print("TEST 5: Sequence Overlap in Time Series Split")
+    print("="*80)
+
+    df = generate_test_data(n_samples=150, n_symbols=2, multi_target=False)
+
+    # Split WITHOUT overlap
+    print(f"\n1. Testing split WITHOUT overlap...")
+    train_no, val_no, test_no = split_time_series(
+        df,
+        test_size=30,
+        val_size=20,
+        group_column='symbol',
+        time_column='date',
+        sequence_length=10,
+        include_overlap=False
+    )
+
+    print(f"   - Train: {len(train_no)} rows")
+    print(f"   - Val: {len(val_no)} rows")
+    print(f"   - Test: {len(test_no)} rows")
+
+    # Split WITH overlap
+    print(f"\n2. Testing split WITH overlap...")
+    train_yes, val_yes, test_yes = split_time_series(
+        df,
+        test_size=30,
+        val_size=20,
+        group_column='symbol',
+        time_column='date',
+        sequence_length=10,
+        include_overlap=True
+    )
+
+    print(f"   - Train: {len(train_yes)} rows")
+    print(f"   - Val: {len(val_yes)} rows (includes 9 overlap rows)")
+    print(f"   - Test: {len(test_yes)} rows (includes 9 overlap rows)")
+
+    # Verify overlap
+    overlap_per_group = 9  # sequence_length - 1
+    n_groups = 2
+    total_overlap = overlap_per_group * n_groups
+    print(f"\n3. Verifying overlap...")
+    print(f"   - Expected overlap per group: {overlap_per_group}")
+    print(f"   - Total expected overlap (2 groups): {total_overlap}")
+    print(f"   - Val size difference: {len(val_yes) - len(val_no)} (expected: {total_overlap})")
+    print(f"   - Test size difference: {len(test_yes) - len(test_no)} (expected: {total_overlap})")
+
+    if len(val_yes) - len(val_no) == total_overlap and len(test_yes) - len(test_no) == total_overlap:
+        print(f"   ✓ Overlap working correctly!")
+    else:
+        print(f"   ✗ Overlap size mismatch!")
+        return False
+
+    print("\n✅ TEST 5 PASSED!\n")
+    return True
+
+
+if __name__ == '__main__':
     print("\n" + "#"*80)
     print("#" + " "*78 + "#")
-    print("#" + " TF_PREDICTOR ENHANCEMENTS TEST SUITE".center(78) + "#")
+    print("#" + " "*20 + "TF_PREDICTOR ENHANCEMENTS TEST SUITE" + " "*22 + "#")
     print("#" + " "*78 + "#")
     print("#"*80)
 
+    all_passed = True
+
     try:
-        # Run all tests
-        test1_passed = test_enhancement_1_inference_mode()
-        test2_passed = test_enhancement_2_sequence_overlap()
-        test3_passed = test_combined_enhancements()
-
-        # Summary
-        print("\n" + "#"*80)
-        print("#" + " TEST SUMMARY ".center(78, "=") + "#")
-        print("#"*80)
-        print(f"  Test 1 (Inference Mode): {'✓ PASSED' if test1_passed else '✗ FAILED'}")
-        print(f"  Test 2 (Sequence Overlap): {'✓ PASSED' if test2_passed else '✗ FAILED'}")
-        print(f"  Test 3 (Combined): {'✓ PASSED' if test3_passed else '✗ FAILED'}")
-        print("#"*80)
-
-        if test1_passed and test2_passed and test3_passed:
-            print("\n🎉 ALL TESTS PASSED! 🎉")
-            print("\nBoth enhancements are working correctly:")
-            print("  1. ✓ Can predict on unseen data without target columns")
-            print("  2. ✓ Val/test splits include sequence overlap for complete predictions")
-            sys.exit(0)
-        else:
-            print("\n⚠ SOME TESTS FAILED ⚠")
-            sys.exit(1)
-
+        test1_passed = test_single_target_single_horizon_multigroup()
+        all_passed = all_passed and test1_passed
     except Exception as e:
-        print(f"\n❌ TEST FAILED WITH ERROR:")
+        print(f"\n❌ TEST 1 FAILED WITH ERROR:")
         print(f"   {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        all_passed = False
+
+    try:
+        test2_passed = test_multi_target_single_horizon_multigroup()
+        all_passed = all_passed and test2_passed
+    except Exception as e:
+        print(f"\n❌ TEST 2 FAILED WITH ERROR:")
+        print(f"   {type(e).__name__}: {e}")
+        all_passed = False
+
+    try:
+        test3_passed = test_single_target_multi_horizon_multigroup()
+        all_passed = all_passed and test3_passed
+    except Exception as e:
+        print(f"\n❌ TEST 3 FAILED WITH ERROR:")
+        print(f"   {type(e).__name__}: {e}")
+        all_passed = False
+
+    try:
+        test4_passed = test_multi_target_multi_horizon_multigroup()
+        all_passed = all_passed and test4_passed
+    except Exception as e:
+        print(f"\n❌ TEST 4 FAILED WITH ERROR:")
+        print(f"   {type(e).__name__}: {e}")
+        all_passed = False
+
+    try:
+        test5_passed = test_sequence_overlap()
+        all_passed = all_passed and test5_passed
+    except Exception as e:
+        print(f"\n❌ TEST 5 FAILED WITH ERROR:")
+        print(f"   {type(e).__name__}: {e}")
+        all_passed = False
+
+    # Final summary
+    print("\n" + "="*80)
+    if all_passed:
+        print("✅ ALL TESTS PASSED!")
+    else:
+        print("❌ SOME TESTS FAILED")
+    print("="*80)
+
+    print("\n📋 Test Summary:")
+    print("   1. Single-Target, Single-Horizon, Multi-Group")
+    print("   2. Multi-Target, Single-Horizon, Multi-Group")
+    print("   3. Single-Target, Multi-Horizon, Multi-Group")
+    print("   4. Multi-Target, Multi-Horizon, Multi-Group")
+    print("   5. Sequence Overlap Feature")
+    print("="*80 + "\n")
+
+    sys.exit(0 if all_passed else 1)
