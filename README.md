@@ -1,11 +1,13 @@
 # 🚀 TF Predictor: Modular Time Series Forecasting Framework
 
-**Version:** 2.0.0 (Updated: 2025-10-31)
+**Version:** 2.1.0 (Updated: 2025-11-07)
 
 A comprehensive, modular framework for time series forecasting using the TF Predictor (Feature Tokenizer Transformer) architecture. This project provides a generic reusable library and specialized applications for daily and intraday stock market forecasting.
 
-## 🎉 Version 2.0.0 Highlights
+## 🎉 Version 2.1.0 Highlights
 
+- **🎯 Configurable Pooling Strategies** ⭐ NEW: Choose from 5 pooling methods for sequence aggregation
+- **🚀 Multi-Head Attention Pooling**: Default pooling strategy for better feature aggregation
 - **Per-Horizon Scaling**: Each prediction horizon gets its own scaler for improved accuracy
 - **Automatic Cyclical Encoding**: Temporal features automatically encoded as sin/cos
 - **Evaluation Bug Fixed**: Resolved 100% MAPE bug through proper dataframe alignment
@@ -83,12 +85,75 @@ predictor = MyPredictor(
     target_column='value',
     sequence_length=10,
     prediction_horizon=1,
-    d_model=128,  # Renamed from d_token in v2.0.0
-    num_layers=3,  # Renamed from n_layers
-    num_heads=8    # Renamed from n_heads
+    model_type='ft_transformer',       # or 'csn_transformer'
+    pooling_type='multihead_attention', # ⭐ NEW in v2.1.0 - Pooling strategy
+    d_token=128,                        # Embedding dimension
+    n_layers=3,                         # Transformer layers
+    n_heads=8                           # Attention heads
 )
 predictor.fit(train_df, val_df, epochs=100)
 ```
+
+## 🎯 Pooling Strategies (v2.1.0)
+
+Choose from 5 pooling methods to aggregate transformer sequences:
+
+### Available Pooling Types
+
+1. **`'multihead_attention'`** ⭐ **DEFAULT** - Multi-head attention pooling
+   - Best overall performance
+   - Learnable attention across sequence
+   - ~3×d_token² parameters
+
+2. **`'singlehead_attention'`** - Single-head attention pooling
+   - Simpler than multihead
+   - Good for smaller models
+   - ~3×d_token² parameters
+
+3. **`'temporal_multihead_attention'`** - Temporal multi-head with recency bias
+   - Emphasizes recent timesteps
+   - Good for time series with strong trends
+   - ~3×d_token² + temporal bias parameters
+
+4. **`'weighted_avg'`** - Learnable weighted average
+   - Simplest learnable pooling
+   - Fast inference
+   - max_seq_len parameters
+
+5. **`'cls'`** - CLS token pooling (legacy)
+   - Classic transformer approach
+   - No additional parameters
+   - Use for comparison
+
+### Usage Example
+
+```python
+from tf_predictor.core.predictor import TimeSeriesPredictor
+
+# Use default multihead attention pooling
+predictor = TimeSeriesPredictor(
+    target_column='close',
+    model_type='ft_transformer',
+    pooling_type='multihead_attention',  # ⭐ DEFAULT
+    d_token=128,
+    n_heads=8,
+    n_layers=3
+)
+
+# Try different pooling strategies
+for pooling in ['cls', 'singlehead_attention', 'multihead_attention',
+                'weighted_avg', 'temporal_multihead_attention']:
+    predictor = TimeSeriesPredictor(
+        target_column='close',
+        pooling_type=pooling,  # ⭐ Experiment with different pooling
+        d_token=128,
+        n_heads=8,
+        n_layers=3
+    )
+    predictor.fit(train_df, val_df, epochs=50)
+```
+
+**See `POOLING_VERIFICATION_RESULTS.md` for complete pooling documentation.**
 
 ## 🏗️ Project Structure
 
@@ -135,7 +200,8 @@ Datetime,Open,High,Low,Close,Volume,Dividends,Stock Splits
 
 ### 🧠 Generic TF Predictor Library (`tf_predictor/`)
 - **Reusable Base**: Abstract `TimeSeriesPredictor` class for any domain.
-- **State-of-the-art Model**: FT-Transformer with attention mechanisms.
+- **State-of-the-art Models**: FT-Transformer and CSN-Transformer with attention mechanisms.
+- **Configurable Pooling** ⭐ NEW v2.1: Choose from 5 pooling strategies for sequence aggregation.
 - **Rich Preprocessing**: Date features, lag features, rolling statistics.
 - **Production Ready**: Model persistence, evaluation metrics, data splitting.
 - **Group-Based Scaling** ⭐ NEW: Independent scaling per group (e.g., per stock symbol) while training a unified model.
