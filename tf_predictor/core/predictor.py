@@ -1415,18 +1415,32 @@ class TimeSeriesPredictor:
         if verbose:
             print("Training completed!")
     
-    def predict(self, df: pd.DataFrame, return_group_info: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, list]]:
+    def predict(self, df: pd.DataFrame, inference_mode: bool = False, return_group_info: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, list]]:
         """
         Make predictions on new data.
 
         Args:
-            df: DataFrame with same structure as training data. Target columns are optional.
-                If target columns are missing, automatically uses inference mode.
+            df: DataFrame with same structure as training data.
+                - If inference_mode=False (default): Must include target columns for evaluation
+                - If inference_mode=True: Target columns are optional (for production forecasting)
+            inference_mode: Whether to use inference mode.
+                - False (default): Requires target columns, raises error if missing. Use for evaluation.
+                - True: Skips target processing, allows prediction without targets. Use for production.
             return_group_info: If True and group_column is set, returns (predictions, group_indices)
 
         Returns:
             predictions: Numpy array of predictions (in original scale)
             group_indices: List of group values for each prediction (only if return_group_info=True)
+
+        Raises:
+            ValueError: If inference_mode=False and target columns are missing from df
+
+        Examples:
+            >>> # Evaluation mode (default): requires targets
+            >>> predictions = predictor.predict(test_df)
+
+            >>> # Production forecasting: no targets needed
+            >>> predictions = predictor.predict(new_data, inference_mode=True)
         """
         if self.model is None:
             self.logger.error("Model must be trained first. Call fit().")
@@ -1436,10 +1450,23 @@ class TimeSeriesPredictor:
         self._feature_cache.clear()
         gc.collect()  # Force garbage collection to free memory
 
-        # Auto-detect inference mode: if target columns are missing, enable inference mode
-        inference_mode = not all(target_col in df.columns for target_col in self.target_columns)
-        if inference_mode and self.verbose:
-            print(f"   Auto-detected inference mode: target columns not found in input data")
+        # Validate target columns if not in inference mode
+        if not inference_mode:
+            missing_targets = [col for col in self.target_columns if col not in df.columns]
+            if missing_targets:
+                raise ValueError(
+                    f"Target columns missing from input DataFrame: {missing_targets}\n"
+                    f"Expected target columns: {self.target_columns}\n"
+                    f"Available columns: {list(df.columns)}\n"
+                    f"\n"
+                    f"To predict without targets (production forecasting), set inference_mode=True:\n"
+                    f"  predictor.predict(df, inference_mode=True)"
+                )
+            if self.verbose:
+                print(f"   Evaluation mode: Using targets for alignment")
+        else:
+            if self.verbose:
+                print(f"   Inference mode: Predicting without targets")
 
         # Store processed dataframe for evaluation alignment (store_for_evaluation=True)
         # This stores the dataframe after feature engineering and target shifting, but before encoding/scaling

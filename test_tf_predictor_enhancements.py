@@ -88,22 +88,31 @@ def test_enhancement_1_inference_mode():
     )
     print("   ✓ Model trained successfully")
 
-    # Test 1a: Predict WITH target columns (traditional way)
-    print(f"\n4a. Testing prediction WITH target columns (traditional)...")
+    # Test 1a: Predict WITH target columns (traditional way, default behavior)
+    print(f"\n4a. Testing prediction WITH target columns (default behavior)...")
     test_with_target = test_df.copy()
     predictions_with_target = predictor.predict(test_with_target)
     print(f"   ✓ Predictions shape: {predictions_with_target.shape}")
     print(f"   ✓ Successfully predicted with target columns present")
 
-    # Test 1b: Predict WITHOUT target columns (new inference mode)
-    print(f"\n4b. Testing prediction WITHOUT target columns (inference mode)...")
+    # Test 1b: Verify error is raised when targets missing WITHOUT inference_mode
+    print(f"\n4b. Testing that error is raised when targets missing (inference_mode=False)...")
     test_without_target = test_df.drop(columns=['target']).copy()
     print(f"   Columns in test data: {list(test_without_target.columns)}")
     print(f"   Target column 'target' removed")
 
-    predictions_without_target = predictor.predict(test_without_target)
+    try:
+        predictions_error = predictor.predict(test_without_target)  # Should raise error
+        print(f"   ✗ ERROR: Should have raised ValueError but didn't!")
+        return False
+    except ValueError as e:
+        print(f"   ✓ Correctly raised ValueError: '{str(e)[:80]}...'")
+
+    # Test 1c: Predict WITHOUT target columns using explicit inference_mode=True
+    print(f"\n4c. Testing prediction WITHOUT targets (inference_mode=True)...")
+    predictions_without_target = predictor.predict(test_without_target, inference_mode=True)
     print(f"   ✓ Predictions shape: {predictions_without_target.shape}")
-    print(f"   ✓ Successfully predicted WITHOUT target columns!")
+    print(f"   ✓ Successfully predicted WITHOUT target columns using inference_mode=True")
 
     # Verify predictions are similar (should be identical input features)
     print(f"\n5. Verifying predictions consistency:")
@@ -262,10 +271,11 @@ def test_combined_enhancements():
     # Predict on test WITHOUT targets using overlap
     print(f"\n4. Predicting on test set WITHOUT targets (using overlap for context)...")
     test_no_target = test_df.drop(columns=['target'])
-    predictions = predictor.predict(test_no_target)
+    predictions = predictor.predict(test_no_target, inference_mode=True)
 
     print(f"   ✓ Predictions generated: {predictions.shape}")
     print(f"   ✓ First few predictions: {predictions[:5]}")
+    print(f"   ✓ Explicit inference_mode=True allows prediction without targets")
 
     print("\n" + "✓"*40)
     print("TEST 3 PASSED: Both enhancements work together!")
