@@ -113,13 +113,18 @@ def load_time_series_data(file_path: str, date_column: str = 'date') -> pd.DataF
 
 def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = None,
                       group_column: str = None, time_column: str = None,
-                      sequence_length: int = 1) -> tuple:
+                      sequence_length: int = 1, include_overlap: bool = True) -> tuple:
     """
-    Split time series data maintaining temporal order.
+    Split time series data maintaining temporal order with optional sequence overlap.
 
     When group_column is specified, splits each group separately to ensure:
     - Equal representation from each group in train/val/test
     - Temporal order within each group (earliest data in train, most recent in test)
+
+    When include_overlap=True (default), adds overlap between splits:
+    - Validation set prepends (sequence_length - 1) rows from end of training set
+    - Test set prepends (sequence_length - 1) rows from end of validation (or training) set
+    This ensures the first row of val/test can generate predictions by having sufficient context.
 
     Args:
         df: DataFrame sorted by time
@@ -127,28 +132,59 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
         val_size: Number of samples for validation set (per group if group_column specified)
         group_column: Optional column name to split by groups (e.g., 'symbol' for stocks)
         time_column: Time column for sorting within groups. Auto-detected if None.
-        sequence_length: Required sequence length for model (used to calculate minimum samples needed)
+        sequence_length: Required sequence length for model (used to calculate minimum samples needed
+                        and for overlap calculation)
+        include_overlap: If True (default), includes (sequence_length - 1) overlap rows between splits
+                        to ensure first row of each split can form complete sequences
 
     Returns:
         train_df, val_df, test_df (val_df is None if val_size is None)
+        Note: If include_overlap=True, val_df and test_df include context rows from previous splits
     """
+    # Calculate overlap size for sequence context
+    overlap_size = max(0, sequence_length - 1) if include_overlap else 0
+
     if group_column is None:
-        # Original behavior: simple temporal split
+        # Non-grouped path: simple temporal split
         if len(df) <= test_size:
             print(f"Warning: Dataset has only {len(df)} samples, cannot create test split of {test_size}")
             return df, None, None
 
-        # Test split
-        test_df = df.iloc[-test_size:].copy()
+        # Create base splits (without overlap)
+        test_df_base = df.iloc[-test_size:].copy()
         remaining_df = df.iloc[:-test_size].copy()
 
         # Validation split
         if val_size is not None and len(remaining_df) > val_size:
-            val_df = remaining_df.iloc[-val_size:].copy()
+            val_df_base = remaining_df.iloc[-val_size:].copy()
             train_df = remaining_df.iloc[:-val_size].copy()
         else:
-            val_df = None
+            val_df_base = None
             train_df = remaining_df.copy()
+
+        # Add overlap if requested
+        if include_overlap and overlap_size > 0:
+            # Val gets overlap from train
+            if val_df_base is not None:
+                if len(train_df) >= overlap_size:
+                    overlap_for_val = train_df.iloc[-overlap_size:].copy()
+                    val_df = pd.concat([overlap_for_val, val_df_base], ignore_index=True)
+                else:
+                    val_df = val_df_base  # Not enough data for overlap
+            else:
+                val_df = None
+
+            # Test gets overlap from val (or train if no val)
+            source_for_test = val_df_base if val_df_base is not None else train_df
+            if len(source_for_test) >= overlap_size:
+                overlap_for_test = source_for_test.iloc[-overlap_size:].copy()
+                test_df = pd.concat([overlap_for_test, test_df_base], ignore_index=True)
+            else:
+                test_df = test_df_base  # Not enough data for overlap
+        else:
+            # No overlap requested
+            val_df = val_df_base
+            test_df = test_df_base
 
         return train_df, val_df, test_df
 
@@ -194,16 +230,41 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
                 continue
 
             # Split this group: most recent data goes to test, earliest to train
-            group_test = group_df.iloc[-test_size:].copy()
+            # Create base splits (without overlap)
+            group_test_base = group_df.iloc[-test_size:].copy()
             group_remaining = group_df.iloc[:-test_size].copy()
 
             # Validation split for this group
             if val_size is not None and len(group_remaining) > val_size:
-                group_val = group_remaining.iloc[-val_size:].copy()
+                group_val_base = group_remaining.iloc[-val_size:].copy()
                 group_train = group_remaining.iloc[:-val_size].copy()
             else:
-                group_val = None
+                group_val_base = None
                 group_train = group_remaining.copy()
+
+            # Add overlap if requested (within this group only)
+            if include_overlap and overlap_size > 0:
+                # Val gets overlap from train
+                if group_val_base is not None:
+                    if len(group_train) >= overlap_size:
+                        overlap_for_val = group_train.iloc[-overlap_size:].copy()
+                        group_val = pd.concat([overlap_for_val, group_val_base], ignore_index=True)
+                    else:
+                        group_val = group_val_base
+                else:
+                    group_val = None
+
+                # Test gets overlap from val (or train if no val)
+                source_for_test = group_val_base if group_val_base is not None else group_train
+                if len(source_for_test) >= overlap_size:
+                    overlap_for_test = source_for_test.iloc[-overlap_size:].copy()
+                    group_test = pd.concat([overlap_for_test, group_test_base], ignore_index=True)
+                else:
+                    group_test = group_test_base
+            else:
+                # No overlap requested
+                group_val = group_val_base
+                group_test = group_test_base
 
             # Collect splits
             train_dfs.append(group_train)
@@ -237,9 +298,18 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
         # Print split summary
         print(f"   Group-wise split summary:")
         print(f"   - {len(unique_groups)} groups processed")
-        print(f"   - Train: {len(train_df)} samples ({len(train_dfs)} groups × ~{len(train_df)//len(train_dfs)} samples)")
-        if val_df is not None:
-            print(f"   - Val: {len(val_df)} samples ({len(val_dfs)} groups × ~{len(val_df)//len(val_dfs)} samples)")
-        print(f"   - Test: {len(test_df)} samples ({len(test_dfs)} groups × {test_size} samples)")
+        if include_overlap and overlap_size > 0:
+            # With overlap
+            print(f"   - Train: {len(train_df)} samples ({len(train_dfs)} groups × ~{len(train_df)//len(train_dfs)} samples)")
+            if val_df is not None:
+                print(f"   - Val: {len(val_df)} samples ({len(val_dfs)} groups × ~{len(val_df)//len(val_dfs)} samples, includes {overlap_size} overlap)")
+            print(f"   - Test: {len(test_df)} samples ({len(test_dfs)} groups × ~{len(test_df)//len(test_dfs)} samples, includes {overlap_size} overlap)")
+            print(f"   - Overlap: {overlap_size} rows prepended to val/test for sequence context")
+        else:
+            # Without overlap
+            print(f"   - Train: {len(train_df)} samples ({len(train_dfs)} groups × ~{len(train_df)//len(train_dfs)} samples)")
+            if val_df is not None:
+                print(f"   - Val: {len(val_df)} samples ({len(val_dfs)} groups × ~{len(val_df)//len(val_dfs)} samples)")
+            print(f"   - Test: {len(test_df)} samples ({len(test_dfs)} groups × {test_size} samples)")
 
         return train_df, val_df, test_df
