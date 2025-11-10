@@ -1,0 +1,53 @@
+# Enhanced Competition Features Configuration
+# Version: competition_v1
+# Description: Baseline + enhanced competition features
+
+version: "competition_v1"
+description: "Enhanced competition distance and temporal features"
+
+# Competition features (enhanced)
+competition:
+  enabled: true
+  fill_distance_missing: "median"
+  calculate_months_since: true
+  distance_bins: [0, 1000, 5000, 10000, 50000]  # NEW: Bin competition distance
+  distance_interaction: true                     # NEW: Distance x MonthsSince interaction
+
+# Promotion features (same as baseline)
+promotion:
+  enabled: true
+  use_promo2: true
+  calculate_months_since_promo2: true
+  create_promo_month_indicator: true
+
+# Holiday features (same as baseline)
+holidays:
+  enabled: true
+  encode_state_holiday: true
+  use_school_holiday: true
+
+# Store features (same as baseline)
+store:
+  enabled: true
+  encode_store_type: true
+  encode_assortment: true
+
+# Domain features (same as baseline)
+domain_features:
+  sales_per_customer: true
+  customers_indicator: true
+
+# Data filtering
+filtering:
+  remove_closed_stores: true
+  remove_zero_sales: false
+
+# Validation
+validation:
+  strategy: "temporal"
+  val_ratio: 0.2
+
+# Caching
+cache:
+  enabled: true
+  cache_key: "competition_v1"
