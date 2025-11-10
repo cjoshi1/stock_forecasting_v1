@@ -1,0 +1,6 @@
+# Ignore experiment run outputs
+runs/*
+!runs/.gitkeep
+
+# Keep experiment results CSV
+!experiment_results.csv

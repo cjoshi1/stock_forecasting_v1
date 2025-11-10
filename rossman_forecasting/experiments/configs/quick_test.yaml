@@ -1,0 +1,37 @@
+# Quick Test Experiment Config
+# Purpose: Fast testing with small model and few stores
+# Use: python rossman_forecasting/main.py --experiment_config quick_test
+
+experiment:
+  name: "quick_test"
+  description: "Fast test run with small model and limited stores"
+
+preprocessing:
+  config: "baseline"
+  max_stores: 10  # Limit to 10 stores for fast testing
+  force_preprocess: false
+
+model:
+  model_type: "ft_transformer"
+  d_token: 64
+  n_layers: 2
+  n_heads: 4
+  pooling_type: "mean"
+  sequence_length: 7
+  prediction_horizon: 1
+  dropout: 0.1
+  scaler_type: "standard"
+
+training:
+  epochs: 10
+  batch_size: 32
+  learning_rate: 0.001
+  patience: 5
+  val_ratio: 0.2
+
+output:
+  save_model: true
+  export_predictions: true
+  create_submission: false
+
+notes: "Quick sanity check - not for actual Kaggle submission"

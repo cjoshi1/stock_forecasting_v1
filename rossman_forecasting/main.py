@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
+from datetime import datetime
+import time
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +28,16 @@ from rossman_forecasting.utils import (
     save_kaggle_submission,
     rmspe
 )
+from rossman_forecasting.experiments.experiment_tracking import (
+    generate_experiment_id,
+    load_experiment_config,
+    create_experiment_directory,
+    save_experiment_config,
+    save_predictions_with_errors,
+    save_detailed_metrics,
+    log_to_experiment_results,
+    generate_experiment_summary
+)
 from tf_predictor.core.utils import split_time_series
 
 
@@ -38,10 +50,13 @@ Examples:
   # Download data (first time only)
   python rossman_forecasting/main.py --download_data
 
-  # Train with default settings
+  # Train with experiment config (recommended)
+  python rossman_forecasting/main.py --experiment_config baseline_model
+
+  # Train with default settings (standalone mode)
   python rossman_forecasting/main.py --epochs 50
 
-  # Train with custom model and preprocessing
+  # Train with custom model and preprocessing (standalone mode)
   python rossman_forecasting/main.py \\
     --preprocessing_config competition_enhanced \\
     --d_token 192 --n_layers 4 --n_heads 8 \\
@@ -54,6 +69,13 @@ Examples:
   python rossman_forecasting/main.py --list_configs
         """
     )
+
+    # Experiment config argument
+    exp_group = parser.add_argument_group('Experiment Tracking')
+    exp_group.add_argument('--experiment_config', type=str,
+                          help='Load complete experiment config from experiments/configs/')
+    exp_group.add_argument('--experiment_notes', type=str, default='',
+                          help='Optional notes for experiment tracking')
 
     # Data arguments
     data_group = parser.add_argument_group('Data Options')
@@ -132,7 +154,66 @@ Examples:
         list_available_configs()
         return
 
-    print("="*70)
+    # Load experiment config if provided
+    experiment_mode = args.experiment_config is not None
+    exp_config = None
+    experiment_id = None
+    exp_dir = None
+
+    if experiment_mode:
+        print("="*70)
+        print("🧪 Loading Experiment Configuration")
+        print("="*70)
+
+        # Load config
+        exp_config = load_experiment_config(args.experiment_config)
+        print(f"\n   Config: {args.experiment_config}")
+        print(f"   Name: {exp_config['experiment']['name']}")
+        print(f"   Description: {exp_config['experiment']['description']}")
+
+        # Store source file in config
+        exp_config['_source_file'] = args.experiment_config
+
+        # Generate experiment ID
+        experiment_id = generate_experiment_id()
+        print(f"   Experiment ID: {experiment_id}")
+
+        # Create experiment directory
+        exp_dir = create_experiment_directory(
+            experiment_id,
+            exp_config['experiment']['name']
+        )
+        print(f"   Output directory: {exp_dir}")
+
+        # Save config to experiment directory
+        save_experiment_config(exp_config, exp_dir)
+
+        # Override args with experiment config
+        args.preprocessing_config = exp_config['preprocessing']['config']
+        args.max_stores = exp_config['preprocessing'].get('max_stores')
+        args.force_preprocess = exp_config['preprocessing'].get('force_preprocess', False)
+
+        args.model_type = exp_config['model']['model_type']
+        args.d_token = exp_config['model']['d_token']
+        args.n_layers = exp_config['model']['n_layers']
+        args.n_heads = exp_config['model']['n_heads']
+        args.pooling_type = exp_config['model']['pooling_type']
+        args.sequence_length = exp_config['model']['sequence_length']
+        args.prediction_horizon = exp_config['model']['prediction_horizon']
+        args.dropout = exp_config['model']['dropout']
+        args.scaler_type = exp_config['model']['scaler_type']
+
+        args.epochs = exp_config['training']['epochs']
+        args.batch_size = exp_config['training']['batch_size']
+        args.learning_rate = exp_config['training']['learning_rate']
+        args.patience = exp_config['training']['patience']
+        args.val_ratio = exp_config['training']['val_ratio']
+
+        args.no_save_model = not exp_config['output']['save_model']
+        args.export_predictions = exp_config['output']['export_predictions']
+        args.create_submission = exp_config['output']['create_submission']
+
+    print("\n" + "="*70)
     print("🏪 Rossmann Store Sales Forecasting with TF Predictor")
     print("="*70)
 
@@ -237,6 +318,7 @@ Examples:
 
     # Train Model
     print(f"\n🏋️  Training model...")
+    start_time = time.time()
 
     model.fit(
         df=train_df,
@@ -248,41 +330,85 @@ Examples:
         verbose=True
     )
 
+    training_time_mins = (time.time() - start_time) / 60
+
     # Save Model
     if not args.no_save_model:
         print(f"\n💾 Saving model...")
-        model_path = Path(args.model_path)
-        model_path.parent.mkdir(parents=True, exist_ok=True)
+        if experiment_mode:
+            model_path = exp_dir / 'model.pt'
+        else:
+            model_path = Path(args.model_path)
+            model_path.parent.mkdir(parents=True, exist_ok=True)
         model.save(str(model_path))
         print(f"   ✅ Model saved to: {model_path}")
 
     # Evaluate Model
     print(f"\n📈 Evaluating model...")
 
-    # Train metrics
-    train_metrics = model.evaluate(
-        train_df,
-        export_csv='rossman_forecasting/data/predictions/train_predictions.csv' if args.export_predictions else None
-    )
+    # Train metrics and predictions
+    if experiment_mode:
+        train_predictions = model.predict(train_df)
+        train_metrics = model.evaluate(train_df, predictions=train_predictions)
 
-    # Val metrics
-    val_metrics = model.evaluate(
-        val_df,
-        export_csv='rossman_forecasting/data/predictions/val_predictions.csv' if args.export_predictions else None
-    )
+        # Save with error analysis
+        save_predictions_with_errors(
+            store_ids=train_df['Store'].values,
+            dates=train_df['Date'].values,
+            actuals=train_df[model.target_column].values,
+            predictions=train_predictions,
+            output_path=exp_dir / 'train_predictions.csv',
+            dataset_name='train'
+        )
+    else:
+        train_metrics = model.evaluate(
+            train_df,
+            export_csv='rossman_forecasting/data/predictions/train_predictions.csv' if args.export_predictions else None
+        )
+
+    # Val metrics and predictions
+    if experiment_mode:
+        val_predictions = model.predict(val_df)
+        val_metrics = model.evaluate(val_df, predictions=val_predictions)
+
+        # Save with error analysis
+        save_predictions_with_errors(
+            store_ids=val_df['Store'].values,
+            dates=val_df['Date'].values,
+            actuals=val_df[model.target_column].values,
+            predictions=val_predictions,
+            output_path=exp_dir / 'val_predictions.csv',
+            dataset_name='val'
+        )
+    else:
+        val_metrics = model.evaluate(
+            val_df,
+            export_csv='rossman_forecasting/data/predictions/val_predictions.csv' if args.export_predictions else None
+        )
 
     # Print metrics
     print(f"\n   Training Metrics:")
-    for metric, value in train_metrics.items():
-        if isinstance(value, (int, float)):
-            print(f"   - {metric}: {value:.4f}")
+    if 'overall' in train_metrics:
+        for metric, value in train_metrics['overall'].items():
+            if isinstance(value, (int, float)):
+                print(f"   - {metric}: {value:.4f}")
+    else:
+        for metric, value in train_metrics.items():
+            if isinstance(value, (int, float)):
+                print(f"   - {metric}: {value:.4f}")
 
     print(f"\n   Validation Metrics:")
-    for metric, value in val_metrics.items():
-        if isinstance(value, (int, float)):
-            print(f"   - {metric}: {value:.4f}")
+    if 'overall' in val_metrics:
+        for metric, value in val_metrics['overall'].items():
+            if isinstance(value, (int, float)):
+                print(f"   - {metric}: {value:.4f}")
+    else:
+        for metric, value in val_metrics.items():
+            if isinstance(value, (int, float)):
+                print(f"   - {metric}: {value:.4f}")
 
     # Predict on test set (Kaggle submission)
+    test_predictions = None
     if args.create_submission:
         print(f"\n🔮 Generating Kaggle submission...")
 
@@ -291,24 +417,128 @@ Examples:
 
         # Create submission file
         if 'Id' in test_processed.columns:
-            submission_path = save_kaggle_submission(
-                test_processed['Id'].values,
-                test_predictions,
-                'rossman_forecasting/data/predictions/submission.csv'
-            )
+            if experiment_mode:
+                # Save test predictions (no actuals)
+                save_predictions_with_errors(
+                    store_ids=test_processed['Store'].values,
+                    dates=test_processed['Date'].values,
+                    actuals=None,
+                    predictions=test_predictions,
+                    output_path=exp_dir / 'test_predictions.csv',
+                    dataset_name='test'
+                )
+
+                # Save Kaggle submission
+                submission_path = save_kaggle_submission(
+                    test_processed['Id'].values,
+                    test_predictions,
+                    str(exp_dir / 'submission.csv')
+                )
+            else:
+                submission_path = save_kaggle_submission(
+                    test_processed['Id'].values,
+                    test_predictions,
+                    'rossman_forecasting/data/predictions/submission.csv'
+                )
             print(f"   ✅ Submission file: {submission_path}")
         else:
             print("   ⚠️  Warning: 'Id' column not found in test data")
 
+    # Experiment tracking
+    if experiment_mode:
+        print(f"\n📊 Saving experiment tracking data...")
+
+        # Gather training info
+        training_info = {
+            'training_time_mins': training_time_mins,
+            'best_epoch': model.best_epoch if hasattr(model, 'best_epoch') else args.epochs,
+            'total_epochs': args.epochs
+        }
+
+        # Gather data info
+        data_info = {
+            'train_samples': len(train_df),
+            'val_samples': len(val_df),
+            'test_samples': len(test_processed),
+            'num_stores': train_processed['Store'].nunique(),
+            'date_range_train': f"{train_df['Date'].min()} to {train_df['Date'].max()}",
+            'date_range_val': f"{val_df['Date'].min()} to {val_df['Date'].max()}",
+            'date_range_test': f"{test_processed['Date'].min()} to {test_processed['Date'].max()}"
+        }
+
+        # File paths
+        file_paths = {
+            'train_predictions': str(exp_dir / 'train_predictions.csv'),
+            'val_predictions': str(exp_dir / 'val_predictions.csv'),
+            'test_predictions': str(exp_dir / 'test_predictions.csv') if test_predictions is not None else '',
+            'model': str(exp_dir / 'model.pt') if not args.no_save_model else ''
+        }
+
+        # Save detailed metrics
+        save_detailed_metrics(
+            experiment_id=experiment_id,
+            experiment_name=exp_config['experiment']['name'],
+            config=exp_config,
+            train_metrics=train_metrics,
+            val_metrics=val_metrics,
+            training_info=training_info,
+            data_info=data_info,
+            exp_dir=exp_dir
+        )
+
+        # Log to master CSV
+        log_to_experiment_results(
+            experiment_id=experiment_id,
+            experiment_name=exp_config['experiment']['name'],
+            config=exp_config,
+            train_metrics=train_metrics,
+            val_metrics=val_metrics,
+            training_info=training_info,
+            data_info=data_info,
+            file_paths=file_paths,
+            notes=exp_config['experiment'].get('notes', args.experiment_notes)
+        )
+
+        # Generate summary
+        generate_experiment_summary(
+            experiment_id=experiment_id,
+            experiment_name=exp_config['experiment']['name'],
+            config=exp_config,
+            train_metrics=train_metrics,
+            val_metrics=val_metrics,
+            training_info=training_info,
+            data_info=data_info,
+            exp_dir=exp_dir
+        )
+
+        print(f"   ✅ Metrics saved to: {exp_dir / 'metrics.json'}")
+        print(f"   ✅ Summary saved to: {exp_dir / 'SUMMARY.md'}")
+        print(f"   ✅ Logged to: rossman_forecasting/experiments/experiment_results.csv")
+
     # Summary
     print(f"\n🎉 Rossmann forecasting completed successfully!")
-    print(f"   Validation RMSPE: {val_metrics.get('RMSPE', 'N/A'):.4f}")
-    if not args.no_save_model:
-        print(f"   Model saved to: {args.model_path}")
-    if args.export_predictions:
-        print(f"   Predictions saved to: rossman_forecasting/data/predictions/")
-    if args.create_submission:
-        print(f"   Kaggle submission: rossman_forecasting/data/predictions/submission.csv")
+
+    # Get RMSPE value
+    if 'overall' in val_metrics:
+        rmspe_val = val_metrics['overall'].get('RMSPE', 'N/A')
+    else:
+        rmspe_val = val_metrics.get('RMSPE', 'N/A')
+
+    if isinstance(rmspe_val, (int, float)):
+        print(f"   Validation RMSPE: {rmspe_val:.4f}")
+    else:
+        print(f"   Validation RMSPE: {rmspe_val}")
+
+    if experiment_mode:
+        print(f"   Experiment ID: {experiment_id}")
+        print(f"   Results directory: {exp_dir}")
+    else:
+        if not args.no_save_model:
+            print(f"   Model saved to: {args.model_path}")
+        if args.export_predictions:
+            print(f"   Predictions saved to: rossman_forecasting/data/predictions/")
+        if args.create_submission:
+            print(f"   Kaggle submission: rossman_forecasting/data/predictions/submission.csv")
 
     print("\n" + "="*70)
 

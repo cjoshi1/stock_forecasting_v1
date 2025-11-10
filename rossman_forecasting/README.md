@@ -7,6 +7,7 @@ A specialized time series forecasting module for the [Rossmann Store Sales Kaggl
 ## 🎯 Features
 
 - **Kaggle Competition Ready**: RMSPE evaluation metric, submission file generation
+- **Experiment Tracking**: Complete experiment versioning with configs, metrics, and predictions
 - **Config-Based Preprocessing**: Version and track different feature engineering strategies
 - **Per-Store Scaling**: Independent scaling for each store while training unified model
 - **Smart Caching**: Automatically cache preprocessed data for faster iterations
@@ -30,7 +31,19 @@ Download Rossmann data:
 python rossman_forecasting/main.py --download_data
 ```
 
-### 2. Train with Default Settings
+### 2. Train with Experiment Tracking (Recommended)
+
+```bash
+# Quick test to verify setup
+python rossman_forecasting/main.py --experiment_config quick_test
+
+# Full baseline model
+python rossman_forecasting/main.py --experiment_config baseline_model
+```
+
+Results will be in `rossman_forecasting/experiments/runs/exp_001_<name>/`
+
+**OR** Train with standalone mode:
 
 ```bash
 python rossman_forecasting/main.py --epochs 50
@@ -38,6 +51,14 @@ python rossman_forecasting/main.py --epochs 50
 
 ### 3. View Results
 
+**With experiment tracking:**
+- All outputs in: `rossman_forecasting/experiments/runs/exp_001_<name>/`
+- Summary: `SUMMARY.md`
+- Metrics: `metrics.json`
+- Predictions: `train_predictions.csv`, `val_predictions.csv`, `test_predictions.csv`
+- Kaggle submission: `submission.csv`
+
+**Standalone mode:**
 - Model: `rossman_forecasting/models/rossmann_model.pt`
 - Predictions: `rossman_forecasting/data/predictions/`
 - Kaggle submission: `rossman_forecasting/data/predictions/submission.csv`
@@ -50,22 +71,33 @@ rossman_forecasting/
 │   └── preprocessing/
 │       ├── baseline.yaml              # Basic features
 │       └── competition_enhanced.yaml  # Enhanced competition features
+├── experiments/
+│   ├── configs/                       # Complete experiment configs
+│   │   ├── quick_test.yaml           # Fast test (10 stores, 10 epochs)
+│   │   ├── baseline_model.yaml       # Standard baseline
+│   │   ├── large_model.yaml          # Large model for best performance
+│   │   └── best_kaggle_v1.yaml       # Final tuned submission
+│   ├── runs/                         # Experiment outputs (exp_001, exp_002, ...)
+│   ├── experiment_results.csv        # Master tracking CSV
+│   ├── experiment_tracking.py        # Core tracking utilities
+│   ├── compare.py                    # Comparison and analysis tool
+│   └── README.md                     # Experiment tracking documentation
 ├── data/
-│   ├── raw/                           # Kaggle data (train.csv, test.csv, store.csv)
-│   ├── processed/                     # Cached preprocessed data
+│   ├── raw/                          # Kaggle data (train.csv, test.csv, store.csv)
+│   ├── processed/                    # Cached preprocessed data
 │   │   ├── baseline_v1/
 │   │   └── competition_v1/
-│   └── predictions/                   # Predictions and submissions
+│   └── predictions/                  # Predictions and submissions (standalone mode)
 ├── preprocessing/
-│   ├── rossmann_features.py           # Domain-specific feature engineering
-│   └── data_loader.py                 # Data loading with caching
+│   ├── rossmann_features.py          # Domain-specific feature engineering
+│   └── data_loader.py                # Data loading with caching
 ├── utils/
-│   ├── kaggle_download.py             # Kaggle data downloader
-│   ├── metrics.py                     # RMSPE and other metrics
-│   └── export.py                      # Submission file generation
-├── predictor.py                       # RossmannPredictor class
-├── main.py                            # CLI application
-├── tests/                             # Test suite
+│   ├── kaggle_download.py            # Kaggle data downloader
+│   ├── metrics.py                    # RMSPE and other metrics
+│   └── export.py                     # Submission file generation
+├── predictor.py                      # RossmannPredictor class
+├── main.py                           # CLI application
+├── tests/                            # Test suite
 └── README.md
 ```
 
@@ -370,6 +402,84 @@ Id,Sales
 ```
 
 Upload `rossman_forecasting/data/predictions/submission.csv` to Kaggle to see your score!
+
+## 🧪 Experiment Tracking
+
+The module includes a comprehensive experiment tracking system to help you manage and compare different model configurations.
+
+### Running Experiments
+
+Use complete experiment configs that include preprocessing, model, and training parameters:
+
+```bash
+# Quick test (10 stores, 10 epochs)
+python rossman_forecasting/main.py --experiment_config quick_test
+
+# Baseline model (all stores, 50 epochs)
+python rossman_forecasting/main.py --experiment_config baseline_model
+
+# Large model with enhanced preprocessing
+python rossman_forecasting/main.py --experiment_config large_model
+```
+
+### Experiment Outputs
+
+Each experiment creates a directory: `experiments/runs/exp_001_<name>/` with:
+- `SUMMARY.md`: Human-readable experiment summary
+- `metrics.json`: Complete metrics and configuration
+- `config_used.yaml`: Exact config used (for reproducibility)
+- `model.pt`: Trained model
+- `train_predictions.csv`: Train predictions with detailed error analysis
+- `val_predictions.csv`: Validation predictions with errors
+- `test_predictions.csv`: Test predictions
+- `submission.csv`: Kaggle submission file
+
+### Comparing Experiments
+
+View all experiments sorted by RMSPE:
+```bash
+python rossman_forecasting/experiments/compare.py --show_all
+```
+
+Show top 5 experiments:
+```bash
+python rossman_forecasting/experiments/compare.py --best 5
+```
+
+Compare specific experiments:
+```bash
+python rossman_forecasting/experiments/compare.py --compare exp_001 exp_002 exp_005
+```
+
+Show summary statistics:
+```bash
+python rossman_forecasting/experiments/compare.py --summary
+```
+
+### Prediction Files with Error Analysis
+
+Experiment tracking saves predictions with detailed error metrics:
+
+```csv
+Store,Date,Actual_Sales,Predicted_Sales,Error,Abs_Error,Pct_Error,RMSPE_Contribution
+1,2015-01-01,5263.0,5150.3,-112.7,112.7,-2.14,0.000458
+```
+
+This allows deep analysis of where the model performs well or poorly.
+
+### Master Tracking CSV
+
+All experiments are logged to `experiments/experiment_results.csv` with:
+- Experiment ID and name
+- All metrics (RMSPE, MAE, RMSE, R²)
+- Model configuration (architecture, hyperparameters)
+- Training info (time, epochs, best epoch)
+- Data info (samples, stores, date ranges)
+- File paths to all outputs
+
+Perfect for comparing many experiments and identifying the best configurations.
+
+**📖 Full Documentation:** See [experiments/README.md](experiments/README.md) for complete experiment tracking documentation.
 
 ## 🐛 Troubleshooting
 
