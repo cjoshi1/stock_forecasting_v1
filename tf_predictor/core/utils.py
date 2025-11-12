@@ -146,16 +146,22 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
 
     if group_column is None:
         # Non-grouped path: simple temporal split
-        if len(df) <= test_size:
+        if test_size > 0 and len(df) <= test_size:
             print(f"Warning: Dataset has only {len(df)} samples, cannot create test split of {test_size}")
             return df, None, None
 
         # Create base splits (without overlap)
-        test_df_base = df.iloc[-test_size:].copy()
-        remaining_df = df.iloc[:-test_size].copy()
+        # Handle test_size=0 edge case (pandas iloc[:-0] returns empty DataFrame)
+        if test_size == 0:
+            test_df_base = pd.DataFrame()
+            remaining_df = df.copy()
+        else:
+            test_df_base = df.iloc[-test_size:].copy()
+            remaining_df = df.iloc[:-test_size].copy()
 
         # Validation split
-        if val_size is not None and len(remaining_df) > val_size:
+        # Handle val_size edge cases
+        if val_size is not None and val_size > 0 and len(remaining_df) > val_size:
             val_df_base = remaining_df.iloc[-val_size:].copy()
             train_df = remaining_df.iloc[:-val_size].copy()
         else:
@@ -231,11 +237,17 @@ def split_time_series(df: pd.DataFrame, test_size: int = 30, val_size: int = Non
 
             # Split this group: most recent data goes to test, earliest to train
             # Create base splits (without overlap)
-            group_test_base = group_df.iloc[-test_size:].copy()
-            group_remaining = group_df.iloc[:-test_size].copy()
+            # Handle test_size=0 edge case (pandas iloc[:-0] returns empty DataFrame)
+            if test_size == 0:
+                group_test_base = pd.DataFrame()
+                group_remaining = group_df.copy()
+            else:
+                group_test_base = group_df.iloc[-test_size:].copy()
+                group_remaining = group_df.iloc[:-test_size].copy()
 
             # Validation split for this group
-            if val_size is not None and len(group_remaining) > val_size:
+            # Handle val_size edge cases
+            if val_size is not None and val_size > 0 and len(group_remaining) > val_size:
                 group_val_base = group_remaining.iloc[-val_size:].copy()
                 group_train = group_remaining.iloc[:-val_size].copy()
             else:
