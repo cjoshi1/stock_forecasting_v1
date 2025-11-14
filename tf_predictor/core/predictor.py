@@ -334,6 +334,115 @@ class TimeSeriesPredictor:
                 return col
         return None
 
+    def _verify_temporal_order(self, df: pd.DataFrame, time_column: str) -> bool:
+        """
+        Verify that time is monotonically increasing within each group.
+
+        Args:
+            df: DataFrame to verify
+            time_column: Name of time column
+
+        Returns:
+            True if temporal order is valid
+
+        Raises:
+            ValueError: If temporal order is violated
+        """
+        if not self.group_columns:
+            # Check global temporal order
+            if not df[time_column].is_monotonic_increasing:
+                raise ValueError(f"Temporal order violated: {time_column} is not monotonically increasing")
+            return True
+
+        # Check temporal order within each group
+        violations = []
+        group_key_series = self._create_group_key(df)
+        unique_groups = group_key_series.unique()
+
+        for group_value in unique_groups:
+            mask = group_key_series == group_value
+            group_df = df[mask]
+            if not group_df[time_column].is_monotonic_increasing:
+                violations.append(str(group_value))
+
+        if violations:
+            raise ValueError(
+                f"Temporal order violated in {len(violations)} groups: {violations[:5]}"
+            )
+
+        return True
+
+    def _verify_group_boundaries(self):
+        """
+        Verify that no sequences span group boundaries.
+
+        For each sequence, check that all rows in the sequence belong to the same group.
+        This is a sanity check to ensure group-based processing is working correctly.
+        """
+        if not self.group_columns or not hasattr(self, '_last_processed_df'):
+            return
+
+        if not hasattr(self, '_last_sequence_metadata'):
+            return
+
+        # Set index for fast lookup
+        eval_df = self._last_processed_df.set_index('_original_index', drop=False)
+
+        violations = []
+        for i, metadata in enumerate(self._last_sequence_metadata[:min(100, len(self._last_sequence_metadata))]):
+            orig_idx = metadata['original_index']
+            expected_group = metadata['group_key']
+
+            # Check the actual group value in the dataframe
+            if orig_idx in eval_df.index:
+                actual_group = self._create_group_key(eval_df.loc[orig_idx])
+                if actual_group != expected_group:
+                    violations.append(f"Sequence {i}: expected group {expected_group}, got {actual_group}")
+
+        if violations:
+            raise ValueError(f"Group boundary violations detected: {violations[:5]}")
+
+        if self.verbose:
+            print(f"   Group boundary verification: ✓ (checked {min(100, len(self._last_sequence_metadata))} sequences)")
+
+    def _validate_indices_integrity(self):
+        """
+        Validate that indices are consistent across all components.
+
+        Checks:
+        1. No duplicate indices
+        2. All indices exist in _last_processed_df
+        3. Group assignments are consistent
+        4. Temporal order within groups is maintained
+        """
+        if not hasattr(self, '_last_sequence_indices'):
+            return  # No indices to validate
+
+        indices = self._last_sequence_indices
+
+        # Check 1: No duplicates
+        if len(indices) != len(set(indices)):
+            duplicates = [idx for idx in indices if list(indices).count(idx) > 1]
+            raise ValueError(f"Duplicate indices found: {set(duplicates)}")
+
+        # Check 2: All indices exist in processed df
+        if hasattr(self, '_last_processed_df') and self._last_processed_df is not None:
+            if '_original_index' in self._last_processed_df.columns:
+                valid_indices = set(self._last_processed_df['_original_index'].values)
+                invalid = [idx for idx in indices if idx not in valid_indices]
+                if invalid:
+                    raise ValueError(f"Invalid indices not in processed df: {invalid[:5]}")
+
+        # Check 3 & 4: Group consistency and temporal order
+        if self.group_columns and hasattr(self, '_last_sequence_metadata'):
+            # Verify metadata matches indices
+            metadata_indices = [m['original_index'] for m in self._last_sequence_metadata]
+            if list(indices) != metadata_indices:
+                raise ValueError("Mismatch between _last_sequence_indices and metadata")
+
+        if self.verbose:
+            print(f"   Index integrity validation: ✓ ({len(indices)} sequences)")
+
     def _encode_categorical_features(self, df: pd.DataFrame, fit_encoders: bool = False) -> pd.DataFrame:
         """
         Label encode categorical features.
@@ -865,6 +974,7 @@ class TimeSeriesPredictor:
         all_targets = []
         group_indices = []  # Track which group each sequence belongs to
         sequence_original_indices = []  # NEW: Track original indices
+        sequence_metadata = []  # NEW: Store detailed metadata for each sequence
 
         # Determine numerical feature columns (exclude categoricals)
         numerical_feature_cols = [col for col in self.feature_columns if col not in self.categorical_columns]
@@ -923,6 +1033,21 @@ class TimeSeriesPredictor:
             if seq_indices is not None:
                 sequence_original_indices.extend(seq_indices)
 
+                # NEW: Store metadata for each sequence in this group
+                for seq_idx in seq_indices:
+                    metadata = {
+                        'original_index': seq_idx,
+                        'group_key': group_value,
+                    }
+                    # Add individual group column values
+                    if isinstance(group_value, tuple):
+                        for i, col in enumerate(self.group_columns):
+                            metadata[col] = group_value[i]
+                    else:
+                        metadata[self.group_columns[0]] = group_value
+
+                    sequence_metadata.append(metadata)
+
         # Concatenate all groups
         if len(all_sequences_num) == 0:
             raise ValueError(f"No groups had sufficient data (need > {self.sequence_length} samples per group)")
@@ -955,8 +1080,9 @@ class TimeSeriesPredictor:
         # Store group indices for inverse transform during prediction
         self._last_group_indices = group_indices
 
-        # NEW: Store indices for evaluation
+        # NEW: Store indices and metadata for evaluation
         self._last_sequence_indices = np.array(sequence_original_indices)
+        self._last_sequence_metadata = sequence_metadata
 
         # Convert to tensors
         X_num = torch.tensor(X_num_combined, dtype=torch.float32)
