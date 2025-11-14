@@ -1,0 +1,37 @@
+# Large Model Experiment Config
+# Purpose: Larger architecture for better performance
+# Use: python rossman_forecasting/main.py --experiment_config large_model
+
+experiment:
+  name: "large_model"
+  description: "Large model with increased capacity for better RMSPE"
+
+preprocessing:
+  config: "competition_enhanced"
+  max_stores: null  # Use all stores
+  force_preprocess: false
+
+model:
+  model_type: "ft_transformer"
+  d_token: 192
+  n_layers: 4
+  n_heads: 8
+  pooling_type: "multihead_attention"
+  sequence_length: 21
+  prediction_horizon: 1
+  dropout: 0.1
+  scaler_type: "standard"
+
+training:
+  epochs: 100
+  batch_size: 128
+  learning_rate: 0.0005
+  patience: 20
+  val_ratio: 0.2
+
+output:
+  save_model: true
+  export_predictions: true
+  create_submission: true
+
+notes: "Larger model with enhanced preprocessing - aim for competitive Kaggle score"

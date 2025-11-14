@@ -755,7 +755,7 @@ class TimeSeriesPredictor:
 
         return df_scaled
 
-    def _prepare_data_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], torch.Tensor]:
+    def _prepare_data_grouped(self, df_processed: pd.DataFrame, fit_scaler: bool, inference_mode: bool = False) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         """
         Create sequences and extract targets for grouped data.
 
@@ -765,6 +765,7 @@ class TimeSeriesPredictor:
         Args:
             df_processed: DataFrame with features and targets already scaled by group
             fit_scaler: Unused (kept for compatibility, targets already scaled)
+            inference_mode: If True, skips target extraction. Default False.
 
         Returns:
             X: If categorical_columns exist: Tuple of (X_num, X_cat) where
@@ -772,38 +773,40 @@ class TimeSeriesPredictor:
                   X_cat: (n_samples, n_categorical_features)
                Otherwise: X_num tensor only
             y: Target tensor of shape (n_samples, n_targets * n_horizons) - already scaled
+               or None if inference_mode=True
         """
 
         # Note: Data is already sorted by group and time in _create_base_features()
         # so temporal order is guaranteed at this point
 
-        # Validate target columns exist
-        if self.is_multi_target:
-            # Multi-target: check all targets
-            if self.prediction_horizon == 1:
-                expected_targets = {target_col: [f"{target_col}_target_h1"]
-                                   for target_col in self.target_columns}
-            else:
-                expected_targets = {target_col: [f"{target_col}_target_h{h}"
-                                                 for h in range(1, self.prediction_horizon + 1)]
-                                   for target_col in self.target_columns}
+        # Validate target columns exist (skip if inference_mode=True)
+        if not inference_mode:
+            if self.is_multi_target:
+                # Multi-target: check all targets
+                if self.prediction_horizon == 1:
+                    expected_targets = {target_col: [f"{target_col}_target_h1"]
+                                       for target_col in self.target_columns}
+                else:
+                    expected_targets = {target_col: [f"{target_col}_target_h{h}"
+                                                     for h in range(1, self.prediction_horizon + 1)]
+                                       for target_col in self.target_columns}
 
-            # Use first target for sequence creation
-            first_target = self.target_columns[0]
-            target_cols = expected_targets[first_target]
-        else:
-            # Single-target: use first target column
-            target_col = self.target_columns[0]
-            if self.prediction_horizon == 1:
-                expected_target = f"{target_col}_target_h1" if not target_col.endswith('_target_h1') else target_col
-                if expected_target not in df_processed.columns:
-                    raise ValueError(f"Single horizon target column '{expected_target}' not found")
-                target_cols = [expected_target]
+                # Use first target for sequence creation
+                first_target = self.target_columns[0]
+                target_cols = expected_targets[first_target]
             else:
-                target_cols = [f"{target_col}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
-                missing = [col for col in target_cols if col not in df_processed.columns]
-                if missing:
-                    raise ValueError(f"Multi-horizon target columns {missing} not found")
+                # Single-target: use first target column
+                target_col = self.target_columns[0]
+                if self.prediction_horizon == 1:
+                    expected_target = f"{target_col}_target_h1" if not target_col.endswith('_target_h1') else target_col
+                    if expected_target not in df_processed.columns:
+                        raise ValueError(f"Single horizon target column '{expected_target}' not found")
+                    target_cols = [expected_target]
+                else:
+                    target_cols = [f"{target_col}_target_h{h}" for h in range(1, self.prediction_horizon + 1)]
+                    missing = [col for col in target_cols if col not in df_processed.columns]
+                    if missing:
+                        raise ValueError(f"Multi-horizon target columns {missing} not found")
 
         # Process each group separately
         # Create temporary composite key column
@@ -842,26 +845,27 @@ class TimeSeriesPredictor:
                 self.categorical_columns
             )
 
-            # Extract already-scaled target values (no scaling needed - done in step 6)
-            y_list = []
-            for target_col in self.target_columns:
-                for h in range(1, self.prediction_horizon + 1):
-                    shifted_col = f"{target_col}_target_h{h}"
-                    # Extract values after sequence offset (already scaled)
-                    # Updated offset: sequence_length - 1 due to new sequence creation logic
-                    target_values = group_df[shifted_col].values[self.sequence_length - 1:]
-                    y_list.append(target_values)
+            # Extract already-scaled target values (skip if inference_mode=True)
+            if not inference_mode:
+                y_list = []
+                for target_col in self.target_columns:
+                    for h in range(1, self.prediction_horizon + 1):
+                        shifted_col = f"{target_col}_target_h{h}"
+                        # Extract values after sequence offset (already scaled)
+                        # Updated offset: sequence_length - 1 due to new sequence creation logic
+                        target_values = group_df[shifted_col].values[self.sequence_length - 1:]
+                        y_list.append(target_values)
 
-            # Combine targets
-            if len(y_list) == 1:
-                y_combined = y_list[0]
-            else:
-                y_combined = np.column_stack(y_list)
+                # Combine targets
+                if len(y_list) == 1:
+                    y_combined = y_list[0]
+                else:
+                    y_combined = np.column_stack(y_list)
+                all_targets.append(y_combined)
 
             all_sequences_num.append(sequences_num)
             if sequences_cat is not None:
                 all_sequences_cat.append(sequences_cat)
-            all_targets.append(y_combined)
             group_indices.extend([group_value] * len(sequences_num))
 
         # Concatenate all groups
@@ -876,80 +880,98 @@ class TimeSeriesPredictor:
         else:
             X_cat_combined = None
 
-        # Handle target concatenation based on single vs multi-target mode
-        if self.is_multi_target:
-            # Multi-target: all_targets contains 2D arrays
-            # For single-horizon: each array is (samples, num_targets)
-            # For multi-horizon: each array is (samples, num_targets * horizons)
-            y_combined = np.vstack(all_targets)
+        # Handle target concatenation based on single vs multi-target mode (skip if inference_mode=True)
+        if not inference_mode:
+            if self.is_multi_target:
+                # Multi-target: all_targets contains 2D arrays
+                # For single-horizon: each array is (samples, num_targets)
+                # For multi-horizon: each array is (samples, num_targets * horizons)
+                y_combined = np.vstack(all_targets)
+            else:
+                # Single-target: original behavior
+                # For single-horizon: all_targets contains 1D arrays -> use concatenate
+                # For multi-horizon: all_targets contains 2D arrays -> use vstack
+                y_combined = np.vstack(all_targets) if self.prediction_horizon > 1 else np.concatenate(all_targets)
+            y = torch.tensor(y_combined, dtype=torch.float32)
         else:
-            # Single-target: original behavior
-            # For single-horizon: all_targets contains 1D arrays -> use concatenate
-            # For multi-horizon: all_targets contains 2D arrays -> use vstack
-            y_combined = np.vstack(all_targets) if self.prediction_horizon > 1 else np.concatenate(all_targets)
+            # Inference mode: no targets
+            y = None
 
         # Store group indices for inverse transform during prediction
         self._last_group_indices = group_indices
 
         # Convert to tensors
         X_num = torch.tensor(X_num_combined, dtype=torch.float32)
-        y = torch.tensor(y_combined, dtype=torch.float32)
 
         if X_cat_combined is not None:
             X_cat = torch.tensor(X_cat_combined, dtype=torch.long)  # Categorical indices are integers
             X = (X_num, X_cat)
             if self.verbose:
                 print(f"  Created {len(X_num)} sequences from {len(unique_groups)} groups")
-                print(f"  X_num shape: {X_num.shape}, X_cat shape: {X_cat.shape}, y shape: {y.shape}")
+                if y is not None:
+                    print(f"  X_num shape: {X_num.shape}, X_cat shape: {X_cat.shape}, y shape: {y.shape}")
+                else:
+                    print(f"  X_num shape: {X_num.shape}, X_cat shape: {X_cat.shape}, y: None (inference mode)")
         else:
             X = X_num
             if self.verbose:
                 print(f"  Created {len(X_num)} sequences from {len(unique_groups)} groups")
-                print(f"  X shape: {X_num.shape}, y shape: {y.shape}")
+                if y is not None:
+                    print(f"  X shape: {X_num.shape}, y shape: {y.shape}")
+                else:
+                    print(f"  X shape: {X_num.shape}, y: None (inference mode)")
 
         return X, y
 
-    def prepare_data(self, df: pd.DataFrame, fit_scaler: bool = False, store_for_evaluation: bool = False) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
+    def prepare_data(self, df: pd.DataFrame, fit_scaler: bool = False, store_for_evaluation: bool = False, inference_mode: bool = False) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         """
         Prepare sequential data for model training/inference.
 
         Pipeline:
         1. Create base features (sorting, date features) - can be overridden by subclasses
-        2. Create shifted targets
+        2. Create shifted targets (skipped if inference_mode=True)
         3. STORE unscaled/unencoded dataframe (if store_for_evaluation=True)
         4. Encode categorical features
         5. Determine numerical columns
-        6. Scale numerical features AND shifted targets (per-horizon)
-        7. Create sequences and extract already-scaled targets
+        6. Scale numerical features AND shifted targets (per-horizon, if present)
+        7. Create sequences and extract already-scaled targets (targets skipped if inference_mode=True)
 
         Args:
             df: Input dataframe
             fit_scaler: Whether to fit scalers (True for training data)
             store_for_evaluation: If True, stores unscaled/unencoded dataframe in self._last_processed_df
                                  for evaluation alignment. Should be True during predict(), False during fit().
+            inference_mode: If True, skips target creation and extraction. Use when predicting on
+                          unseen data without target columns. Default False for backward compatibility.
 
         Returns:
             X: If categorical_columns exist: Tuple of (X_num, X_cat) where
                   X_num: (n_samples, sequence_length, n_numerical_features)
                   X_cat: (n_samples, n_categorical_features)
                Otherwise: X_num tensor only
-            y: Target tensor of shape (n_samples,) (None for inference)
+            y: Target tensor of shape (n_samples,) or None if inference_mode=True
         """
         # Step 1: Create base features (sorting, date features)
         # Can be overridden by subclasses (e.g., StockPredictor adds vwap)
         df_features = self._create_base_features(df)
 
-        # Step 2: Create shifted target columns
-        # Use categorical_columns for shifting to prevent data leakage across all categorical boundaries
-        # Falls back to group_columns if categorical_columns not specified
-        group_col_for_shift = self.categorical_columns if self.categorical_columns else self.group_columns
-        df_with_targets = create_shifted_targets(
-            df_features,
-            target_column=self.target_columns,
-            prediction_horizon=self.prediction_horizon,
-            group_column=group_col_for_shift,
-            verbose=self.verbose
-        )
+        # Step 2: Create shifted target columns (skip if inference_mode=True)
+        if not inference_mode:
+            # Use categorical_columns for shifting to prevent data leakage across all categorical boundaries
+            # Falls back to group_columns if categorical_columns not specified
+            group_col_for_shift = self.categorical_columns if self.categorical_columns else self.group_columns
+            df_with_targets = create_shifted_targets(
+                df_features,
+                target_column=self.target_columns,
+                prediction_horizon=self.prediction_horizon,
+                group_column=group_col_for_shift,
+                verbose=self.verbose
+            )
+        else:
+            # Inference mode: no targets needed
+            df_with_targets = df_features
+            if self.verbose:
+                print(f"   Inference mode: Skipping target creation")
 
         # Step 3: STORE unscaled/unencoded dataframe for evaluation
         if store_for_evaluation:
@@ -963,24 +985,25 @@ class TimeSeriesPredictor:
         # Step 5: Determine numerical columns (excludes shifted targets, categoricals)
         df_encoded = self._determine_numerical_columns(df_encoded)
 
-        # Step 6: Collect shifted target column names for scaling
+        # Step 6: Collect shifted target column names for scaling (only if not inference_mode)
         shifted_target_columns = []
-        for target_col in self.target_columns:
-            for h in range(1, self.prediction_horizon + 1):
-                shifted_col = f"{target_col}_target_h{h}"
-                if shifted_col in df_encoded.columns:
-                    shifted_target_columns.append(shifted_col)
+        if not inference_mode:
+            for target_col in self.target_columns:
+                for h in range(1, self.prediction_horizon + 1):
+                    shifted_col = f"{target_col}_target_h{h}"
+                    if shifted_col in df_encoded.columns:
+                        shifted_target_columns.append(shifted_col)
 
-        # Step 6: Scale numerical features AND shifted targets (per-horizon)
+        # Step 6: Scale numerical features AND shifted targets (per-horizon, if present)
         if self.group_columns:
             df_scaled = self._scale_features_grouped(df_encoded, fit_scaler, shifted_target_columns)
         else:
             df_scaled = self._scale_features_single(df_encoded, fit_scaler, shifted_target_columns)
 
-        # Step 7: Create sequences and extract already-scaled targets
+        # Step 7: Create sequences and extract already-scaled targets (skip target extraction if inference_mode=True)
         if self.group_columns:
             # Group-based sequence creation (no target scaling - already done in step 6)
-            return self._prepare_data_grouped(df_scaled, fit_scaler=False)
+            return self._prepare_data_grouped(df_scaled, fit_scaler=False, inference_mode=inference_mode)
 
         # Non-grouped path: single-group data preparation
         # Check if we have enough data for sequences
@@ -996,23 +1019,28 @@ class TimeSeriesPredictor:
             self.categorical_columns
         )
 
-        # Extract already-scaled target values (no scaling needed - done in step 6)
-        y_list = []
-        for target_col in self.target_columns:
-            for h in range(1, self.prediction_horizon + 1):
-                shifted_col = f"{target_col}_target_h{h}"
-                if shifted_col not in df_scaled.columns:
-                    raise ValueError(f"Target column '{shifted_col}' not found")
-                # Extract values after sequence offset
-                # Updated offset: sequence_length - 1 due to new sequence creation logic
-                target_values = df_scaled[shifted_col].values[self.sequence_length - 1:]
-                y_list.append(target_values)
+        # Extract already-scaled target values (skip if inference_mode=True)
+        if not inference_mode:
+            y_list = []
+            for target_col in self.target_columns:
+                for h in range(1, self.prediction_horizon + 1):
+                    shifted_col = f"{target_col}_target_h{h}"
+                    if shifted_col not in df_scaled.columns:
+                        raise ValueError(f"Target column '{shifted_col}' not found")
+                    # Extract values after sequence offset
+                    # Updated offset: sequence_length - 1 due to new sequence creation logic
+                    target_values = df_scaled[shifted_col].values[self.sequence_length - 1:]
+                    y_list.append(target_values)
 
-        # Combine targets
-        if len(y_list) == 1:
-            y = y_list[0]
+            # Combine targets
+            if len(y_list) == 1:
+                y = y_list[0]
+            else:
+                y = np.column_stack(y_list)
+            y_tensor = torch.tensor(y, dtype=torch.float32)
         else:
-            y = np.column_stack(y_list)
+            # Inference mode: no targets
+            y_tensor = None
 
         # Convert to tensors
         X_num_tensor = torch.tensor(X_num, dtype=torch.float32)
@@ -1022,15 +1050,16 @@ class TimeSeriesPredictor:
         else:
             X = X_num_tensor
 
-        y_tensor = torch.tensor(y, dtype=torch.float32)
-
         if self.verbose:
             print(f"   Created {len(X_num)} sequences of length {self.sequence_length}")
             if isinstance(X, tuple):
                 print(f"   X_num shape: {X[0].shape}, X_cat shape: {X[1].shape}")
             else:
                 print(f"   X shape: {X.shape}")
-            print(f"   y shape: {y_tensor.shape}")
+            if y_tensor is not None:
+                print(f"   y shape: {y_tensor.shape}")
+            else:
+                print(f"   y: None (inference mode)")
 
         return X, y_tensor
     
@@ -1386,17 +1415,32 @@ class TimeSeriesPredictor:
         if verbose:
             print("Training completed!")
     
-    def predict(self, df: pd.DataFrame, return_group_info: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, list]]:
+    def predict(self, df: pd.DataFrame, inference_mode: bool = False, return_group_info: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, list]]:
         """
         Make predictions on new data.
 
         Args:
-            df: DataFrame with same structure as training data
+            df: DataFrame with same structure as training data.
+                - If inference_mode=False (default): Must include target columns for evaluation
+                - If inference_mode=True: Target columns are optional (for production forecasting)
+            inference_mode: Whether to use inference mode.
+                - False (default): Requires target columns, raises error if missing. Use for evaluation.
+                - True: Skips target processing, allows prediction without targets. Use for production.
             return_group_info: If True and group_column is set, returns (predictions, group_indices)
 
         Returns:
             predictions: Numpy array of predictions (in original scale)
             group_indices: List of group values for each prediction (only if return_group_info=True)
+
+        Raises:
+            ValueError: If inference_mode=False and target columns are missing from df
+
+        Examples:
+            >>> # Evaluation mode (default): requires targets
+            >>> predictions = predictor.predict(test_df)
+
+            >>> # Production forecasting: no targets needed
+            >>> predictions = predictor.predict(new_data, inference_mode=True)
         """
         if self.model is None:
             self.logger.error("Model must be trained first. Call fit().")
@@ -1406,9 +1450,27 @@ class TimeSeriesPredictor:
         self._feature_cache.clear()
         gc.collect()  # Force garbage collection to free memory
 
+        # Validate target columns if not in inference mode
+        if not inference_mode:
+            missing_targets = [col for col in self.target_columns if col not in df.columns]
+            if missing_targets:
+                raise ValueError(
+                    f"Target columns missing from input DataFrame: {missing_targets}\n"
+                    f"Expected target columns: {self.target_columns}\n"
+                    f"Available columns: {list(df.columns)}\n"
+                    f"\n"
+                    f"To predict without targets (production forecasting), set inference_mode=True:\n"
+                    f"  predictor.predict(df, inference_mode=True)"
+                )
+            if self.verbose:
+                print(f"   Evaluation mode: Using targets for alignment")
+        else:
+            if self.verbose:
+                print(f"   Inference mode: Predicting without targets")
+
         # Store processed dataframe for evaluation alignment (store_for_evaluation=True)
         # This stores the dataframe after feature engineering and target shifting, but before encoding/scaling
-        X, _ = self.prepare_data(df, fit_scaler=False, store_for_evaluation=True)
+        X, _ = self.prepare_data(df, fit_scaler=False, store_for_evaluation=True, inference_mode=inference_mode)
 
         self.model.eval()
         with torch.no_grad():

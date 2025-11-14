@@ -1,0 +1,238 @@
+TF_PREDICTOR MODULE EXPLORATION - EXECUTIVE SUMMARY
+====================================================
+
+Created: 2025-11-10
+
+DOCUMENTS CREATED:
+1. TF_PREDICTOR_EXPLORATION.md - Comprehensive technical exploration (16KB)
+2. TF_PREDICTOR_CODE_REFERENCE.md - Code examples and implementation details (17KB)
+3. This summary file
+
+================================================================================
+KEY FINDINGS SUMMARY
+================================================================================
+
+1. PREDICT() METHOD LOCATION & BEHAVIOR
+   File: core/predictor.py, Line 1389
+   
+   - Returns numpy array or dictionary depending on target type
+   - Single-target: Returns numpy array in original scale
+   - Multi-target: Returns dictionary {target_name: predictions_array}
+   
+   TARGET VARIABLE HANDLING:
+   - Single-target + single-horizon: array shape (n_samples,)
+   - Single-target + multi-horizon: array shape (n_samples, horizons)
+   - Multi-target + any horizon: dict of arrays for each target
+   
+   IMPLEMENTATION DETAILS:
+   - Uses batched inference (batch_size=256) for memory efficiency
+   - Group-based inverse transformation if group_columns specified
+   - Per-horizon target scalers: {target}_target_h{1,2,3...}
+   - Stores _last_group_indices to track prediction groups
+
+================================================================================
+
+2. TIME SERIES SPLIT LOGIC
+   File: core/utils.py, Line 114
+   Function: split_time_series()
+   
+   TEMPORAL ORDER MAINTAINED:
+   [-------- TRAINING SAMPLES --------|---- VALIDATION ----|---- TEST (Most Recent) ----]
+   
+   NON-GROUPED SPLIT:
+   - Test: df.iloc[-test_size:] (most recent)
+   - Val:  remaining.iloc[-val_size:] (middle)
+   - Train: remaining.iloc[:-val_size] (earliest)
+   
+   GROUPED SPLIT (Per-Group):
+   - Each group/symbol splits independently
+   - Auto-detects time column if not provided
+   - Minimum data requirement: test_size + val_size + (sequence_length * 2 + 10)
+   - Groups with insufficient data are skipped
+   - Final splits are concatenated across all groups
+
+================================================================================
+
+3. SEQUENCE CREATION & SEQUENCE_LENGTH EFFECTS
+   File: preprocessing/time_features.py, Line 296
+   Function: create_input_variable_sequence()
+   
+   SLIDING WINDOW MECHANISM:
+   Input:  DataFrame (n_rows, n_features)
+   Output: NumPy array (n_samples, sequence_length, n_features)
+   
+   Where: n_samples = len(df) - sequence_length + 1
+   
+   EXAMPLE (sequence_length=10, 100 rows):
+   - Creates 91 sequences (not 90!)
+   - Sequence 0: rows [0:10]
+   - Sequence 1: rows [1:11]
+   - ...
+   - Sequence 90: rows [90:100]
+   
+   TARGET OFFSET ALIGNMENT:
+   - Targets extracted starting at index: sequence_length - 1
+   - Example: if seq_len=10, targets start at index 9
+   - This ensures each sequence aligns with exactly one target value
+   
+   CATEGORICAL HANDLING:
+   - Categorical features extracted from LAST timestep of each sequence
+   - For sequence i: categorical = df[seq_len - 1 + i]
+   - Shape: (n_sequences, n_categorical_features)
+
+================================================================================
+
+4. DATA PREPROCESSING PIPELINE (7 STEPS)
+   File: core/predictor.py, Line 912
+   Function: prepare_data()
+   
+   COMPLETE FLOW:
+   
+   Step 1: _create_base_features()
+           - Sort by group columns and time
+           - Create cyclical date features (sin/cos encodings)
+           - Optional: subclass-specific features (e.g., vwap)
+   
+   Step 2: create_shifted_targets()
+           - Forward-shift targets by -h steps (h = horizon)
+           - Group-based shifting: df.groupby(group_col)[target].shift(-h)
+           - Creates columns: {target}_target_h{1,2,3...}
+           - Auto-removes NaN rows
+   
+   Step 3: Store unscaled dataframe (for evaluation)
+           - Only in predict() mode (store_for_evaluation=True)
+   
+   Step 4: _encode_categorical_features()
+           - LabelEncode each categorical column
+           - Store encoder in self.cat_encoders dict
+   
+   Step 5: _determine_numerical_columns()
+           - Identify numeric columns (excluding categoricals, targets)
+           - Set self.feature_columns
+   
+   Step 6: _scale_features_grouped() or _scale_features_single()
+           - Group-based: Each group gets its own scaler
+           - Single: All data uses same scaler
+           - Per-horizon target scaling: each horizon gets own scaler
+           - Enables accurate inverse transformation
+   
+   Step 7: _prepare_data_grouped() or direct sequence creation
+           - Create 3D numerical sequences using sliding window
+           - Extract 2D categorical features from last timestep
+           - Extract already-scaled targets (offset by seq_len-1)
+           - Concatenate all groups
+   
+   OUTPUT: (X, y) as PyTorch tensors
+   - X: (X_num, X_cat) tuple if categorical features exist
+       X_num shape: (n_sequences, sequence_length, n_numerical_features)
+       X_cat shape: (n_sequences, n_categorical_features)
+   - y: (n_sequences,) or (n_sequences, n_targets * horizons)
+
+================================================================================
+
+5. SCALER STRUCTURE & ORGANIZATION
+   
+   SINGLE-GROUP SCALERS:
+   - self.scaler: StandardScaler for all features
+   - self.target_scalers_dict: Dict[{target}_target_h{h}, Scaler]
+   
+   MULTI-GROUP SCALERS:
+   - self.group_feature_scalers: Dict[group_key, Scaler]
+   - self.group_target_scalers: Dict[group_key, Dict[{target}_target_h{h}, Scaler]]
+   
+   GROUP KEY STRUCTURE:
+   - Single column: scalar value (e.g., 'AAPL')
+   - Multiple columns: tuple (e.g., ('AAPL', 'Tech'))
+
+================================================================================
+
+6. CRITICAL IMPLEMENTATION DETAILS
+   
+   SHIFTED TARGET CREATION:
+   - Uses df.shift(-h) to move targets forward in time
+   - Negative shift (-h) not (-0) to get future values as targets
+   - Group-based prevents data leakage across group boundaries
+   
+   MULTI-HORIZON LAYOUT:
+   - Single-target, multi-horizon: [h1_value, h2_value, h3_value, ...]
+   - Multi-target, multi-horizon: [close_h1, close_h2, volume_h1, volume_h2, ...]
+   - Each horizon has independent scaler for inverse transform
+   
+   MEMORY OPTIMIZATION:
+   - Batched prediction (batch_size=256)
+   - GPU cache clearing after each batch
+   - DataFrame hashing for feature caching
+   - Immediate CPU movement of predictions
+   
+   TEMPORAL INTEGRITY:
+   - Sorting by group + time prevents data leakage
+   - Group-wise splitting maintains test set isolation
+   - Sequence offset (seq_len - 1) aligns inputs with targets
+
+================================================================================
+
+MAIN FILES REFERENCE:
+
+1. core/predictor.py (1900+ lines)
+   - TimeSeriesPredictor class (main predictor)
+   - Key methods: fit(), predict(), prepare_data()
+   - Sequence creation, scaling, encoding
+
+2. preprocessing/time_features.py (400+ lines)
+   - create_shifted_targets() - target variable creation
+   - create_input_variable_sequence() - sliding window sequences
+   - create_date_features() - temporal feature engineering
+
+3. core/utils.py (250+ lines)
+   - split_time_series() - train/val/test splitting
+   - calculate_metrics() - evaluation metrics
+
+4. preprocessing/scaler_factory.py
+   - ScalerFactory.create_scaler() - flexible scaler instantiation
+
+5. core/base/model_factory.py
+   - ModelFactory.create_model() - model instantiation
+
+================================================================================
+
+IMPORTANT ATTRIBUTES:
+
+Initialized in __init__:
+- target_columns, sequence_length, prediction_horizon
+- group_columns, categorical_columns
+- is_multi_target, model_type, scaler_type
+
+Set during fit():
+- model, feature_columns, numerical_columns
+- cat_encoders, cat_cardinalities
+- scaler, target_scalers_dict
+- group_feature_scalers, group_target_scalers
+
+Set during predict():
+- _last_processed_df (unscaled dataframe for evaluation)
+- _last_group_indices (track group membership of predictions)
+
+================================================================================
+
+COMMON USAGE PATTERNS:
+
+1. Basic prediction:
+   predictions = predictor.predict(test_df)
+
+2. Group-aware prediction:
+   predictions, group_indices = predictor.predict(test_df, return_group_info=True)
+
+3. Multi-target prediction:
+   predictions_dict = predictor.predict(test_df)  # Returns {'close': array, 'volume': array}
+
+4. Train/test split:
+   from tf_predictor.core.utils import split_time_series
+   train_df, val_df, test_df = split_time_series(
+       df,
+       test_size=30,
+       val_size=20,
+       group_column='symbol'
+   )
+
+================================================================================
+END OF SUMMARY

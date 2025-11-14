@@ -56,15 +56,22 @@ def main():
                        help='Type of scaler for normalization (default: standard)')
     parser.add_argument('--use_lagged_target_features', action='store_true',
                        help='Include target columns in input sequences for autoregressive modeling')
+    parser.add_argument('--use_return_forecasting', action='store_true',
+                       help='Enable multi-target return forecasting mode (predicts 1d, 2d, 3d, 4d, 5d returns using technical indicators)')
+    parser.add_argument('--return_horizons', type=str, default='1,2,3,4,5',
+                       help='Return horizons in days for return forecasting mode (comma-separated, e.g., "1,2,3,5,10")')
 
     # Model arguments
     parser.add_argument('--sequence_length', type=int, default=5,
                        help='Number of historical days to use for prediction')
     parser.add_argument('--prediction_horizon', type=int, default=1,
                        help='Number of steps ahead to predict (1=next step, 2=two steps ahead, etc.)')
-    parser.add_argument('--model_type', type=str, default='ft_transformer_cls',
-                       choices=['ft_transformer_cls', 'csn_transformer_cls'],
-                       help='Model architecture (ft_transformer_cls=FT-Transformer, csn_transformer_cls=CSNTransformer)')
+    parser.add_argument('--model_type', type=str, default='ft_transformer',
+                       choices=['ft_transformer', 'csn_transformer'],
+                       help='Model architecture (ft_transformer=FT-Transformer, csn_transformer=CSN-Transformer)')
+    parser.add_argument('--pooling_type', type=str, default='multihead_attention',
+                       choices=['cls', 'singlehead_attention', 'multihead_attention', 'weighted_avg', 'temporal_multihead_attention'],
+                       help='Pooling strategy for sequence aggregation (default: multihead_attention)')
     parser.add_argument('--d_token', type=int, default=128,
                        help='Token embedding dimension')
     parser.add_argument('--n_layers', type=int, default=3,
@@ -240,8 +247,13 @@ def main():
         else:
             cat_cols_for_model = args.categorical_columns
 
+    # Parse return_horizons
+    return_horizons_list = None
+    if args.use_return_forecasting and args.return_horizons:
+        return_horizons_list = [int(h.strip()) for h in args.return_horizons.split(',')]
+
     model = StockPredictor(
-        target_column=target_columns,  # Can be str or list
+        target_column=target_columns,  # Can be str or list (ignored if use_return_forecasting=True)
         sequence_length=args.sequence_length,
         prediction_horizon=args.prediction_horizon,
         asset_type=args.asset_type,
@@ -250,24 +262,36 @@ def main():
         categorical_columns=cat_cols_for_model,
         scaler_type=args.scaler_type,
         use_lagged_target_features=args.use_lagged_target_features,
+        use_return_forecasting=args.use_return_forecasting,
+        return_horizons=return_horizons_list,
+        verbose=True,
         d_token=args.d_token,
         n_layers=args.n_layers,
         n_heads=args.n_heads,
-        dropout=args.dropout
+        dropout=args.dropout,
+        pooling_type=args.pooling_type
     )
 
     print(f"   Model configuration:")
     print(f"   - Asset type: {args.asset_type}")
     print(f"   - Model type: {args.model_type}")
-    if isinstance(target_columns, list):
-        print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
+    print(f"   - Pooling type: {args.pooling_type}")
+
+    if args.use_return_forecasting:
+        print(f"   - Mode: Return Forecasting")
+        print(f"   - Targets: return_1d, return_2d, return_3d, return_4d, return_5d")
+        print(f"   - Input features: close, relative_volume, intraday_momentum, rsi_14, bb_position")
     else:
-        print(f"   - Target: {target_columns}")
+        if isinstance(target_columns, list):
+            print(f"   - Targets: {', '.join(target_columns)} (multi-target)")
+        else:
+            print(f"   - Target: {target_columns}")
+        print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
+
     print(f"   - Sequence length: {args.sequence_length}")
-    print(f"   - Prediction horizon: {args.prediction_horizon} step(s) ahead")
-    print(f"   - Token dimension: {args.d_model}")
-    print(f"   - Layers: {args.num_layers}")
-    print(f"   - Attention heads: {args.num_heads}")
+    print(f"   - Token dimension: {args.d_token}")
+    print(f"   - Layers: {args.n_layers}")
+    print(f"   - Attention heads: {args.n_heads}")
     print(f"   - Dropout: {args.dropout}")
     print(f"   - Scaler type: {args.scaler_type}")
     if args.use_lagged_target_features:

@@ -1,17 +1,19 @@
 # 🧠 TF Predictor: Generic Time Series Forecasting Library
 
-**Version:** 2.1.0 (Updated: 2025-11-05)
+**Version:** 2.1.0 (Updated: 2025-11-07)
 
 A reusable Python library for time series forecasting using the FT-Transformer (Feature Tokenizer Transformer) architecture. This library provides a clean, extensible foundation for building domain-specific time series prediction applications.
 
 ## 🎯 Features
 
 ### Version 2.1.0 Highlights ⭐ NEW
+- **🎯 Configurable Pooling Strategies**: Choose from 5 pooling methods for sequence aggregation
+- **🚀 Multi-Head Attention Pooling**: Default pooling strategy for better feature aggregation
 - **Multi-Column Grouping Support**: Full support for composite grouping (e.g., `['symbol', 'sector']`) with correct evaluation
 - **Improved Cache Hashing**: Enhanced DataFrame hashing to prevent collisions
 - **Explicit Group Ordering**: Deterministic group processing order for reproducible results
 - **Bug Fixes**: Critical fix for per-group evaluation with multi-column grouping
-- **Comprehensive Testing**: Added test suite for multi-column grouping scenarios
+- **Comprehensive Testing**: Added test suite for multi-column grouping and pooling scenarios
 
 ### Version 2.0.0 Highlights
 - **Per-Horizon Target Scaling**: Each prediction horizon gets its own scaler for optimal accuracy
@@ -23,9 +25,10 @@ A reusable Python library for time series forecasting using the FT-Transformer (
 ### Core Features
 - **Multi-Target Prediction**: Predict multiple variables simultaneously with one unified model
 - **Multi-Horizon Forecasting**: Predict 1 to N steps ahead with per-horizon scaling
-- **Multi-Column Grouping**: Support for composite group keys (e.g., symbol + sector) ⭐ NEW
+- **Multi-Column Grouping**: Support for composite group keys (e.g., symbol + sector) ⭐ NEW v2.1
+- **Configurable Pooling**: Choose from 5 pooling strategies for sequence aggregation ⭐ NEW v2.1
 - **Generic Time Series Predictor**: Abstract base class for any time series domain
-- **State-of-the-art Architecture**: FT-Transformer with attention mechanisms
+- **State-of-the-art Architectures**: FT-Transformer and CSN-Transformer with attention mechanisms
 - **Group-Based Scaling**: Independent scaling per group (e.g., per entity/symbol) while training unified models
 - **Automatic Temporal Ordering**: Data automatically sorted to maintain correct time sequences
 - **Flexible Feature Engineering**: Extensible preprocessing pipeline with clean separation
@@ -81,7 +84,8 @@ predictor = MyPredictor(
     target_column='value',
     sequence_length=7,
     prediction_horizon=1,  # Number of steps ahead (default: 1)
-    model_type='ft_transformer_cls',  # 'ft_transformer_cls' or 'csn_transformer_cls'
+    model_type='ft_transformer',  # 'ft_transformer' or 'csn_transformer'
+    pooling_type='multihead_attention',  # ⭐ NEW v2.1: Pooling strategy
     d_token=128,
     n_layers=3,
     n_heads=8
@@ -280,6 +284,69 @@ predictions = predictor.predict(test_df)
 metrics = predictor.evaluate(test_df, per_group=True)
 # Returns nested structure with metrics for each (symbol, sector) combination
 ```
+
+### 8. Configurable Pooling Strategies ⭐ NEW in v2.1.0
+
+Choose from 5 pooling methods to aggregate transformer sequences:
+
+```python
+from tf_predictor.core.predictor import TimeSeriesPredictor
+
+# Available pooling types:
+# 1. 'multihead_attention' (default) - Best overall performance
+# 2. 'singlehead_attention' - Simpler, fewer parameters
+# 3. 'temporal_multihead_attention' - Emphasizes recent timesteps
+# 4. 'weighted_avg' - Learnable weighted average
+# 5. 'cls' - CLS token pooling (legacy)
+
+# Example: Using temporal multi-head attention
+predictor = TimeSeriesPredictor(
+    target_column='value',
+    sequence_length=10,
+    model_type='ft_transformer',
+    pooling_type='temporal_multihead_attention',  # Emphasizes recent data
+    d_token=128,
+    n_heads=8,
+    n_layers=3
+)
+
+# Example: Experiment with different pooling strategies
+pooling_strategies = [
+    'cls',
+    'singlehead_attention',
+    'multihead_attention',
+    'weighted_avg',
+    'temporal_multihead_attention'
+]
+
+results = {}
+for pooling in pooling_strategies:
+    predictor = TimeSeriesPredictor(
+        target_column='value',
+        sequence_length=10,
+        pooling_type=pooling,  # Try different strategies
+        d_token=128,
+        n_heads=8,
+        n_layers=3
+    )
+
+    predictor.fit(train_df, val_df, epochs=50)
+    metrics = predictor.evaluate(test_df)
+    results[pooling] = metrics['MAE']
+    print(f"{pooling:30s} | MAE: {metrics['MAE']:.4f}")
+
+# Find best pooling strategy
+best_pooling = min(results, key=results.get)
+print(f"\nBest pooling strategy: {best_pooling}")
+```
+
+**Pooling Strategy Guidelines:**
+- **Default (`multihead_attention`)**: Best overall performance for most tasks
+- **Temporal (`temporal_multihead_attention`)**: Use for trends/strong recency effects
+- **Simple (`weighted_avg`)**: Fastest inference, good for resource-constrained scenarios
+- **Legacy (`cls`)**: For comparison with classic transformer approaches
+
+**See `POOLING_VERIFICATION_RESULTS.md` for detailed pooling documentation.**
 
 ## 🎨 Complete Example with All Arguments
 
