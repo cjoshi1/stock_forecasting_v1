@@ -1,0 +1,51 @@
+# Baseline Preprocessing Configuration for Rossmann Store Sales
+# Version: baseline_v1
+# Description: Basic Rossmann features without advanced engineering
+
+version: "baseline_v1"
+description: "Basic Rossmann features - competition, promo, holidays, store info"
+
+# Competition features
+competition:
+  enabled: true
+  fill_distance_missing: "median"  # How to fill missing CompetitionDistance
+  calculate_months_since: true      # Calculate months since competition opened
+
+# Promotion features
+promotion:
+  enabled: true
+  use_promo2: true                  # Include Promo2 features
+  calculate_months_since_promo2: true  # Calculate months since Promo2 started
+  create_promo_month_indicator: true   # Is current month in PromoInterval
+
+# Holiday features
+holidays:
+  enabled: true
+  encode_state_holiday: true        # Encode StateHoliday (a/b/c/0)
+  use_school_holiday: true          # Include SchoolHoliday binary feature
+
+# Store features
+store:
+  enabled: true
+  encode_store_type: true           # Encode StoreType (a/b/c/d)
+  encode_assortment: true           # Encode Assortment (a/b/c)
+
+# Domain-specific features
+domain_features:
+  sales_per_customer: true          # Sales / Customers ratio
+  customers_indicator: true         # Flag for stores with customer data
+
+# Data filtering
+filtering:
+  remove_closed_stores: true        # Remove rows where Open == 0
+  remove_zero_sales: false          # Keep zero sales for proper evaluation
+
+# Validation split (for train.csv only)
+validation:
+  strategy: "temporal"              # Temporal split (chronological)
+  val_ratio: 0.2                    # 20% of train.csv for validation
+
+# Caching
+cache:
+  enabled: true
+  cache_key: "baseline_v1"          # Unique identifier for this config
