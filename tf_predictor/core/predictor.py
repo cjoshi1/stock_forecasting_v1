@@ -350,7 +350,11 @@ class TimeSeriesPredictor:
 
         df = df.copy()
 
-        for col in self.categorical_columns:
+        # Exclude metadata columns from encoding
+        metadata_cols = {'_original_index', '_group_key'}
+        cols_to_encode = [col for col in self.categorical_columns if col not in metadata_cols]
+
+        for col in cols_to_encode:
             if col not in df.columns:
                 raise ValueError(f"Categorical column '{col}' not found in DataFrame")
 
@@ -390,11 +394,11 @@ class TimeSeriesPredictor:
         if fit_encoders:
             self.cat_cardinalities = [
                 len(self.cat_encoders[col].classes_)
-                for col in self.categorical_columns
+                for col in cols_to_encode
             ]
 
             if self.verbose:
-                print(f"   Categorical cardinalities: {dict(zip(self.categorical_columns, self.cat_cardinalities))}")
+                print(f"   Categorical cardinalities: {dict(zip(cols_to_encode, self.cat_cardinalities))}")
 
         return df
 
@@ -403,8 +407,9 @@ class TimeSeriesPredictor:
         df: pd.DataFrame,
         sequence_length: int,
         numerical_columns: List[str],
-        categorical_columns: List[str]
-    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        categorical_columns: List[str],
+        return_indices: bool = True
+    ):
         """
         Create sequences for numerical features and extract categorical features.
 
@@ -416,11 +421,18 @@ class TimeSeriesPredictor:
             sequence_length: Length of lookback window
             numerical_columns: List of numerical feature columns
             categorical_columns: List of categorical feature columns (already label encoded)
+            return_indices: If True, return (X_num, X_cat, sequence_indices)
 
         Returns:
-            (X_num, X_cat) tuple:
-                X_num: (num_sequences, seq_len, num_numerical) - 3D numerical sequences
-                X_cat: (num_sequences, num_categorical) - 2D categorical features or None if no categorical columns
+            If return_indices=False:
+                (X_num, X_cat) tuple:
+                    X_num: (num_sequences, seq_len, num_numerical) - 3D numerical sequences
+                    X_cat: (num_sequences, num_categorical) - 2D categorical features or None
+            If return_indices=True:
+                (X_num, X_cat, sequence_indices) tuple:
+                    X_num: (num_sequences, seq_len, num_numerical) - 3D numerical sequences
+                    X_cat: (num_sequences, num_categorical) - 2D categorical features or None
+                    sequence_indices: (num_sequences,) - Original indices for each sequence
 
         Example:
             If df has 100 rows, sequence_length=10:
@@ -429,12 +441,22 @@ class TimeSeriesPredictor:
         """
         from ..preprocessing.time_features import create_input_variable_sequence
 
-        # Step 1: Create numerical sequences (3D)
-        X_num = create_input_variable_sequence(
-            df,
-            sequence_length,
-            feature_columns=numerical_columns
-        )
+        # Step 1: Create numerical sequences (3D) with indices
+        if return_indices and '_original_index' in df.columns:
+            X_num, seq_indices = create_input_variable_sequence(
+                df,
+                sequence_length,
+                feature_columns=numerical_columns,
+                return_indices=True,
+                index_column='_original_index'
+            )
+        else:
+            X_num = create_input_variable_sequence(
+                df,
+                sequence_length,
+                feature_columns=numerical_columns
+            )
+            seq_indices = None
 
         # Step 2: Extract categorical from last timestep of each sequence (2D)
         if categorical_columns:
@@ -460,7 +482,10 @@ class TimeSeriesPredictor:
         else:
             X_cat = None
 
-        return X_num, X_cat
+        if return_indices and seq_indices is not None:
+            return X_num, X_cat, seq_indices
+        else:
+            return X_num, X_cat
 
     def _create_base_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -533,6 +558,10 @@ class TimeSeriesPredictor:
         """
         # Build exclusion set
         exclude_cols = set()
+
+        # Always exclude metadata columns
+        exclude_cols.add('_original_index')
+        exclude_cols.add('_group_key')  # if used
 
         # Always exclude shifted target columns (these are Y, not X)
         for target_col in self.target_columns:
@@ -615,16 +644,23 @@ class TimeSeriesPredictor:
 
         Returns:
             DataFrame with scaled features and targets
+
+        Note:
+            Excludes metadata columns like '_original_index' from scaling.
         """
+        # Exclude metadata columns from scaling (safeguard)
+        metadata_cols = {'_original_index', '_group_key'}
+        feature_cols_to_scale = [col for col in self.feature_columns if col not in metadata_cols]
+
         # Scale numerical input features
-        if len(self.feature_columns) > 0:
+        if len(feature_cols_to_scale) > 0:
             if fit_scaler:
-                df_processed[self.feature_columns] = self.scaler.fit_transform(
-                    df_processed[self.feature_columns]
+                df_processed[feature_cols_to_scale] = self.scaler.fit_transform(
+                    df_processed[feature_cols_to_scale]
                 )
             else:
-                df_processed[self.feature_columns] = self.scaler.transform(
-                    df_processed[self.feature_columns]
+                df_processed[feature_cols_to_scale] = self.scaler.transform(
+                    df_processed[feature_cols_to_scale]
                 )
 
         # Scale shifted target columns (each horizon separately)
@@ -660,7 +696,14 @@ class TimeSeriesPredictor:
 
         Returns:
             DataFrame with group-scaled features and targets
+
+        Note:
+            Excludes metadata columns like '_original_index' from scaling.
         """
+        # Exclude metadata columns from scaling (safeguard)
+        metadata_cols = {'_original_index', '_group_key'}
+        numerical_cols_to_scale = [col for col in self.numerical_columns if col not in metadata_cols]
+
         # Verify all group columns exist
         missing_cols = [col for col in self.group_columns if col not in df_processed.columns]
         if missing_cols:
@@ -698,8 +741,8 @@ class TimeSeriesPredictor:
             if group_size == 0:
                 continue
 
-            # Get data for this group (use numerical_columns)
-            group_data = df_scaled.loc[group_mask, self.numerical_columns]
+            # Get data for this group (use numerical_columns, excluding metadata)
+            group_data = df_scaled.loc[group_mask, numerical_cols_to_scale]
 
             if fit_scaler:
                 # Create and fit new scaler for this group
@@ -719,9 +762,9 @@ class TimeSeriesPredictor:
                 scaled_data = self.group_feature_scalers[group_key].transform(group_data)
 
             # Update the scaled data for this group (convert to DataFrame to preserve dtypes)
-            df_scaled.loc[group_mask, self.numerical_columns] = pd.DataFrame(
+            df_scaled.loc[group_mask, numerical_cols_to_scale] = pd.DataFrame(
                 scaled_data,
-                columns=self.numerical_columns,
+                columns=numerical_cols_to_scale,
                 index=df_scaled[group_mask].index
             )
 
@@ -821,6 +864,7 @@ class TimeSeriesPredictor:
         all_sequences_cat = []  # Categorical features (if any)
         all_targets = []
         group_indices = []  # Track which group each sequence belongs to
+        sequence_original_indices = []  # NEW: Track original indices
 
         # Determine numerical feature columns (exclude categoricals)
         numerical_feature_cols = [col for col in self.feature_columns if col not in self.categorical_columns]
@@ -838,12 +882,19 @@ class TimeSeriesPredictor:
                 continue
 
             # Create sequences with separate numerical and categorical handling
-            sequences_num, sequences_cat = self._create_sequences_with_categoricals(
+            result = self._create_sequences_with_categoricals(
                 group_df,
                 self.sequence_length,
                 numerical_feature_cols,
-                self.categorical_columns
+                self.categorical_columns,
+                return_indices=True
             )
+
+            if len(result) == 3:
+                sequences_num, sequences_cat, seq_indices = result
+            else:
+                sequences_num, sequences_cat = result
+                seq_indices = None
 
             # Extract already-scaled target values (skip if inference_mode=True)
             if not inference_mode:
@@ -867,6 +918,10 @@ class TimeSeriesPredictor:
             if sequences_cat is not None:
                 all_sequences_cat.append(sequences_cat)
             group_indices.extend([group_value] * len(sequences_num))
+
+            # NEW: Store original indices for each sequence
+            if seq_indices is not None:
+                sequence_original_indices.extend(seq_indices)
 
         # Concatenate all groups
         if len(all_sequences_num) == 0:
@@ -899,6 +954,9 @@ class TimeSeriesPredictor:
 
         # Store group indices for inverse transform during prediction
         self._last_group_indices = group_indices
+
+        # NEW: Store indices for evaluation
+        self._last_sequence_indices = np.array(sequence_original_indices)
 
         # Convert to tensors
         X_num = torch.tensor(X_num_combined, dtype=torch.float32)
@@ -954,6 +1012,11 @@ class TimeSeriesPredictor:
         # Step 1: Create base features (sorting, date features)
         # Can be overridden by subclasses (e.g., StockPredictor adds vwap)
         df_features = self._create_base_features(df)
+
+        # Step 1.5: Add original index column for tracking alignment
+        df_features['_original_index'] = df_features.index
+        if self.verbose:
+            print(f"   Added _original_index column for alignment tracking")
 
         # Step 2: Create shifted target columns (skip if inference_mode=True)
         if not inference_mode:
@@ -1012,12 +1075,23 @@ class TimeSeriesPredictor:
 
         # Create sequences using _create_sequences_with_categoricals (same as grouped path)
         numerical_cols = [col for col in self.feature_columns if col not in (self.categorical_columns or [])]
-        X_num, X_cat = self._create_sequences_with_categoricals(
+        result = self._create_sequences_with_categoricals(
             df_scaled,
             self.sequence_length,
             numerical_cols,
-            self.categorical_columns
+            self.categorical_columns,
+            return_indices=True
         )
+
+        if len(result) == 3:
+            X_num, X_cat, seq_indices = result
+        else:
+            X_num, X_cat = result
+            seq_indices = None
+
+        # NEW: Store indices for evaluation
+        if seq_indices is not None:
+            self._last_sequence_indices = seq_indices
 
         # Extract already-scaled target values (skip if inference_mode=True)
         if not inference_mode:
@@ -1415,7 +1489,7 @@ class TimeSeriesPredictor:
         if verbose:
             print("Training completed!")
     
-    def predict(self, df: pd.DataFrame, inference_mode: bool = False, return_group_info: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, list]]:
+    def predict(self, df: pd.DataFrame, inference_mode: bool = False, return_group_info: bool = False, return_indices: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, list]]:
         """
         Make predictions on new data.
 
@@ -1427,10 +1501,12 @@ class TimeSeriesPredictor:
                 - False (default): Requires target columns, raises error if missing. Use for evaluation.
                 - True: Skips target processing, allows prediction without targets. Use for production.
             return_group_info: If True and group_column is set, returns (predictions, group_indices)
+            return_indices: If True, returns (predictions, indices) or (predictions, group_indices, original_indices)
 
         Returns:
             predictions: Numpy array of predictions (in original scale)
             group_indices: List of group values for each prediction (only if return_group_info=True)
+            original_indices: Original row indices for each prediction (only if return_indices=True)
 
         Raises:
             ValueError: If inference_mode=False and target columns are missing from df
@@ -1567,7 +1643,12 @@ class TimeSeriesPredictor:
 
                         predictions_dict[target_col] = target_preds
 
-                    if return_group_info:
+                    if return_indices:
+                        if return_group_info:
+                            return predictions_dict, self._last_group_indices, self._last_sequence_indices
+                        else:
+                            return predictions_dict, self._last_sequence_indices
+                    elif return_group_info:
                         return predictions_dict, self._last_group_indices
                     else:
                         return predictions_dict
@@ -1603,7 +1684,12 @@ class TimeSeriesPredictor:
 
                     final_predictions = predictions.flatten() if self.prediction_horizon == 1 else predictions
 
-                    if return_group_info:
+                    if return_indices:
+                        if return_group_info:
+                            return final_predictions, self._last_group_indices, self._last_sequence_indices
+                        else:
+                            return final_predictions, self._last_sequence_indices
+                    elif return_group_info:
                         return final_predictions, self._last_group_indices
                     else:
                         return final_predictions
@@ -1642,7 +1728,10 @@ class TimeSeriesPredictor:
                             # Stack into (n_samples, horizons) for this target
                             predictions_dict[target_col] = horizons_original
 
-                    return predictions_dict
+                    if return_indices:
+                        return predictions_dict, self._last_sequence_indices
+                    else:
+                        return predictions_dict
 
                 elif self.prediction_horizon == 1:
                     # Single-target, single horizon: reshape to (n_samples, 1) for inverse transform
@@ -1650,7 +1739,10 @@ class TimeSeriesPredictor:
                     shifted_col = f"{target_col}_target_h1"
                     predictions_scaled = predictions_scaled.reshape(-1, 1)
                     predictions = self.target_scalers_dict[shifted_col].inverse_transform(predictions_scaled)
-                    return predictions.flatten()
+                    if return_indices:
+                        return predictions.flatten(), self._last_sequence_indices
+                    else:
+                        return predictions.flatten()
                 else:
                     # Single-target, multi-horizon: predictions_scaled shape is (n_samples, horizons)
                     # Inverse transform each horizon separately using per-horizon scalers
@@ -1660,7 +1752,10 @@ class TimeSeriesPredictor:
                         shifted_col = f"{target_col}_target_h{h+1}"
                         horizon_scaled = predictions_scaled[:, h].reshape(-1, 1)
                         predictions[:, h] = self.target_scalers_dict[shifted_col].inverse_transform(horizon_scaled).flatten()
-                    return predictions
+                    if return_indices:
+                        return predictions, self._last_sequence_indices
+                    else:
+                        return predictions
 
     def predict_from_features(self, df_processed: pd.DataFrame) -> np.ndarray:
         """
@@ -1790,6 +1885,8 @@ class TimeSeriesPredictor:
         """
         Standard evaluation without per-group breakdown.
 
+        Now uses explicit index-based alignment instead of offsets.
+
         Args:
             df: DataFrame with raw data
             predictions: Optional pre-computed predictions (if None, will call predict())
@@ -1810,8 +1907,12 @@ class TimeSeriesPredictor:
                     "This is a bug - predict() should have set _last_processed_df."
                 )
 
-            # New offset: sequence_length - 1 (due to new sequence creation logic)
-            offset = self.sequence_length - 1
+            # NEW: Use explicit indices instead of offset
+            if not hasattr(self, '_last_sequence_indices') or self._last_sequence_indices is None:
+                raise RuntimeError("_last_sequence_indices not available. This is a bug.")
+
+            # Set index on _last_processed_df to use loc with original indices
+            eval_df = self._last_processed_df.set_index('_original_index', drop=False)
 
             metrics_dict = {}
 
@@ -1820,9 +1921,9 @@ class TimeSeriesPredictor:
 
                 # Handle single vs multi-horizon
                 if self.prediction_horizon == 1:
-                    # Single-horizon: extract from shifted target column
+                    # Single-horizon: extract using indices
                     shifted_col = f"{target_col}_target_h1"
-                    actual = self._last_processed_df[shifted_col].values[offset:]
+                    actual = eval_df.loc[self._last_sequence_indices, shifted_col].values
 
                     # Validate alignment
                     if len(actual) != len(target_predictions):
@@ -1833,12 +1934,12 @@ class TimeSeriesPredictor:
 
                     metrics_dict[target_col] = calculate_metrics(actual, target_predictions)
                 else:
-                    # Multi-horizon: extract each horizon separately
+                    # Multi-horizon: extract each horizon separately using indices
                     horizon_metrics = {}
 
                     for h in range(1, self.prediction_horizon + 1):
                         shifted_col = f"{target_col}_target_h{h}"
-                        horizon_actual = self._last_processed_df[shifted_col].values[offset:]
+                        horizon_actual = eval_df.loc[self._last_sequence_indices, shifted_col].values
                         horizon_pred = target_predictions[:, h-1]
 
                         # Validate alignment
@@ -1852,7 +1953,7 @@ class TimeSeriesPredictor:
 
                     # Overall for this target across all horizons
                     all_actual = np.concatenate([
-                        self._last_processed_df[f"{target_col}_target_h{h}"].values[offset:]
+                        eval_df.loc[self._last_sequence_indices, f"{target_col}_target_h{h}"].values
                         for h in range(1, self.prediction_horizon + 1)
                     ])
                     all_pred = target_predictions.flatten()
@@ -1871,18 +1972,22 @@ class TimeSeriesPredictor:
                     "This is a bug - predict() should have set _last_processed_df."
                 )
 
-            target_col = self.target_columns[0]
+            # NEW: Use explicit indices instead of offset
+            if not hasattr(self, '_last_sequence_indices') or self._last_sequence_indices is None:
+                raise RuntimeError("_last_sequence_indices not available. This is a bug.")
 
-            # New offset: sequence_length - 1 (due to new sequence creation logic)
-            offset = self.sequence_length - 1
+            # Set index on _last_processed_df to use loc with original indices
+            eval_df = self._last_processed_df.set_index('_original_index', drop=False)
+
+            target_col = self.target_columns[0]
 
             # Handle single vs multi-horizon evaluation
             if self.prediction_horizon == 1:
-                # Single-horizon: extract from shifted target column
+                # Single-horizon: extract using indices
                 from ..core.utils import calculate_metrics
 
                 shifted_col = f"{target_col}_target_h1"
-                actual = self._last_processed_df[shifted_col].values[offset:]
+                actual = eval_df.loc[self._last_sequence_indices, shifted_col].values
 
                 # Validate alignment
                 if len(actual) != len(predictions):
@@ -1893,13 +1998,13 @@ class TimeSeriesPredictor:
 
                 return calculate_metrics(actual, predictions)
             else:
-                # Multi-horizon: extract each horizon from shifted columns
+                # Multi-horizon: extract each horizon using indices
                 from ..core.utils import calculate_metrics
 
                 horizons_actuals = []
                 for h in range(1, self.prediction_horizon + 1):
                     shifted_col = f"{target_col}_target_h{h}"
-                    horizon_actual = self._last_processed_df[shifted_col].values[offset:]
+                    horizon_actual = eval_df.loc[self._last_sequence_indices, shifted_col].values
                     horizons_actuals.append(horizon_actual)
 
                 # Stack into 2D: (n_samples, horizons)

@@ -206,6 +206,9 @@ def create_shifted_targets(df: pd.DataFrame, target_column, prediction_horizon: 
             - Single target, multi-horizon: adds '{target}_target_h1', '{target}_target_h2', etc.
             - Multiple targets: adds columns for each target with appropriate horizon suffixes
             - Rows with NaN in any target column are automatically removed
+
+    Note:
+        Preserves '_original_index' column if present for alignment tracking.
     Examples:
         >>> # Single target, single horizon
         >>> df = create_shifted_targets(df, 'close', prediction_horizon=1)
@@ -229,6 +232,9 @@ def create_shifted_targets(df: pd.DataFrame, target_column, prediction_horizon: 
         >>> # Shifting is done per (symbol, sector) combination
     """
     df = df.copy()
+
+    # Preserve _original_index if present
+    has_index_col = '_original_index' in df.columns
 
     # Normalize target_column to list
     if isinstance(target_column, str):
@@ -289,6 +295,8 @@ def create_shifted_targets(df: pd.DataFrame, target_column, prediction_horizon: 
         if group_column:
             print(f"   Group-based shifting applied using column: {group_column}")
         print(f"   Remaining samples after shift: {len(df)}")
+        if has_index_col:
+            print(f"   Preserved _original_index: {df['_original_index'].min()} to {df['_original_index'].max()}")
 
     return df
 
@@ -297,8 +305,10 @@ def create_input_variable_sequence(
     df: pd.DataFrame,
     sequence_length: int,
     feature_columns: list = None,
-    exclude_columns: list = None
-) -> np.ndarray:
+    exclude_columns: list = None,
+    return_indices: bool = False,
+    index_column: str = None
+):
     """
     Create sliding window sequences from input variables only.
 
@@ -313,10 +323,19 @@ def create_input_variable_sequence(
         exclude_columns: List of columns to exclude from features (e.g., target columns,
                         date columns, group columns, shifted target columns).
                         Only used when feature_columns=None.
+        return_indices: If True, return (sequences, sequence_indices)
+        index_column: Column containing original indices (e.g., '_original_index')
+                     Required if return_indices=True
 
     Returns:
-        sequences: Array of shape (n_samples, sequence_length, n_features)
-                  where n_samples = len(df) - sequence_length
+        If return_indices=False:
+            sequences: Array of shape (n_samples, sequence_length, n_features)
+                      where n_samples = len(df) - sequence_length + 1
+        If return_indices=True:
+            Tuple of:
+                sequences: Array of shape (n_samples, sequence_length, n_features)
+                sequence_indices: Array of shape (n_samples,) containing the
+                                 original index for each sequence's prediction target row
 
     Examples:
         >>> # Auto-detect features, exclude targets and metadata
@@ -347,6 +366,9 @@ def create_input_variable_sequence(
     if len(df) <= sequence_length:
         raise ValueError(f"DataFrame length ({len(df)}) must be greater than sequence_length ({sequence_length})")
 
+    if return_indices and index_column is None:
+        raise ValueError("index_column must be provided when return_indices=True")
+
     # Determine which feature columns to use
     if feature_columns is None:
         # Auto-detect features: all numeric columns except excluded ones
@@ -366,6 +388,7 @@ def create_input_variable_sequence(
     features = df[feature_columns].values
 
     sequences = []
+    sequence_indices = []
 
     # Create sequences
     # Fixed: Start from 0 to use all available data
@@ -376,6 +399,16 @@ def create_input_variable_sequence(
         seq = features[i:i+sequence_length]
         sequences.append(seq)
 
-    return np.array(sequences)
+        # The target row for this sequence is at position i+sequence_length-1
+        if return_indices:
+            target_idx = df[index_column].iloc[i + sequence_length - 1]
+            sequence_indices.append(target_idx)
+
+    sequences_array = np.array(sequences)
+
+    if return_indices:
+        return sequences_array, np.array(sequence_indices)
+    else:
+        return sequences_array
 
 
