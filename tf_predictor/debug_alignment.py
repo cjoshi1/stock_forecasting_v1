@@ -23,10 +23,10 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add repository root to path (parent of tf_predictor/)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.predictor import TimeSeriesPredictor
+from tf_predictor.core.predictor import TimeSeriesPredictor
 
 
 # Test scenario configurations

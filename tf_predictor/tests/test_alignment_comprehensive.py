@@ -27,11 +27,11 @@ from typing import Dict, List, Tuple
 import sys
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add repository root to path (parent of tf_predictor/)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from core.predictor import TimeSeriesPredictor
-from core.utils import calculate_metrics
+from tf_predictor.core.predictor import TimeSeriesPredictor
+from tf_predictor.core.utils import calculate_metrics
 
 
 class TestAlignmentComprehensive:
